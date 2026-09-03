@@ -162,6 +162,8 @@ public sealed class GevDeviceOpt
     public IPAddress? LocalAddress { get; set; }             // null = auto (route lookup / discovery interface)
     public string? XmlCacheDir { get; set; }                 // null = no on-disk cache of the camera XML
     public bool AllowSwitchover { get; set; } = false;       // set CCP switchover-enable bit
+    public int? MaxPendingAckWaitMs { get; set; }            // null = derived so a PENDING_ACK cannot hold the GVCP queue
+                                                             // past the device heartbeat timeout; setting a value turns that derivation off
 }
 
 public sealed class GevDevice : IGevPort, IAsyncDisposable
@@ -176,6 +178,8 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
     public bool IsOpen { get; }
     public uint GvcpCapability { get; }            // GVBS 0x0934
     public ulong TimestampTickFrequency { get; }   // GVBS 0x093C/0x0940 (0 if unreadable)
+    public int DeviceHeartbeatTimeoutMs { get; }   // GVBS 0x0938 read back after we wrote it
+    public int HeartbeatPeriodMs { get; }          // 0 for a read-only session (no heartbeat runs)
     public event Action<GevDevice, Exception?>? ControlLost;   // heartbeat failed or CCP taken by someone else
 
     public Task<uint> ReadRegAsync(uint addr, CancellationToken ct = default);
@@ -188,6 +192,7 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
 
     public Task<GevXmlDoc> GetXmlAsync(CancellationToken ct = default);                // Xml module
     public Task<GenApiNodeMap> GetNodeMapAsync(CancellationToken ct = default);         // cached after first call
+    public Task SetTlParamsLockedAsync(bool locked, CancellationToken ct = default);    // host-side node, not a register; gates the acquisition commands
     public Task<GevStream> OpenStreamAsync(GevStreamOpt? opt = null, CancellationToken ct = default);  // Gvsp module; channel 0
     public Task<GevStream> OpenStreamAsync(int streamChannel, GevStreamOpt? opt = null, CancellationToken ct = default);  // channel count from GVBS 0x0904
     // Both overloads need control: a ReadOnly session cannot write the stream-channel registers and is
@@ -282,14 +287,18 @@ public sealed class GevStream : IAsyncDisposable
     public int LocalPort { get; }
     public int PacketSize { get; }                            // negotiated SCPS
     public GevStreamStats Stats { get; }                      // live counters (Interlocked), snapshot via Stats.Snapshot()
-    public event Action<GevFrameDiag>? FrameDropped;          // incomplete / no-buffer / error frames (called on receiver thread — keep it cheap)
+    public bool IsStarted { get; }                            // true between a successful StartAsync and StopAsync
+    public event Action<GevFrameDiag>? FrameDropped;          // Reason is one of four: Incomplete / NoBuffer / Error / Unsupported (called on receiver thread — keep it cheap)
 
     public Task StartAsync(CancellationToken ct = default);   // bind + tune socket, write SCDA/SCP, negotiate SCPS, start thread. Does NOT send AcquisitionStart.
     // Acquisition is the caller's step and it needs the transport-layer lock first:
     //   await stream.StartAsync(); await device.SetTlParamsLockedAsync(true);
     //   await nodes.GetCommand("AcquisitionStart").ExecuteAsync();
     //   ... await nodes.GetCommand("AcquisitionStop").ExecuteAsync(); await device.SetTlParamsLockedAsync(false);
-    public Task StopAsync(CancellationToken ct = default);    // write SCP = 0, stop thread, complete pending receives with GevStreamClosedException
+    public Task StopAsync(CancellationToken ct = default);    // SCP = 0, SCDA = 0, close the socket to wake the thread, join it,
+                                                             // then **drain the queue and Dispose every frame still in it** — skipping that
+                                                             // leaves those pool buffers held forever — and complete pending receives
+                                                             // with GevStreamClosedException
     public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);
     public bool TryReceive(out GevFrame? frame);
     public ValueTask DisposeAsync();
@@ -305,14 +314,28 @@ public sealed class GevFrame : IDisposable
     public int Stride { get; }           // bytes per line = PixelFormatInfo.LineBytes(PixelFormatCode, Width) + PaddingX — GVSP Packed and 4:1:1 lines end on a whole 2-/4-pixel group, PFNC p lines on a byte boundary, unknown codes ceil(Width * bpp / 8); 0 means the lines are not byte-aligned and PaddingX is 0, so there is no stride and Data is one continuous run of Width * Height pixels
     public int PayloadSize { get; }      // valid bytes in Data — for a chunk-bearing frame this is image + chunk
     public int ImageSize { get; }        // bytes of Data the image occupies; == PayloadSize unless HasChunkData, then smaller — slice Data to this before reading pixels
+    public ushort PayloadType { get; }    // raw payload_type from the leader, chunk bit included
     public bool IsComplete { get; }
+    public bool HasChunkData { get; }     // chunk bytes follow the image; see ImageSize
     public int MissingPackets { get; }
+    public int ExpectedPackets { get; }
+    public bool IsDisposed { get; }
     public ReadOnlyMemory<byte> Data { get; }   // valid until Dispose; ObjectDisposedException afterwards
     public byte[] ToArray();
     public void Dispose();               // returns the buffer to the pool; idempotent
 }
 
-public sealed class GevStreamStats { FramesCompleted, FramesIncomplete, FramesDroppedNoBuffer, FramesDelivered, PacketsReceived, PacketsResent (status 0x0100), PacketsMissing, ResendRequests, ResendRecovered, ErrorPackets, BytesReceived, LastFrameId }
+public sealed class GevStreamStats { FramesCompleted, FramesIncomplete, FramesDelivered, FramesDroppedNoBuffer,
+    FramesDroppedError, FramesDroppedUnsupported, PacketsReceived, PacketsResent (status 0x0100),
+    PacketsDuplicated, PacketsIgnored, PacketsUnsupported, PacketsMissing, ResendRequests, ResendRecovered,
+    ErrorPackets, FirewallKeepAlives, BytesReceived, LastFrameId }
+```
+
+`PacketsResent` counts only packets carrying the GVSP resend status `0x0100`. A device may answer a resend
+with the ordinary success status instead — one measured camera does (`docs/evaluation.md`) — and then
+`PacketsResent` stays 0 while **`PacketsDuplicated`** is what moves. Read the pair, not either alone.
+
+```
 ```
 
 Receiver design: one dedicated background thread per stream. Blocking `Receive` (not `ReceiveFrom`: no
@@ -385,7 +408,8 @@ Mono12 = 0x01100005, Mono12Packed = 0x010C0006, Mono16 = 0x01100007, Mono10p = 0
 Bayer*10/12/16, RGB8 = 0x02180014, BGR8 = 0x02180015, RGBa8 = 0x02200016, BGRa8 = 0x02200017, YUV422_8 =
 0x02100032, YCbCr422_8 = 0x0210003B, …). `PixelFormatInfo`: `BitsPerPixel(code) = (code >> 16) & 0xFF`,
 `IsMono`, `IsBayer`, `IsColor`, `BayerPattern`, `Name(code)`, `Depth(code)` (significant bits of an unsigned
-Mono/Bayer sample — Mono10 and Mono10Packed are both 10; 0 for signed, multi-component and unknown codes).
+Mono/Bayer sample — Mono10 and Mono10Packed are both 10; 0 for signed samples, multi-component formats,
+the 3D/Confidence/Data families, and unknown codes).
 `PixelFormatInfo.LineBytes(code, width)` is the single definition of a line and `GevFrame.Stride` is built
 from it, so a frame's stride can be passed straight to the unpack and fold routines.
 `PixelFormatInfo.FrameBytes(code, width, height, paddingX, paddingY)` is the single definition of an image,
@@ -397,6 +421,9 @@ or unpacks the frame as a single run of `Width * Height` pixels. `PixelUnpack.Un
 decision itself from its `paddingX` argument.
 `PixelUnpack`: Mono10Packed/Mono12Packed (GigE 3-bytes-per-2-pixels layout) and Mono10p/Mono12p (PFNC
 lsb-packed) → `ushort[]`/`Span<ushort>`.
+`PixelUnpack.CanUnpack(code)` says whether a code is one of the four packed layouts `Unpack` handles — it is
+not a general "is this format supported" predicate; unpacked formats answer false because there is nothing to
+unpack. `PixelUnpack.CanFoldToMono8(code)` is the wider one.
 `PixelUnpack.CanFoldToMono8(code)` / `FoldToMono8(code, src, srcStrideBytes, dst, dstStrideBytes, width,
 height)` (plus a `byte[]`-returning overload; both strides in bytes, unlike `Unpack`'s pixel-counted
 destination stride) write the top 8 bits of every pixel for the single-component Mono/Bayer formats — 8,
@@ -587,7 +614,12 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
 - `GevStream`: one receiver thread; delivery through a bounded async queue (no `System.Threading.Channels`
   dependency — a small `AsyncBoundedQueue<T>` with `SemaphoreSlim`).
 - `GenApiNodeMap`: async everywhere; no thread affinity.
-- Events (`ControlLost`, `FrameDropped`) are raised on library threads; handlers must be cheap.
+- `FrameDropped` is raised on the receiver thread; the handler must be cheap or it stalls reassembly.
+- `ControlLost` is **not** raised on the heartbeat thread — the heartbeat flips the state and hands the
+  callback to the thread pool, so a handler may `await device.DisposeAsync()` without waiting on itself
+  (pinned by `GevDeviceTests`). Two consequences the caller should know: `DisposeAsync` does not wait for
+  the handler, so it can still run after `Close()` returns, and an exception from the handler is swallowed
+  and logged rather than propagated.
 
 ## Testing strategy
 

@@ -56,10 +56,6 @@ public sealed class AcqControl
         {
             throw;
         }
-        catch (NotImplementedException ex)
-        {
-            reason = ex.Message;
-        }
         catch (GevException ex)
         {
             reason = ex.Message;

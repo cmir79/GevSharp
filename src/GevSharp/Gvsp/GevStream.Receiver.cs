@@ -875,7 +875,6 @@ public sealed partial class GevStream
         if (length > slot.DataBytes) SetDataBytes(slot, length);
     }
 
-    /// <summary>청크가 붙은 프레임에서 실측한 크기를 다음 버퍼 대여의 하한으로 기억한다.</summary>
     /// <summary>
     /// 청크가 붙은 프레임이 버퍼를 넘쳤을 때, 다음 프레임의 버퍼를 한 번에 맞추려고 배운 크기를 키운다.
     /// **리더가 청크를 선언한 프레임에서만** 부른다 — 리더 없이 온 페이로드의 패킷 id 로 계산한 오프셋을 크기로 믿으면

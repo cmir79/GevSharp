@@ -43,12 +43,6 @@ public sealed class GevStreamOpt
     public bool DeliverIncompleteFrames { get; set; } = false;
 
     /// <summary>
-    /// 채널을 연 뒤 장치의 스트림 송신 포트(SCSP)로 한 바이트를 보내 상태 기반 호스트 방화벽에 매핑을 만든다.
-    /// 이런 방화벽(윈도우의 공용 프로필이 대표적)은 우리가 먼저 보낸 적 없는 UDP 를 전부 버리므로,
-    /// 이 한 번의 송신이 없으면 인바운드 규칙을 관리자 권한으로 등록하기 전까지 GVSP 가 한 패킷도 도착하지 않는다.
-    /// 장치가 SCSP 를 읽게 해 주지 않거나 0 이면 조용히 넘어간다.
-    /// </summary>
-    /// <summary>
     /// 한 프레임이 가질 수 있는 최대 바이트 수(기본 256 MiB). 리더가 이보다 큰 기하를 알리면 그 프레임을 버리고,
     /// 청크 프레임이 배우는 버퍼 크기도 여기서 멈춘다.
     /// 스트림 소켓은 세그먼트의 누구나 보낼 수 있고 GVSP 는 보낸 이를 확인하지 않으므로(architecture.md 참조),
@@ -57,6 +51,12 @@ public sealed class GevStreamOpt
     /// </summary>
     public int MaxPayloadBytes { get; set; } = 256 * 1024 * 1024;
 
+    /// <summary>
+    /// 채널을 연 뒤 장치의 스트림 송신 포트(SCSP)로 한 바이트를 보내 상태 기반 호스트 방화벽에 매핑을 만든다.
+    /// 이런 방화벽(윈도우의 공용 프로필이 대표적)은 우리가 먼저 보낸 적 없는 UDP 를 전부 버리므로,
+    /// 이 한 번의 송신이 없으면 인바운드 규칙을 관리자 권한으로 등록하기 전까지 GVSP 가 한 패킷도 도착하지 않는다.
+    /// 장치가 SCSP 를 읽게 해 주지 않거나 0 이면 조용히 넘어간다.
+    /// </summary>
     public bool FirewallTraversal { get; set; } = true;
 
     /// <summary>

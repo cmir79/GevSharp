@@ -2,19 +2,23 @@ using GevSharp.GenApi;
 
 namespace GevSharp.Cli.Commands;
 
-/// <summary>features/get/set 가 공유하는 노드맵 획득 — 런타임이 없는 빌드를 한 곳에서 같은 말로 알린다.</summary>
+/// <summary>features/get/set 가 공유하는 노드맵 획득 — 실패 사유를 한 곳에서 같은 말로 알린다.</summary>
 public static class NodeMapAccess
 {
-    /// <summary>노드맵을 만든다. 런타임이 없으면 이유를 stderr 에 쓰고 null.</summary>
+    /// <summary>
+    /// 노드맵을 만든다. 실패하면 이유를 stderr 에 쓰고 null.
+    /// 갈래는 둘이다 — XML 을 못 가져오면 <see cref="GevException"/>, 가져온 XML 을 못 묶으면 <see cref="GenApiException"/>.
+    /// (<see cref="GenApiException"/> 이 <see cref="GevException"/> 을 상속하므로 한 번에 잡는다.)
+    /// </summary>
     public static async Task<GenApiNodeMap?> TryGetAsync(GevDevice dev, CancellationToken ct)
     {
         try
         {
             return await dev.GetNodeMapAsync(ct);
         }
-        catch (NotImplementedException ex)
+        catch (GevException ex)
         {
-            Console.Error.WriteLine($"error: the GenApi node map runtime is not available in this build of GevSharp ({ex.Message})");
+            Console.Error.WriteLine($"error: could not build the GenApi node map ({ex.Message})");
             return null;
         }
     }
