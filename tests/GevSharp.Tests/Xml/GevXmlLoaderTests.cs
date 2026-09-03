@@ -781,8 +781,10 @@ public class GevXmlLoaderTests
     [Fact]
     public void SwapByReplaceKeepsTheOldCacheWhenTheTargetIsHeldOpen()
     {
-        // 대상을 FileShare.Read 로 잡고 있으면 교체도 비켜 두기도 모두 실패한다 — 이 경로는 읽는 손을 뜺지 못한다.
-        // 약속하는 것은 하나다: 그럴 때 옇 캐시가 사라지지 않는다. 손을 놓으면 다음 쓰기가 그대로 들어간다.
+        // 열려 있는 대상을 교체할 수 있는지는 OS 가 정한다 — 파일 잠금은 이식 가능한 개념이 아니다.
+        // 윈도우는 공유 규칙이 강제라 읽는 손이 있으면 교체가 거부되고, POSIX 는 이름만 바꾸므로 그냥 성공한다
+        // (열어 둔 쪽은 옛 내용을 계속 본다). 어느 쪽이든 이 경로가 약속하는 것은 하나다:
+        // **옛 캐시가 사라진 채로 끝나지 않는다.** 거부당하면 옛 내용이 그대로, 성공하면 새 내용이 그 자리에 있다.
         using var dir = new TempDir();
         Directory.CreateDirectory(dir.Path);
         var path = Path.Combine(dir.Path, "cache.xml");
@@ -790,17 +792,29 @@ public class GevXmlLoaderTests
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, "<New/>");
 
+        var refused = false;
         using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            Assert.ThrowsAny<Exception>(() => GevXmlLoader.SwapByReplace(tmp, path));
-            Assert.Equal("<Old/>", File.ReadAllText(path, Encoding.UTF8));
-            Assert.True(File.Exists(tmp));
+            try
+            {
+                GevXmlLoader.SwapByReplace(tmp, path);
+            }
+            catch (Exception)
+            {
+                refused = true;
+            }
+
+            // 거부당했으면 옛 내용이, 통과했으면 새 내용이 자리에 있다. 어느 쪽도 "없음" 은 아니다.
+            Assert.Equal(refused ? "<Old/>" : "<New/>", File.ReadAllText(path, Encoding.UTF8));
+            Assert.Equal(refused, File.Exists(tmp));
         }
 
-        GevXmlLoader.SwapByReplace(tmp, path);
+        // 손을 놓으면 다음 쓰기가 그대로 들어간다(거부됐던 자산에서는 여기서 처음 들어간다).
+        if (refused) GevXmlLoader.SwapByReplace(tmp, path);
 
         Assert.Equal("<New/>", File.ReadAllText(path, Encoding.UTF8));
         Assert.Empty(Directory.GetFiles(dir.Path, "*.old"));
+        Assert.Empty(Directory.GetFiles(dir.Path, "*.tmp"));
     }
 
     [Fact]
