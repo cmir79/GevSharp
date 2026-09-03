@@ -107,6 +107,7 @@ public sealed partial class GevStream
             }
             catch (ObjectDisposedException)
             {
+                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: socket closed while waiting for the test packet.");
                 return false;
             }
             if (!ready) return false;
@@ -118,14 +119,18 @@ public sealed partial class GevStream
             }
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
             {
+                // 우리 버퍼보다 큰 데이터그램이 왔다 — 크기 검사에는 "적어도 이만큼" 으로 충분하다.
+                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: a datagram larger than the {probe.Length}-byte probe buffer arrived; counted as big enough.");
                 received = probe.Length + 1;
             }
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
             {
+                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: ICMP port-unreachable echoed back; ignoring and waiting again.");
                 continue;
             }
             catch (ObjectDisposedException)
             {
+                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: socket closed while receiving the test packet.");
                 return false;
             }
 
@@ -146,6 +151,7 @@ public sealed partial class GevStream
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize || ex.SocketErrorCode == SocketError.ConnectionReset)
             {
                 // 크기 초과·ICMP 되돌림은 버리고 계속
+                GevLog.Debug(LogSrc, $"Draining the probe socket: {ex.SocketErrorCode} ignored.");
             }
             catch (ObjectDisposedException)
             {
@@ -184,7 +190,11 @@ public sealed partial class GevStream
         {
             IPInterfaceProperties props;
             try { props = ni.GetIPProperties(); }
-            catch (NetworkInformationException) { continue; }
+            catch (NetworkInformationException ex)
+            {
+                GevLog.Debug(LogSrc, $"Interface '{ni.Name}': IP properties unavailable ({ex.Message}); skipped while looking for the MTU.");
+                continue;
+            }
 
             var owns = false;
             foreach (var ua in props.UnicastAddresses)
@@ -198,7 +208,11 @@ public sealed partial class GevStream
             if (!owns) continue;
 
             try { return props.GetIPv4Properties().Mtu; }
-            catch (NetworkInformationException) { return 0; }
+            catch (NetworkInformationException ex)
+            {
+                GevLog.Debug(LogSrc, $"Interface '{ni.Name}' owns {localAddress} but reports no IPv4 MTU ({ex.Message}); negotiating without it.");
+                return 0;
+            }
         }
         return 0;
     }
