@@ -418,7 +418,30 @@ Wraparound is the kind of thing that only shows up in a run long enough to reach
 handled.
 
 **Resend requests are not a fault signal on their own.** The Crevis asked for 6,392 resends across
-eight hours and none were needed — no packet was ever actually lost. The 20 ms packet timeout fires
-on a packet that is merely spaced out by the inter-packet delay rather than dropped, and the
-original arrives before a resend could. When SCPD is large, raise `--packet-timeout` with it; the
-requests cost a little control traffic and nothing else.
+eight hours and not one was needed — no packet was ever actually lost, and every frame completed.
+
+What triggers them is worth writing down, because the obvious explanations are wrong. Raising the
+re-ask interval (`--packet-timeout`) from 20 ms to 60 ms did not reduce them (23 to 27 in a 90 s
+run), and raising the grace a hole gets the first time it is seen (`--initial-packet-timeout`) from
+2 ms to 10 ms did not either (30 to 48). Logging which packets were asked for shows why:
+
+    Block  20: resend requested for packets 6..8
+    Block  48: resend requested for packets 457..459
+    Block 105: resend requested for packets 321..323
+    Block 158: resend requested for packets 511..513
+
+Every request is exactly three consecutive packets, at no particular place in the frame. A hole can
+only appear when a later packet is processed before an earlier one, so these three are arriving out
+of order and later than the grace allows — and then arriving, which is why nothing is ever missing.
+Neither timeout removes them because the reordering outlasts both.
+
+The condition is contention, not the camera. The same camera streaming alone with the same
+inter-packet delay asked for zero resends in 90 seconds; it only happens while the second camera
+shares the port. The other camera shows the same pattern about 500 times more rarely (12 requests
+in the same eight hours). Chasing it further would need a packet capture to say whether the
+reordering happens on the wire or inside the device's transmit path, which is beyond what the
+symptom justifies: the cost is a few control packets and no frame is affected.
+
+The practical consequence is for alarms. **Do not raise an alarm on resend request counts** — they
+report a condition that resolves itself. Alarm on missing packets and incomplete frames, both of
+which stayed at zero here.

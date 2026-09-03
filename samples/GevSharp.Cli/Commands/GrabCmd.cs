@@ -18,7 +18,8 @@ public sealed class GrabCmd : ICliCommand
 
     public string Usage =>
         "grab <ip[:port]> [-n count] [-t seconds] [--packet-size auto|N] [--socket-buffer bytes] [--buffers N] [--no-resend]\n" +
-        "     [--stats-every seconds] [--save dir] [--packet-delay ticks] [--packet-timeout ms] [--frame-retention ms]\n" +
+        "     [--stats-every seconds] [--save dir] [--packet-delay ticks] [--packet-timeout ms]\n" +
+        "     [--initial-packet-timeout ms] [--frame-retention ms]\n" +
         "     [--acq-start-addr hex] [--acq-stop-addr hex]\n" +
         "  -n, --count N          stop after N delivered frames (default: unlimited)\n" +
         "  -t, --seconds S        stop after S seconds (default: unlimited; Ctrl+C stops at any time)\n" +
@@ -26,6 +27,10 @@ public sealed class GrabCmd : ICliCommand
         "  --socket-buffer bytes  receive socket buffer request, k/m suffix allowed (default 32m); the granted size is logged\n" +
         "  --buffers N            frame buffers in the pool (default 8)\n" +
         "  --no-resend            do not request lost packets (default: resend on)\n" +
+        "  --initial-packet-timeout ms  grace a hole gets the first time it is seen, before any resend is asked for\n" +
+        "                         (default 2). A packet that is merely out of order usually lands within it, so raising\n" +
+        "                         this removes resend requests for packets that were never lost. --packet-timeout does\n" +
+        "                         not affect the first request; it is the interval before asking for the same hole again\n" +
         "  --packet-timeout ms    wait before asking again for the same hole, and the silence after which the\n" +
         "                         un-sent tail counts as missing (default 20)\n" +
         "  --frame-retention ms   give up on a frame this long after its last data packet (default 100)\n" +
@@ -50,6 +55,7 @@ public sealed class GrabCmd : ICliCommand
         .Value("stats-every")
         .Value("save")
         .Value("packet-delay")
+        .Value("initial-packet-timeout")
         .Value("packet-timeout")
         .Value("frame-retention")
         .Value("acq-start-addr")
@@ -170,6 +176,7 @@ public sealed class GrabCmd : ICliCommand
         opt.ResendEnabled = !args.Has("no-resend");
         opt.InterPacketDelay = args.GetInt("packet-delay", 0, 0);
         // 느린 호스트나 긴 링크에서는 기본값(20/100 ms)이 짧아 멀쩡한 프레임을 포기한다 — 현장 진단을 위해 열어 둔다.
+        opt.InitialPacketTimeoutMs = args.GetInt("initial-packet-timeout", opt.InitialPacketTimeoutMs, 0);
         opt.PacketTimeoutMs = args.GetInt("packet-timeout", opt.PacketTimeoutMs, 1);
         opt.FrameRetentionMs = args.GetInt("frame-retention", opt.FrameRetentionMs, 1);
         return opt;
