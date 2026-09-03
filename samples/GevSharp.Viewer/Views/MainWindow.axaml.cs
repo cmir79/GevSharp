@@ -14,6 +14,7 @@ namespace GevSharp.Viewer.Views;
 public partial class MainWindow : Window
 {
     private CamVm? _panning;
+    private CamVm? _swapFrom;
     private Point _panFrom;
 
     public MainWindow()
@@ -37,6 +38,11 @@ public partial class MainWindow : Window
 
     private void OnFit(object? sender, RoutedEventArgs e) => Vm?.SelectedCam?.Fit();
 
+    private void OnToggleLayout(object? sender, RoutedEventArgs e)
+    {
+        if (Vm is { CanChangeLayout: true } vm) vm.IsFocusLayout = !vm.IsFocusLayout;
+    }
+
     private async void OnSave(object? sender, RoutedEventArgs e)
     {
         if (Vm is not { SelectedCam: { } cam } vm) return;
@@ -59,7 +65,15 @@ public partial class MainWindow : Window
         if (Vm is not { } vm || (sender as Control)?.DataContext is not CamVm cam) return;
         vm.SelectedCam = cam;
 
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+        // 오른쪽 단추로 끌면 타일끼리 자리를 맞바꾼다. 그림을 옮기는 것과 섞이지 않게 단추를 나눠 둔다.
+        var point = e.GetCurrentPoint(this).Properties;
+        if (point.IsRightButtonPressed)
+        {
+            _swapFrom = cam;
+            return;
+        }
+
+        if (!point.IsLeftButtonPressed) return;
         _panning = cam;
         _panFrom = e.GetPosition(this);
         if (sender is Control c) c.Cursor = new Cursor(StandardCursorType.Hand);
@@ -87,7 +101,20 @@ public partial class MainWindow : Window
     {
         _panning = null;
         if (sender is Control c) c.Cursor = Cursor.Default;
+
+        if (_swapFrom is not { } from) return;
+        _swapFrom = null;
+        if (CamUnder(e.GetPosition(this)) is { } onto && Vm is { } vm) vm.SwapCams(from, onto);
     }
+
+    /// <summary>그 지점에 있는 타일의 카메라. 놓은 자리가 어느 타일인지 알아야 자리를 바꿀 수 있다.</summary>
+    private CamVm? CamUnder(Point at)
+        => (this.InputHitTest(at) as Visual)?
+            .GetSelfAndVisualAncestors()
+            .OfType<Control>()
+            .Select(c => c.DataContext)
+            .OfType<CamVm>()
+            .FirstOrDefault();
 
     private void OnImageExited(object? sender, PointerEventArgs e)
     {

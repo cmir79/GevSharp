@@ -17,7 +17,34 @@
     <StreamGeometry x:Key="IcoLive">M7,4 L18,11 L7,18 Z</StreamGeometry>
     <StreamGeometry x:Key="IcoStop">M6,6 L16,6 L16,16 L6,16 Z</StreamGeometry>
     <StreamGeometry x:Key="IcoFit">M4,9 L4,4 L9,4 M13,4 L18,4 L18,9 M18,13 L18,18 L13,18 M9,18 L4,18 L4,13</StreamGeometry>
+    <StreamGeometry x:Key="IcoGrid">M4,4 L10,4 L10,10 L4,10 Z M12,4 L18,4 L18,10 L12,10 Z M4,12 L10,12 L10,18 L4,18 Z M12,12 L18,12 L18,18 L12,18 Z</StreamGeometry>
+    <StreamGeometry x:Key="IcoFocus">M4,4 L13,4 L13,18 L4,18 Z M15,4 L19,4 L19,8 L15,8 Z M15,10 L19,10 L19,14 L15,14 Z M15,16 L19,16 L19,18 L15,18 Z</StreamGeometry>
     <StreamGeometry x:Key="IcoSave">M11,3 L11,13 M7,9.5 L11,13.5 L15,9.5 M4,16 L4,19 L18,19 L18,16</StreamGeometry>
+      <DataTemplate x:Key="CamTile" x:DataType="vm:CamVm">
+        <Border Margin="3" CornerRadius="3" BorderThickness="2" Padding="4" MinHeight="150"
+                BorderBrush="{Binding IsSelected, Converter={x:Static vm:VmConverters.SelectedBorder}}">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="{Binding Title}" FontSize="11" FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+
+            <!-- 아래 줄: 프레임 정보와, 커서 아래 화소의 좌표·값 -->
+            <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" Margin="0,3,0,0">
+              <TextBlock Grid.Column="0" Classes="caption" Text="{Binding FrameInfo}"
+                         TextTrimming="CharacterEllipsis" />
+              <TextBlock Grid.Column="1" Classes="caption" Text="{Binding CursorInfo}" Margin="8,0,0,0" />
+            </Grid>
+
+            <!-- 확대·이동은 그림 위에 얹은 변환이다. 밖으로 나간 부분은 잘라 낸다. -->
+            <Panel ClipToBounds="True" Background="#01000000"
+                   PointerPressed="OnImagePressed" PointerMoved="OnImageMoved"
+                   PointerReleased="OnImageReleased" PointerExited="OnImageExited"
+                   PointerWheelChanged="OnImageWheel">
+              <Image Source="{Binding Image}" Stretch="Uniform"
+                     RenderTransform="{Binding ViewTransform}" RenderTransformOrigin="0%,0%" />
+            </Panel>
+          </DockPanel>
+        </Border>
+      </DataTemplate>
   </Window.Resources>
 
   <Window.Styles>
@@ -152,6 +179,15 @@
         <Button Classes="ribbon" Click="OnSave" IsEnabled="{Binding HasSelectedCam}" ToolTip.Tip="Save the current frame">
           <Path Data="{StaticResource IcoSave}" />
         </Button>
+        <Rectangle Width="1" Fill="#4A515A" Margin="6,2" />
+        <Button Classes="ribbon" Click="OnToggleLayout" IsEnabled="{Binding CanChangeLayout}"
+                ToolTip.Tip="Switch between an even grid and one large view with the rest beside it">
+          <!-- 지금 배치가 아니라 누르면 가게 될 배치를 보여 준다. -->
+          <Panel>
+            <Path Data="{StaticResource IcoGrid}" IsVisible="{Binding IsFocusLayout}" />
+            <Path Data="{StaticResource IcoFocus}" IsVisible="{Binding !IsFocusLayout}" />
+          </Panel>
+        </Button>
         <TextBlock Classes="caption" Text="{Binding SelectedCam.ZoomText}" VerticalAlignment="Center" Margin="4,0,0,0" />
         <TextBlock Classes="caption" Text="{Binding SelectedCam.StreamInfo}" VerticalAlignment="Center"
                    Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
@@ -271,47 +307,51 @@
 
       <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
 
-      <!-- 오른쪽: 열어 둔 카메라를 균등한 격자로 나란히. 타일을 누르면 왼쪽 선택이 그 카메라로 바뀐다. -->
+      <!-- 오른쪽: 열어 둔 카메라들. 균등 격자와, 하나를 크게 보고 나머지를 옆에 세우는 배치 두 가지. -->
       <Border Grid.Column="2" Classes="panel" Background="#282C32">
         <Panel>
           <TextBlock Classes="caption" Text="No camera open. Pick one on the left and press Connect."
                      HorizontalAlignment="Center" VerticalAlignment="Center"
                      IsVisible="{Binding !HasSelectedCam}" />
 
-          <ItemsControl ItemsSource="{Binding Cams}">
+          <!-- 균등 격자 — 네 대까지는 창에 맞춘다. -->
+          <ItemsControl ItemsSource="{Binding Cams}" ItemTemplate="{StaticResource CamTile}"
+                        IsVisible="{Binding IsPlainGrid}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate>
                 <UniformGrid Columns="{Binding TileColumns}" />
               </ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="vm:CamVm">
-                <Border Margin="3" CornerRadius="3" BorderThickness="2" Padding="4"
-                        BorderBrush="{Binding IsSelected, Converter={x:Static vm:VmConverters.SelectedBorder}}">
-                  <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="{Binding Title}" FontSize="11" FontWeight="SemiBold"
-                               TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
-
-                    <!-- 아래 줄: 프레임 정보와, 커서 아래 화소의 좌표·값 -->
-                    <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" Margin="0,3,0,0">
-                      <TextBlock Grid.Column="0" Classes="caption" Text="{Binding FrameInfo}"
-                                 TextTrimming="CharacterEllipsis" />
-                      <TextBlock Grid.Column="1" Classes="caption" Text="{Binding CursorInfo}" Margin="8,0,0,0" />
-                    </Grid>
-
-                    <!-- 확대·이동은 그림 위에 얹은 변환이다. 밖으로 나간 부분은 잘라 낸다. -->
-                    <Panel ClipToBounds="True" Background="#01000000"
-                           PointerPressed="OnImagePressed" PointerMoved="OnImageMoved"
-                           PointerReleased="OnImageReleased" PointerExited="OnImageExited"
-                           PointerWheelChanged="OnImageWheel">
-                      <Image Source="{Binding Image}" Stretch="Uniform"
-                             RenderTransform="{Binding ViewTransform}" RenderTransformOrigin="0%,0%" />
-                    </Panel>
-                  </DockPanel>
-                </Border>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
           </ItemsControl>
+
+          <!-- 다섯 대부터는 우겨넣지 않는다. 두 열을 지키고 줄이 늘어난 만큼 세로로 흐른다. -->
+          <ScrollViewer IsVisible="{Binding IsScrollingGrid}" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding Cams}" ItemTemplate="{StaticResource CamTile}"
+                          MinHeight="{Binding GridMinHeight}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <UniformGrid Columns="2" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
+          </ScrollViewer>
+
+          <!-- 하나를 크게, 나머지는 오른쪽에 한 줄로. 많아지면 스크롤하되 타일이 뭉개지지 않게 최소 높이를 지킨다. -->
+          <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding IsFocusLayout}">
+            <ContentControl Grid.Column="0" Content="{Binding SelectedCam}"
+                            ContentTemplate="{StaticResource CamTile}" />
+            <ScrollViewer Grid.Column="1" Width="250" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl ItemsSource="{Binding Cams}" ItemTemplate="{StaticResource CamTile}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <StackPanel />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
         </Panel>
       </Border>
 

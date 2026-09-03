@@ -21,6 +21,7 @@ public sealed class MainVm : VmBase
     private readonly DispatcherTimer _scan;
     private bool _isScanning;
     private bool _autoScan = true;
+    private bool _isFocusLayout;
     private DeviceVm? _selectedDevice;
     private CamVm? _selectedCam;
     private bool _isBusy;
@@ -40,14 +41,48 @@ public sealed class MainVm : VmBase
         _scan.Start();
         _ = ScanAsync();
 
-        Cams.CollectionChanged += (_, _) => Raise(nameof(TileColumns));
+        Cams.CollectionChanged += (_, _) =>
+        {
+            Raise(nameof(TileColumns));
+            Raise(nameof(CanChangeLayout));
+            Raise(nameof(IsPlainGrid));
+            Raise(nameof(IsScrollingGrid));
+            Raise(nameof(GridMinHeight));
+            // 두 대까지는 균등 격자가 늘 낫다 — 하나를 키우고 나머지 하나를 옆에 세울 이유가 없다.
+            if (!CanChangeLayout) IsFocusLayout = false;
+        };
     }
 
     /// <summary>
     /// 영상 격자의 열 수. 균등 격자에 맡기면 항목 수의 제곱근으로 행·열을 함께 잡아 두 대에 2x2 를 만들고
     /// 절반이 빈칸이 된다. 열만 정해 주면 행은 필요한 만큼만 생긴다 — 두 대는 한 줄에 둘이다.
     /// </summary>
-    public int TileColumns => Cams.Count <= 1 ? 1 : (int)Math.Ceiling(Math.Sqrt(Cams.Count));
+    /// <summary>
+    /// 하나를 크게 보고 나머지를 옆에 세우는 배치인지. 세 대부터 뜻이 있다 — 두 대는 나란히 놓는 편이 늘 크다.
+    /// </summary>
+    public bool IsFocusLayout
+    {
+        get => _isFocusLayout;
+        set
+        {
+            if (!Set(ref _isFocusLayout, value)) return;
+            Raise(nameof(IsPlainGrid));
+            Raise(nameof(IsScrollingGrid));
+        }
+    }
+
+    /// <summary>네 대까지는 격자를 창에 맞춘다 — 그 정도면 나눠도 하나하나가 볼 만한 크기로 남는다.</summary>
+    public bool IsPlainGrid => !IsFocusLayout && Cams.Count <= 4;
+
+    /// <summary>다섯 대부터는 창에 우겨넣지 않고 타일 크기를 지키며 세로로 흐른다.</summary>
+    public bool IsScrollingGrid => !IsFocusLayout && Cams.Count > 4;
+
+    /// <summary>흐르는 격자가 지켜야 할 최소 높이. 줄 수만큼 타일 높이를 확보한다.</summary>
+    public double GridMinHeight => Math.Ceiling(Cams.Count / 2d) * 260;
+
+    public bool CanChangeLayout => Cams.Count >= 3;
+
+    public int TileColumns => Cams.Count <= 1 ? 1 : 2;
 
     /// <summary>
     /// 장치를 주기적으로 다시 찾을지. 기본은 켬 — 케이블을 꽂으면 목록에 나타나는 것이 당연한 동작이다.
@@ -239,6 +274,26 @@ public sealed class MainVm : VmBase
             await cam.StopLiveAsync().ConfigureAwait(true);
             Status = "Stopped.";
         });
+    }
+
+    /// <summary>격자에서 두 타일의 자리를 맞바꾼다. 그리는 순서가 곧 격자 순서이므로 목록에서 옮기면 화면이 따라온다.</summary>
+    public void SwapCams(CamVm a, CamVm b)
+    {
+        if (ReferenceEquals(a, b)) return;
+        var i = Cams.IndexOf(a);
+        var j = Cams.IndexOf(b);
+        if (i < 0 || j < 0) return;
+
+        if (i < j)
+        {
+            Cams.Move(i, j);
+            Cams.Move(j - 1, i);
+        }
+        else
+        {
+            Cams.Move(j, i);
+            Cams.Move(i - 1, j);
+        }
     }
 
     public Task SelectNodeAsync(NodeVm node) => SelectedCam?.SelectNodeAsync(node) ?? Task.CompletedTask;
