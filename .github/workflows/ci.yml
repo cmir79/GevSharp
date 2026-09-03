@@ -46,6 +46,10 @@ jobs:
           ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
           echo "fd limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
           dotnet test --no-build -c Release --report-trx --results-directory TestResults --long-running 30 --timeout 4m --diagnostic --diagnostic-output-directory TestResults/diag --diagnostic-synchronous-write --diagnostic-verbosity Debug
+        env:
+          # 라이브러리 로그를 파일로 받는다 — 강제 종료돼도 마지막으로 시도한 동작(소켓 바인드·레지스터 왕복)이 남는다.
+          GEVSHARP_TEST_LOG: TestResults/diag/gevsharp.log
+          GEVSHARP_TEST_LOG_LEVEL: Debug
       - name: Test (in-process simulator)
         if: runner.os == 'Windows'
         timeout-minutes: 5
