@@ -23,6 +23,8 @@ public sealed partial class GevStream : IAsyncDisposable
     private const int StateStarted = 2;
     private const int StateStopping = 3;
     private const int StateStopped = 4;
+    /// <summary>정지가 수신 스레드를 기다리는 상한. 제어 채널의 같은 상한과 맞춘다.</summary>
+    private const int ReceiverJoinMs = 2000;
 
     private readonly IGevPort _regs;
     private readonly IGvcpResendPort _resend;
@@ -215,9 +217,17 @@ public sealed partial class GevStream : IAsyncDisposable
 
             thread = _thread;
             _thread = null;
-            if (thread is not null)
+            if (thread is not null && thread.IsAlive)
             {
-                await Task.Run(thread.Join).ConfigureAwait(false);
+                // 상한 없이 기다리지 않는다. 소켓을 닫으면 블로킹 수신이 깨어나는 것이 보통이지만 그것을 보장하는 규격은 없고,
+                // 여기서 무한히 기다리면 정지가 영영 돌아오지 않는다. 게다가 이 대기는 스레드풀 스레드를 하나 붙들고 있어서,
+                // 코어가 적은 기계에서 정지가 몇 개 겹치면 풀이 고갈된다. 제어 채널은 이미 같은 상한을 두고 있다.
+                // 시한을 넘겨도 할 일은 그대로 한다 — 소켓은 이미 닫혔고 아래에서 큐를 비워 버퍼를 돌려준다.
+                var joined = await Task.Run(() => thread.Join(ReceiverJoinMs)).ConfigureAwait(false);
+                if (!joined)
+                {
+                    GevLog.Warn(LogSrc, $"Receiver thread did not stop within {ReceiverJoinMs} ms; the socket is closed and the buffers are returned regardless.");
+                }
             }
 
             // 큐는 **항상** 비운다. 수신 스레드가 먼저(소켓이 죽어) 큐를 닫아 두었을 수도 있는데, 그때 건너뛰면
