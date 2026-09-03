@@ -287,3 +287,60 @@ Mono8` puts it back. Before the fix the same command failed on every value, the 
 
 Simulator counterparts of scenarios 2–7 run in CI against `GevSharp.Sim` (loopback) and, on Linux,
 against a third-party virtual camera.
+
+### Crevis MG-A500M-22 (mono, 2592x1944), 2026-09-03 — a second vendor, and a host that eats the stream
+
+Bringing up a second vendor on the same host found one real defect in this library and one
+host condition that no library change can work around. They are recorded together because the
+first hid behind the second for a while.
+
+**The defect: mutual limit references were mistaken for a value cycle.** The node map declares
+
+    AutoGainLowerLimit.pMax -> AutoGainUpperLimit
+    AutoGainUpperLimit.pMin -> AutoGainLowerLimit
+
+which is ordinary — each node bounds the other's range. The binder counted `pMin`/`pMax`/`pInc`
+as value references, so cycle detection reported
+
+    could not build the GenApi node map
+    (Reference cycle: AutoGainLowerLimit -> AutoGainUpperLimit -> AutoGainLowerLimit)
+
+and the failure is not local: the whole map is rejected, so the camera cannot be opened at all.
+Limits narrow a range without defining a value, so a cycle among them never recurses. They are
+now `RefKind.Limit` — excluded from cycle adjacency, still included in invalidation. With the
+fix the map binds 517 nodes and every feature reads and writes.
+
+**The host condition: a kernel filter driver takes the stream before the socket stack.** With the
+node map bound, the device accepts the full stream-channel configuration and starts acquisition,
+yet not one GVSP packet reaches the socket — at 9000, 1500 and 576 bytes alike, and the fire-test
+packet never arrives either. The measurement that settles it, taken across one acquisition:
+
+| Counter | Value |
+|---|---|
+| NIC received bytes during acquisition | 261,885,179 (about 420 Mbps) |
+| Datagrams on the bound UDP socket | 0 |
+
+The camera is streaming at full rate. The bytes arrive at the adapter and are consumed above it.
+`Get-NetAdapterBinding` on that adapter lists three vendor GigE filter drivers bound and enabled,
+one of them this camera's. A filter driver sits between the adapter and TCP/IP and hands GVSP to
+its own SDK; a socket-based receiver is below nothing and above nothing that can see those bytes.
+
+There is no library-side remedy, and that is not a gap in this library: intercepting at that layer
+is exactly what a kernel driver is for, and this library is defined by having none. The remedy is
+host configuration — unbind that vendor's filter driver from the adapter (or leave it bound and
+accept that only that vendor's SDK can stream on it). The register writes are worth recording as
+correct in their own right, since they rule out this library as the cause:
+
+| Register | Written | Read back |
+|---|---|---|
+| SCDA (destination) | 192.168.200.90 | `0xC0A8C85A` |
+| SCP (host port) | 62472 | `0xF408` |
+| SCPS (packet size) | 1500, do-not-fragment | `0x400005DC` |
+| SCSP (source port) | read-only | `0` throughout |
+| SCC / SCCFG | read-only | `INVALID_ADDRESS` — not implemented |
+
+Two smaller facts fell out of the same session. This device never populates SCSP, so firewall
+traversal had nothing to aim at and skipped the punch entirely; it now punches the control port
+instead, which at least opens a return path. And the device stops answering GVCP within about a
+second of `AcquisitionStart` while it is saturating the link — control recovers once acquisition
+stops, so the heartbeat loss that follows is a symptom of the flood, not of lost control.
