@@ -14,6 +14,9 @@ namespace GevSharp.Viewer.ViewModels;
 /// </summary>
 public sealed class MainVm : VmBase
 {
+    /// <summary>고른 무리를 다시 읽는 주기. 켜고 끄는 설정을 두지 않는다 — 화면의 값이 장치와 맞아야 하는 것은 당연한 동작이다.</summary>
+    private const int PollIntervalMs = 100;
+
     private readonly FrameRender _render = new();
     private GevDevice? _device;
     private GevStream? _stream;
@@ -33,15 +36,13 @@ public sealed class MainVm : VmBase
     private string? _selectedTitle;
     private string? _selectedHint;
     private NodeVm? _selectedNode;
-    private bool _autoRefresh = true;
-    private int _refreshIntervalMs = 100;
     private double _valueColumnWidth = 120;
     private bool _isPolling;
     private readonly DispatcherTimer _poll;
 
     public MainVm()
     {
-        _poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(_refreshIntervalMs) };
+        _poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(PollIntervalMs) };
         _poll.Tick += (_, _) => _ = PollAsync();
         _poll.Start();
     }
@@ -123,25 +124,6 @@ public sealed class MainVm : VmBase
         private set => Set(ref _selectedHint, value);
     }
 
-    /// <summary>
-    /// 고른 노드를 주기적으로 다시 읽을지. 장치가 스스로 바꾸는 값과, 옆 노드를 써서 풀린 잠금을 따라가려면 필요하다.
-    /// </summary>
-    public bool AutoRefresh
-    {
-        get => _autoRefresh;
-        set => Set(ref _autoRefresh, value);
-    }
-
-    public int RefreshIntervalMs
-    {
-        get => _refreshIntervalMs;
-        set
-        {
-            if (!Set(ref _refreshIntervalMs, value) || value <= 0) return;
-            _poll.Interval = TimeSpan.FromMilliseconds(value);
-        }
-    }
-
     /// <summary>값 편집 칸의 폭. 피처 이름도 값도 장치마다 길이가 달라 사람이 맞추는 편이 낫다.</summary>
     public double ValueColumnWidth
     {
@@ -178,7 +160,7 @@ public sealed class MainVm : VmBase
     /// </summary>
     private async Task PollAsync()
     {
-        if (!AutoRefresh || _isPolling || IsBusy || !IsConnected) return;
+        if (_isPolling || IsBusy || !IsConnected) return;
         var target = _selectedNode?.IsCategory == true ? _selectedNode : _selectedNode?.Parent ?? _selectedNode;
         if (target is null) return;
 

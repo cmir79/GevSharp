@@ -140,10 +140,10 @@ public sealed partial class GevStream : IAsyncDisposable
                 PacketSize = size;
                 _opt.PacketSize = size;
 
-                if (_opt.InterPacketDelay > 0)
-                {
-                    await WriteRegAsync(GvbsAddr.ScpdOffset, (uint)_opt.InterPacketDelay, ct).ConfigureAwait(false);
-                }
+                // SCPD 는 요청한 값과 다를 때 맞춘다. 0 일 때 건드리지 않고 두면 앞선 세션이 남긴 지연이 그대로
+                // 살아남아 프레임레이트를 조용히 깎는다 — 실측에서 남아 있던 150 us 하나가 14 fps 카메라를
+                // 7 fps 로 묶었고, 장치는 그저 "이 속도가 최대" 라고만 답해서 어디에도 이유가 보이지 않았다.
+                await ApplyPacketDelayAsync(ct).ConfigureAwait(false);
 
                 InitReceiver(size);
                 _queue = new AsyncBoundedQueue<GevFrame>(_opt.BufferCount);
@@ -289,6 +289,46 @@ public sealed partial class GevStream : IAsyncDisposable
     {
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
         _pool.ReleaseFree();
+    }
+
+    /// <summary>
+    /// SCPD(패킷 간 지연)를 요청한 값으로 맞춘다. 이미 그 값이면 쓰지 않는다 — 왕복 하나를 아끼려는 것이 아니라,
+    /// 값을 건드리지 않는 장치에 불필요한 쓰기를 보내지 않으려는 것이다.
+    /// <para>
+    /// 지연을 0 으로 요청했는데 쓰기를 거부하는 장치는 애초에 지연을 지원하지 않는다는 뜻이므로 경고만 남기고 넘어간다.
+    /// 0 이 아닌 값을 요청했는데 거부당하면 요청이 이루어지지 않은 것이므로 그대로 올린다.
+    /// </para>
+    /// </summary>
+    private async Task ApplyPacketDelayAsync(CancellationToken ct)
+    {
+        var wanted = (uint)_opt.InterPacketDelay;
+        uint current;
+        try
+        {
+            current = await ReadRegAsync(GvbsAddr.ScpdOffset, ct).ConfigureAwait(false);
+        }
+        catch (GevStatusException ex)
+        {
+            GevLog.Debug(LogSrc, $"Device refused the inter-packet delay register ({GvcpConst.StatusName(ex.Status)}); leaving it alone.");
+            return;
+        }
+
+        if (current == wanted) return;
+
+        try
+        {
+            await WriteRegAsync(GvbsAddr.ScpdOffset, wanted, ct).ConfigureAwait(false);
+        }
+        catch (GevStatusException ex) when (wanted == 0)
+        {
+            GevLog.Warn(LogSrc, $"Device refused to clear its inter-packet delay of {current} ticks ({GvcpConst.StatusName(ex.Status)}); the frame rate may stay below what the sensor allows.");
+            return;
+        }
+
+        if (wanted == 0)
+        {
+            GevLog.Info(LogSrc, $"Cleared an inter-packet delay of {current} ticks that the device was still holding; left in place it caps the frame rate.");
+        }
     }
 
     /// <summary>

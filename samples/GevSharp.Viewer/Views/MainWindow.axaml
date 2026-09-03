@@ -94,14 +94,6 @@
                          Text="Leave at 0 for one camera per port. With several cameras sharing a port, raise it until frames stop arriving incomplete — capping the frame rate alone does not stop the bursts from colliding. Two 5 MP cameras on one 1 GbE port needed about 150 us." />
             </StackPanel>
 
-            <StackPanel Spacing="2" Margin="0,4,0,0">
-              <CheckBox IsChecked="{Binding AutoRefresh}" Content="Re-read the selected features" FontSize="12" />
-              <TextBlock Classes="caption" TextWrapping="Wrap"
-                         Text="Some features change on their own — temperature, auto-exposure results, and whatever a write to a neighbour unlocks. Each re-read is a round trip, so only the selected group is polled, and a field being edited is left alone." />
-              <NumericUpDown Value="{Binding RefreshIntervalMs}" Minimum="100" Maximum="10000" Increment="50"
-                             FormatString="0" IsEnabled="{Binding AutoRefresh}" />
-            </StackPanel>
-
             <TextBlock Classes="caption" Text="{Binding StreamInfo}" TextWrapping="Wrap" Margin="0,4,0,0" />
             <Separator Margin="0,6" />
           </StackPanel>
@@ -159,11 +151,16 @@
             </StackPanel>
           </Grid>
 
-          <TreeView Classes="features" ItemsSource="{Binding Nodes}" SelectionChanged="OnNodeSelected">
+          <TreeView Classes="features" ItemsSource="{Binding Nodes}" SelectionChanged="OnNodeSelected"
+                    ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <TreeView.ItemTemplate>
               <TreeDataTemplate x:DataType="vm:NodeVm" ItemsSource="{Binding Children}">
                 <!-- 오른쪽 여백은 스크롤바 자리 — 없으면 값 칸이 스크롤바에 가린다. -->
-                <Grid ColumnDefinitions="*,Auto" Margin="0,1,16,1" MinHeight="24">
+                <Grid Margin="0,1,16,1" MinHeight="24">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" MinWidth="0" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
                   <StackPanel Grid.Column="0" Spacing="0" VerticalAlignment="Center" Margin="0,0,8,0">
                     <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
                     <TextBlock Classes="caption" Text="{Binding Status}" TextTrimming="CharacterEllipsis"

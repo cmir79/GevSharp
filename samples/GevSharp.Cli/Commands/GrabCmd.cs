@@ -32,7 +32,7 @@ public sealed class GrabCmd : ICliCommand
         "  --stats-every S        interval statistics period in seconds (default 1; 0 disables)\n" +
         "  --save dir             write every delivered frame as <frameId>.bin plus a <frameId>.json sidecar (width, height,\n" +
         "                         stride, pixel format, ...)\n" +
-        "  --packet-delay ticks   SCPD inter-packet delay in timestamp ticks (default 0 = leave the device value)\n" +
+        "  --packet-delay ticks   SCPD inter-packet delay in timestamp ticks (default 0 = no delay; a delay left on the device is cleared)\n" +
         "  --acq-start-addr hex   start acquisition by writing 1 to this register instead of the AcquisitionStart node;\n" +
         "                         required when the GenApi runtime is not available (simulator: 0x10030)\n" +
         "  --acq-stop-addr hex    stop acquisition by writing 1 to this register (simulator: 0x10034)\n" +

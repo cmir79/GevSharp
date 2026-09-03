@@ -344,6 +344,33 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task PacketDelayLeftOnTheDeviceIsClearedWhenNoneIsRequested()
+    {
+        // 0 은 "지연 없음" 이지 "그대로 두기" 가 아니다. 앞선 세션이 남긴 지연을 두면 프레임레이트가 조용히 깎인다.
+        var opt = StreamRig.DefaultOpt();
+        opt.InterPacketDelay = 0;
+        await using var rig = new StreamRig(opt, streamChannel: 1);
+        rig.Regs.Set(GvbsAddr.StreamChannel(1, GvbsAddr.ScpdOffset), 18_750);
+
+        await rig.StartAsync();
+
+        Assert.Contains((GvbsAddr.StreamChannel(1, GvbsAddr.ScpdOffset), 0u), rig.Regs.Writes);
+    }
+
+    [Fact]
+    public async Task PacketDelayAlreadyMatchingIsNotWrittenAgain()
+    {
+        var opt = StreamRig.DefaultOpt();
+        opt.InterPacketDelay = 1000;
+        await using var rig = new StreamRig(opt, streamChannel: 1);
+        rig.Regs.Set(GvbsAddr.StreamChannel(1, GvbsAddr.ScpdOffset), 1000);
+
+        await rig.StartAsync();
+
+        Assert.DoesNotContain(rig.Regs.Writes, w => w.Item1 == GvbsAddr.StreamChannel(1, GvbsAddr.ScpdOffset));
+    }
+
+    [Fact]
     public async Task RegisterWritesFollowStartAndStopOrder()
     {
         var opt = StreamRig.DefaultOpt();

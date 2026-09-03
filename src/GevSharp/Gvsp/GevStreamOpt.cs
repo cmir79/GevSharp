@@ -70,7 +70,14 @@ public sealed class GevStreamOpt
     /// <summary>스트림 소켓 포트. null 이면 임시 포트.</summary>
     public int? LocalPort { get; set; }
 
-    /// <summary>SCPD(패킷 간 지연, 타임스탬프 틱). 0 이면 장치 값을 건드리지 않는다.</summary>
+    /// <summary>
+    /// SCPD(패킷 간 지연, 타임스탬프 틱). 요청한 값과 장치 값이 다르면 맞춘다 — <b>0 은 "지연 없음" 이지 "그대로 두기" 가 아니다.</b>
+    /// 앞선 세션이 남긴 지연을 그대로 두면 프레임레이트가 조용히 깎인다.
+    /// <para>
+    /// 틱은 장치마다 주파수가 다르므로(실측 125 MHz 와 66.67 MHz) 같은 시간도 다른 숫자가 된다 —
+    /// 시간으로 다루려면 <see cref="GevDevice.TimestampTickFrequency"/> 로 환산한다.
+    /// </para>
+    /// </summary>
     public int InterPacketDelay { get; set; } = 0;
 
     public ThreadPriority ReceiverPriority { get; set; } = ThreadPriority.AboveNormal;
