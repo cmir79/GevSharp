@@ -144,9 +144,9 @@ internal sealed class IntegerNode : IntegerNodeBase
         _pValue = binder.ResolveOptional(_def.PValue, RefKind.Value, "pValue", NodeBinder.Numeric);
         _pIndex = binder.ResolveOptional(_def.PIndex, RefKind.Value, "pIndex", NodeBinder.Numeric);
         _pValueDefault = binder.ResolveOptional(_def.PValueDefault, RefKind.Value, "pValueDefault", NodeBinder.Numeric);
-        _pMin = binder.ResolveOptional(_def.PMin, RefKind.Value, "pMin", NodeBinder.Numeric);
-        _pMax = binder.ResolveOptional(_def.PMax, RefKind.Value, "pMax", NodeBinder.Numeric);
-        _pInc = binder.ResolveOptional(_def.PInc, RefKind.Value, "pInc", NodeBinder.Numeric);
+        _pMin = binder.ResolveOptional(_def.PMin, RefKind.Limit, "pMin", NodeBinder.Numeric);
+        _pMax = binder.ResolveOptional(_def.PMax, RefKind.Limit, "pMax", NodeBinder.Numeric);
+        _pInc = binder.ResolveOptional(_def.PInc, RefKind.Limit, "pInc", NodeBinder.Numeric);
 
         var copies = new NodeBase[_def.PValueCopies.Count];
         for (var i = 0; i < copies.Length; i++)

@@ -147,6 +147,7 @@ internal sealed class NodeBinder
             {
                 case RefKind.Value:
                 case RefKind.Guard:
+                case RefKind.Limit:
                     AddUnique(e.To.Dependents, e.From);
                     break;
                 case RefKind.Invalidator:

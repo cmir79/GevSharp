@@ -301,22 +301,27 @@ public sealed partial class GevStream : IAsyncDisposable
     {
         if (!_opt.FirewallTraversal || _deviceAddress is null) return;
 
-        uint scsp;
+        // 통과의 목적은 "이 로컬 포트로 되돌아오는 길을 열어 두는 것" 이다. 상태 기반 방화벽은 우리가 먼저 내보낸
+        // 흐름만 되돌려 보내므로, 무엇보다 먼저 이 소켓에서 장치 쪽으로 한 바이트가 나가야 한다.
+        // 장치가 자기 스트림 송신 포트(SCSP)를 알려 주면 그리로 보내는 것이 가장 정확하지만, 알려 주지 않는 장치도 있다
+        // (실측: 한 벤더는 SCSP 를 0 으로 둔다). 그때 통과를 통째로 건너뛰면 그 장치는 방화벽 뒤에서 한 패킷도 못 받는다 —
+        // 파이어테스트조차 576 바이트에서 응답이 없었다. 알려 주지 않으면 제어 포트(GVCP 3956)로라도 보낸다.
+        int port;
         try
         {
-            scsp = await ReadRegAsync(GvbsAddr.ScspOffset, ct).ConfigureAwait(false);
+            var scsp = await ReadRegAsync(GvbsAddr.ScspOffset, ct).ConfigureAwait(false);
+            port = (int)(scsp & 0xFFFF);
         }
         catch (GevStatusException ex)
         {
-            GevLog.Debug(LogSrc, $"Device refused the SCSP register ({GvcpConst.StatusName(ex.Status)}); skipping firewall traversal.");
-            return;
+            GevLog.Debug(LogSrc, $"Device refused the SCSP register ({GvcpConst.StatusName(ex.Status)}); punching the control port instead.");
+            port = 0;
         }
 
-        var port = (int)(scsp & 0xFFFF);
         if (port == 0)
         {
-            GevLog.Debug(LogSrc, "Device reports no stream source port (SCSP = 0); skipping firewall traversal.");
-            return;
+            port = GvcpConst.Port;
+            GevLog.Debug(LogSrc, $"Device reports no stream source port (SCSP = 0); punching the control port {port} so the return path for {LocalPort} is still opened.");
         }
 
         // 유지용 재송신이 레지스터를 다시 읽지 않도록 목적지를 기억해 둔다 — 수신 스레드에서 불리는 경로다.

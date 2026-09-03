@@ -5,8 +5,16 @@ namespace GevSharp.GenApi.Runtime;
 /// <summary>참조의 종류 — 바인더가 역방향 색인과 순환 검사에 어떤 간선으로 넣을지 정한다.</summary>
 internal enum RefKind
 {
-    /// <summary>값 평가가 따라가는 참조(pValue·pAddress·pIndex·pVariable·pMin…). 순환 검사 대상이며 캐시 무효화가 전파된다.</summary>
+    /// <summary>값 평가가 따라가는 참조(pValue·pAddress·pIndex·pVariable). 순환 검사 대상이며 캐시 무효화가 전파된다.</summary>
     Value,
+    /// <summary>
+    /// 한계 참조(pMin·pMax·pInc). 무효화는 전파되지만 순환 검사에는 끼지 않는다.
+    /// 한계를 따라가면 상대의 <b>값</b>을 읽지 상대의 한계를 읽지 않으므로 이 간선만으로는 재귀가 닫히지 않는다.
+    /// 서로의 한계를 가리키는 짝(하한의 Max = 상한, 상한의 Min = 하한)은 GenICam 에서 정상이고 흔한 모양이며,
+    /// 이것을 값 순환으로 보면 그 XML 을 가진 장치의 노드맵 전체가 거부된다(실측: 그렇게 카메라 하나를 통째로 못 썼다).
+    /// 한계를 지나 진짜로 재귀하는 모양(수식 변수의 .Min/.Max 접미사)은 그 변수가 <see cref="Value"/> 간선이라 그대로 잡힌다.
+    /// </summary>
+    Limit,
     /// <summary>술어 참조(pIsImplemented/pIsAvailable/pIsLocked). 무효화는 전파되지만 값 평가 재귀에는 끼지 않는다 — 이 간선을 지나야 닫히는 순환은 경고로만 남긴다.</summary>
     Guard,
     /// <summary>바인딩 시점에 값이 확정되는 참조(수식의 <c>.Entry.</c> 변수). 실행 중에 노드를 읽지 않으므로 간선을 남기지 않는다.</summary>

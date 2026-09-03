@@ -157,14 +157,31 @@ public class NodeMapBindTests
         yield return new object[] { "pIndex", RuntimeFixture.IntReg("R", "0x10", "<pIndex Offset=\"4\">A</pIndex>") + RuntimeFixture.Integer("A", "R") };
         // pVariable 이 수식 값을 쓰는 정수를 가리킨다
         yield return new object[] { "pVariable", "<IntSwissKnife Name=\"K\"><pVariable Name=\"X\">A</pVariable><Formula>X + 1</Formula></IntSwissKnife>" + RuntimeFixture.Integer("A", "K") };
-        // pMin
-        yield return new object[] { "pMin", "<Integer Name=\"A\"><Value>1</Value><pMin>B</pMin></Integer><Integer Name=\"B\"><Value>1</Value><pMax>A</pMax></Integer>" };
         // 인라인 주소 IntSwissKnife 가 그 레지스터를 읽는 정수를 참조한다
         yield return new object[] { "address knife", RuntimeFixture.IntReg("R", "0x10", "<IntSwissKnife Name=\"AK\"><pVariable Name=\"X\">A</pVariable><Formula>X * 4</Formula></IntSwissKnife>") + RuntimeFixture.Integer("A", "R") };
-        // pLength
-        yield return new object[] { "pLength", "<Register Name=\"R\"><Address>0x10</Address><pLength>A</pLength><AccessMode>RW</AccessMode><pPort>Device</pPort></Register><Integer Name=\"A\"><pValue>B</pValue></Integer><Integer Name=\"B\"><Value>4</Value><pMax>C</pMax></Integer><IntSwissKnife Name=\"C\"><pVariable Name=\"L\">A</pVariable><Formula>L</Formula></IntSwissKnife>" };
+        // pLength — 길이가 레지스터 자신을 읽어 정해진다(값 사슬만으로 닫히는 진짜 순환)
+        yield return new object[] { "pLength", "<Register Name=\"R\"><Address>0x10</Address><pLength>A</pLength><AccessMode>RW</AccessMode><pPort>Device</pPort></Register><Integer Name=\"A\"><pValue>B</pValue></Integer><Integer Name=\"B\"><pValue>A</pValue></Integer>" };
         // Converter pValue 가 되돌아온다
         yield return new object[] { "converter", "<Converter Name=\"C\"><FormulaTo>FROM</FormulaTo><FormulaFrom>TO</FormulaFrom><pValue>F</pValue></Converter><Float Name=\"F\"><pValue>C</pValue></Float>" };
+    }
+
+    [Fact]
+    public void MutualLimitReferencesAreLegal_NotACycle()
+    {
+        // 하한의 Max 가 상한을, 상한의 Min 이 하한을 가리키는 짝 — GenICam 에서 흔한 상호 클램프다.
+        // 한계를 따라가면 상대의 **값**을 읽지 상대의 한계를 읽지 않으므로 재귀가 닫히지 않는다.
+        // 이것을 값 순환으로 보면 그 XML 을 가진 장치의 노드맵이 통째로 거부된다 — 실측으로 카메라 하나를 못 썼다.
+        var body = "<Float Name=\"Lower\"><Value>1</Value><pMax>Upper</pMax></Float>"
+            + "<Float Name=\"Upper\"><Value>9</Value><pMin>Lower</pMin></Float>";
+        var map = RuntimeFixture.Bind(body, new MemoryPort());
+
+        var lower = map.GetFloat("Lower");
+        var upper = map.GetFloat("Upper");
+        Assert.Equal(1.0, lower.GetAsync().AsTask().Result);
+        Assert.Equal(9.0, upper.GetAsync().AsTask().Result);
+        // 한계는 상대의 값이다 — 그리고 그 조회가 끝난다.
+        Assert.Equal(9.0, lower.GetMaxAsync().AsTask().Result);
+        Assert.Equal(1.0, upper.GetMinAsync().AsTask().Result);
     }
 
     [Theory]
