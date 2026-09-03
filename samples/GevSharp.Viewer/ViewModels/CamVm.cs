@@ -26,7 +26,6 @@ public sealed class CamVm : VmBase, IAsyncDisposable
     private Bitmap? _image;
     private string _frameInfo = "";
     private string _streamInfo = "";
-    private int _packetDelayUs;
     private string? _selectedTitle;
     private string? _selectedHint;
     private NodeVm? _selectedNode;
@@ -96,16 +95,6 @@ public sealed class CamVm : VmBase, IAsyncDisposable
     {
         get => _streamInfo;
         private set => Set(ref _streamInfo, value);
-    }
-
-    /// <summary>
-    /// 패킷 간 지연(마이크로초). 한 포트에 여러 대를 물리면 프레임레이트를 낮춰도 버스트가 겹쳐 유실되므로 이 값으로 편다.
-    /// 포트를 따로 쓰면 0 으로 둔다. 장치는 자기 타임스탬프 틱으로 받고 그 주파수가 장치마다 다르므로 환산은 여기서 한다.
-    /// </summary>
-    public int PacketDelayUs
-    {
-        get => _packetDelayUs;
-        set => Set(ref _packetDelayUs, value);
     }
 
     public string? SelectedTitle
@@ -243,12 +232,14 @@ public sealed class CamVm : VmBase, IAsyncDisposable
     {
         if (IsLive) return;
 
-        var ticks = PacketDelayTicks();
+        // 패킷 간 지연은 화면에 따로 칸을 두지 않는다 — 필요한 사람은 속성 트리의 GevSCPD 로 직접 정한다.
+        // 다만 장치에 설정된 값을 읽어 그대로 넘겨야 한다. 0 을 넘기면 스트림을 여는 쪽이 남은 값을 지워 버린다.
+        var ticks = await ReadPacketDelayAsync().ConfigureAwait(true);
         var opt = new GevStreamOpt { InterPacketDelay = ticks };
         _stream = await Device.OpenStreamAsync(opt).ConfigureAwait(true);
         await _stream.StartAsync().ConfigureAwait(true);
         StreamInfo = $"packet size {_stream.PacketSize} bytes, local port {_stream.LocalPort}"
-                   + (ticks > 0 ? $", packet delay {PacketDelayUs} us ({ticks} ticks)" : "");
+                   + (ticks > 0 ? $", packet delay {ticks} ticks" : "");
 
         // 스트림 채널을 다 세운 뒤에 취득을 건다 — 순서가 바뀌면 첫 프레임이 갈 곳이 없다.
         await Device.SetTlParamsLockedAsync(true).ConfigureAwait(true);
@@ -308,18 +299,18 @@ public sealed class CamVm : VmBase, IAsyncDisposable
         Image = null;
     }
 
-    /// <summary>마이크로초를 이 장치의 틱으로 환산한다. 틱 주파수를 모르면 적용하지 않는다 — 0 은 "지연 없음" 이라 조용한 미적용이 된다.</summary>
-    private int PacketDelayTicks()
+    /// <summary>장치에 설정돼 있는 패킷 간 지연을 읽는다. 읽지 못하면 0 — 그때는 지연 없이 간다.</summary>
+    private async Task<int> ReadPacketDelayAsync()
     {
-        if (PacketDelayUs <= 0) return 0;
-        if (Device.TimestampTickFrequency == 0)
+        try
         {
-            _report($"{Title}: the device does not report a timestamp tick frequency; the inter-packet delay was not applied.", true);
+            var value = await Device.ReadRegAsync(Gvcp.GvbsAddr.StreamChannel(0, Gvcp.GvbsAddr.ScpdOffset)).ConfigureAwait(true);
+            return value > int.MaxValue ? 0 : (int)value;
+        }
+        catch (GevException)
+        {
             return 0;
         }
-
-        var ticks = (double)PacketDelayUs * Device.TimestampTickFrequency / 1_000_000d;
-        return ticks >= int.MaxValue ? int.MaxValue : (int)Math.Round(ticks);
     }
 
     /// <summary>

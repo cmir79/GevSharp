@@ -5,6 +5,8 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using GevSharp.Viewer.ViewModels;
 
 namespace GevSharp.Viewer.Views;
@@ -135,7 +137,30 @@ public partial class MainWindow : Window
     // 값 읽기는 UDP 왕복이라 트리를 통째로 읽지 않는다. 고른 것만 읽고, 카테고리를 고르면 그 안을 읽는다.
     private void OnNodeSelected(object? sender, SelectionChangedEventArgs e)
     {
-        if (e.AddedItems.Count > 0 && e.AddedItems[0] is NodeVm node) _ = Vm?.SelectNodeAsync(node);
+        if (e.AddedItems.Count == 0 || e.AddedItems[0] is not NodeVm node) return;
+        _ = Vm?.SelectNodeAsync(node);
+
+        // 줄을 고르면 커서가 값 편집기로 바로 들어가게 한다 — 피처 이름에 포커스가 머무르면 한 번 더 눌러야 한다.
+        // 컨테이너는 고른 직후에야 만들어지므로 한 박자 뒤에 찾는다.
+        if (sender is TreeView tree) Dispatcher.UIThread.Post(() => FocusEditor(tree, node), DispatcherPriority.Background);
+    }
+
+    /// <summary>그 노드의 값 편집기를 찾아 커서를 준다. 글 칸이면 내용을 통째로 잡아 두어 바로 덮어쓸 수 있게 한다.</summary>
+    private static void FocusEditor(TreeView tree, NodeVm node)
+    {
+        var editor = tree.GetVisualDescendants()
+            .OfType<Control>()
+            .FirstOrDefault(c => c is TextBox or ComboBox && c.IsEffectivelyVisible && ReferenceEquals(c.DataContext, node));
+
+        if (editor is TextBox { IsReadOnly: false } box)
+        {
+            box.Focus();
+            box.SelectAll();
+        }
+        else if (editor is ComboBox { IsEffectivelyEnabled: true } combo)
+        {
+            combo.Focus();
+        }
     }
 
     // 값은 Enter 로 쓴다 — 글자를 칠 때마다 쓰면 중간 상태가 장치로 나간다.

@@ -188,6 +188,18 @@ public sealed class NodeVm : VmBase
     };
 
     /// <summary>격자에 어긋나 거절된 값을 가장 가까운 격자 값으로 옮긴다. 격자를 모르면 null — 그때는 거절을 그대로 올린다.</summary>
+    /// <summary>지금 들고 있는 항목이 방금 읽은 것과 같은지. 같으면 목록을 다시 만들지 않는다.</summary>
+    private bool SameOptions(IReadOnlyList<IEnumEntry> entries)
+    {
+        if (EnumOptions.Count != entries.Count) return false;
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (!string.Equals(EnumOptions[i], entries[i].Symbolic, StringComparison.Ordinal)) return false;
+        }
+
+        return true;
+    }
+
     private static long? Snap(GenApiException ex, string text)
     {
         if (ex.Data[GenApiException.GridAnchorKey] is not long anchor) return null;
@@ -241,11 +253,21 @@ public sealed class NodeVm : VmBase
                     Raise(nameof(BoolValue));
                     break;
                 case IEnumeration e:
+                    // 목록이 그대로면 손대지 않는다. 주기마다 비웠다 채우면 펼쳐 둔 목록이 닫히고 고를 수가 없다.
                     var entries = await e.GetAvailableEntriesAsync().ConfigureAwait(true);
-                    EnumOptions.Clear();
-                    foreach (var entry in entries) EnumOptions.Add(entry.Symbolic);
-                    _enumValue = await e.GetAsync().ConfigureAwait(true);
-                    Raise(nameof(EnumValue));
+                    if (!SameOptions(entries))
+                    {
+                        EnumOptions.Clear();
+                        foreach (var entry in entries) EnumOptions.Add(entry.Symbolic);
+                    }
+
+                    var symbolic = await e.GetAsync().ConfigureAwait(true);
+                    if (!string.Equals(_enumValue, symbolic, StringComparison.Ordinal))
+                    {
+                        _enumValue = symbolic;
+                        Raise(nameof(EnumValue));
+                    }
+
                     break;
             }
         }
