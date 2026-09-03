@@ -1,0 +1,128 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:GevSharp.Viewer.ViewModels"
+        x:Class="GevSharp.Viewer.Views.MainWindow"
+        x:DataType="vm:MainVm"
+        Title="GevSharp Viewer"
+        Width="1280" Height="820"
+        MinWidth="900" MinHeight="600">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.caption">
+      <Setter Property="Opacity" Value="0.6" />
+      <Setter Property="FontSize" Value="11" />
+    </Style>
+    <Style Selector="Border.panel">
+      <Setter Property="BorderBrush" Value="#33808080" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="8" />
+    </Style>
+  </Window.Styles>
+
+  <DockPanel>
+
+    <!-- 상태 줄: 무엇을 하는 중인지와, 실패했다면 그 이유를 그대로 -->
+    <Border DockPanel.Dock="Bottom" Padding="10,6" Background="#22808080">
+      <StackPanel Orientation="Horizontal" Spacing="12">
+        <TextBlock Text="{Binding Status}" VerticalAlignment="Center" />
+        <TextBlock Text="{Binding Error}" Foreground="#E06C75" VerticalAlignment="Center"
+                   IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      </StackPanel>
+    </Border>
+
+    <!-- 왼쪽: 검색된 장치와 연결·라이브 조작 -->
+    <Border Classes="panel" DockPanel.Dock="Left" Width="330" Margin="8,8,4,8">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Spacing="6">
+          <Button Content="Discover" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                  Click="OnDiscover" IsEnabled="{Binding IsIdle}" />
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+            <Button Grid.Column="0" Content="Connect" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                    Click="OnConnect" IsEnabled="{Binding IsIdle}" />
+            <Button Grid.Column="1" Content="Close" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                    Click="OnDisconnect" IsEnabled="{Binding IsConnected}" />
+          </Grid>
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+            <Button Grid.Column="0" Content="Live" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                    Click="OnStartLive" IsEnabled="{Binding IsConnected}" />
+            <Button Grid.Column="1" Content="Stop" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                    Click="OnStopLive" IsEnabled="{Binding IsLive}" />
+          </Grid>
+
+          <StackPanel Spacing="2" Margin="0,4,0,0">
+            <TextBlock Classes="caption" Text="Inter-packet delay (device ticks)" />
+            <NumericUpDown Value="{Binding PacketDelay}" Minimum="0" Maximum="1000000" Increment="1000"
+                           FormatString="0" IsEnabled="{Binding IsNotLive}" />
+            <TextBlock Classes="caption" TextWrapping="Wrap"
+                       Text="Leave at 0 for a single camera. With several cameras on one port, raise it until frames stop arriving incomplete — capping the frame rate alone does not stop the bursts from colliding." />
+          </StackPanel>
+
+          <TextBlock Classes="caption" Text="{Binding StreamInfo}" TextWrapping="Wrap" Margin="0,4,0,0" />
+          <Separator Margin="0,6" />
+        </StackPanel>
+
+        <ListBox ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:DeviceVm">
+              <StackPanel Spacing="1" Margin="0,2">
+                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                <TextBlock Classes="caption" Text="{Binding Detail}" />
+                <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
+                           IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+
+    <!-- 오른쪽: 카메라가 XML 로 스스로 설명한 대로 그리는 속성 트리 -->
+    <Border Classes="panel" DockPanel.Dock="Right" Width="440" Margin="4,8,8,8">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Classes="caption" Margin="0,0,0,6" TextWrapping="Wrap"
+                   Text="Features as the camera declares them. Expand a category to read its values — each read is a round trip to the device." />
+        <TreeView ItemsSource="{Binding Nodes}">
+          <TreeView.ItemTemplate>
+            <TreeDataTemplate x:DataType="vm:NodeVm" ItemsSource="{Binding Children}">
+              <Grid ColumnDefinitions="*,Auto" Margin="0,2" ToolTip.Tip="{Binding Hint}">
+                <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding Label}" />
+                  <TextBlock Classes="caption" Text="{Binding Status}"
+                             IsVisible="{Binding Status, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                  <TextBox Text="{Binding Text}" Width="130" IsReadOnly="{Binding IsReadOnly}"
+                           IsVisible="{Binding IsTextual}" KeyDown="OnValueKeyDown" />
+                  <TextBlock Classes="caption" Text="{Binding Unit}" VerticalAlignment="Center"
+                             IsVisible="{Binding IsTextual}" />
+                  <CheckBox IsChecked="{Binding BoolValue}" IsEnabled="{Binding !IsReadOnly}"
+                            IsVisible="{Binding IsBoolean}" />
+                  <ComboBox ItemsSource="{Binding EnumOptions}" SelectedItem="{Binding EnumValue}"
+                            Width="150" IsEnabled="{Binding !IsReadOnly}" IsVisible="{Binding IsEnumeration}" />
+                  <Button Content="Execute" Click="OnExecute" IsEnabled="{Binding !IsReadOnly}"
+                          IsVisible="{Binding IsCommand}" />
+                </StackPanel>
+              </Grid>
+            </TreeDataTemplate>
+          </TreeView.ItemTemplate>
+          <TreeView.Styles>
+            <Style Selector="TreeViewItem" x:DataType="vm:NodeVm">
+              <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            </Style>
+          </TreeView.Styles>
+        </TreeView>
+      </DockPanel>
+    </Border>
+
+    <!-- 가운데: 라이브 영상 -->
+    <Border Classes="panel" Margin="4,8" Background="#11000000">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Bottom" Classes="caption" Text="{Binding FrameInfo}" Margin="0,6,0,0" />
+        <Image Source="{Binding Image}" Stretch="Uniform" />
+      </DockPanel>
+    </Border>
+
+  </DockPanel>
+</Window>
