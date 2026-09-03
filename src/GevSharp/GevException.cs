@@ -48,6 +48,15 @@ public sealed class GenApiException : GevException
     /// </summary>
     public const string ChunkDataKey = "ChunkData";
 
+    /// <summary>
+    /// 값이 증분 격자에 어긋나 거절됐을 때 <see cref="Exception.Data"/> 에 붙는 기준점과 간격(둘 다 long).
+    /// 격자를 아는 쪽은 이 노드뿐이고, 부르는 쪽은 대개 변환 노드를 통해 들어와 간격을 볼 수 없다 —
+    /// 사람에게 값을 받아 맞춰 주려면 그 두 숫자가 메시지가 아니라 값으로 있어야 한다.
+    /// </summary>
+    public const string GridAnchorKey = "GridAnchor";
+
+    public const string GridIncrementKey = "GridIncrement";
+
     public string? NodeName { get; }
 
     public GenApiException(string message, string? nodeName = null, Exception? inner = null) : base(message, inner)

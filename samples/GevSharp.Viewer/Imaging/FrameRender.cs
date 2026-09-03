@@ -195,6 +195,23 @@ public sealed class FrameRender : IDisposable
         }
     }
 
+    /// <summary>
+    /// 화면에 그려진 그림에서 한 화소를 읽는다. 원본 화소가 아니라 <b>표시된 값</b>이다 — 8비트를 넘는 계조는 표시할 때
+    /// 줄였고 Bayer 는 디베이어를 거쳤으므로, 포화 여부를 눈으로 확인하는 용도다.
+    /// </summary>
+    public unsafe (byte R, byte G, byte B)? ReadDisplayPixel(int x, int y)
+    {
+        var bmp = _front;
+        if (bmp is null || x < 0 || y < 0 || x >= _width || y >= _height) return null;
+
+        using var locked = bmp.Lock();
+        var p = (byte*)locked.Address + y * locked.RowBytes + x * 4;
+        return (p[2], p[1], p[0]);
+    }
+
+    /// <summary>지금 화면에 걸린 그림. 저장처럼 밖에서 그대로 써야 할 때 쓴다.</summary>
+    public WriteableBitmap? Current => _front;
+
     private void EnsureBitmaps(int width, int height)
     {
         if (_front is not null && _back is not null && _width == width && _height == height) return;

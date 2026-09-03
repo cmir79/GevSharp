@@ -155,14 +155,48 @@ public sealed class NodeVm : VmBase
         private set => Set(ref _status, value);
     }
 
-    /// <summary>글로 적은 값을 장치에 쓴다. 종류에 맞게 해석하고, 해석에 실패하면 쓰지 않는다.</summary>
-    public Task CommitTextAsync() => ApplyAsync(() => _node switch
+    /// <summary>
+    /// 글로 적은 값을 장치에 쓴다. 종류에 맞게 해석하고, 해석에 실패하면 쓰지 않는다.
+    /// <para>
+    /// 값이 증분 격자에 어긋나면 가장 가까운 격자 값으로 맞춰 한 번 더 쓴다. 노출 시간처럼 겉으로는 증분이 없는
+    /// 변환 노드도 속에서는 격자 위에 있어(실측: 노출은 35 us 격자) 사람이 고른 값이 그대로는 들어가지 않는다.
+    /// 조용히 바꾸지는 않는다 — 무엇을 대신 썼는지 반드시 알린다.
+    /// </para>
+    /// </summary>
+    public Task CommitTextAsync() => ApplyAsync(WriteTextAsync);
+
+    private async Task WriteTextAsync()
     {
-        IInteger i => i.SetAsync(ParseInteger(Text)).AsTask(),
-        IFloat f => f.SetAsync(double.Parse(Text, CultureInfo.InvariantCulture)).AsTask(),
-        IString s => s.SetAsync(Text).AsTask(),
+        try
+        {
+            await WriteRawAsync(Text).ConfigureAwait(true);
+        }
+        catch (GenApiException ex) when (Snap(ex, Text) is { } snapped)
+        {
+            await WriteRawAsync(snapped.ToString(CultureInfo.InvariantCulture)).ConfigureAwait(true);
+            _report?.Invoke($"{Label}: {Text} is not a step this device accepts; wrote {snapped} instead.", false);
+            SetTextFromDevice(snapped.ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    private Task WriteRawAsync(string text) => _node switch
+    {
+        IInteger i => i.SetAsync(ParseInteger(text)).AsTask(),
+        IFloat f => f.SetAsync(double.Parse(text, CultureInfo.InvariantCulture)).AsTask(),
+        IString s => s.SetAsync(text).AsTask(),
         _ => Task.CompletedTask,
-    });
+    };
+
+    /// <summary>격자에 어긋나 거절된 값을 가장 가까운 격자 값으로 옮긴다. 격자를 모르면 null — 그때는 거절을 그대로 올린다.</summary>
+    private static long? Snap(GenApiException ex, string text)
+    {
+        if (ex.Data[GenApiException.GridAnchorKey] is not long anchor) return null;
+        if (ex.Data[GenApiException.GridIncrementKey] is not long inc || inc <= 1) return null;
+        if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var wanted)) return null;
+
+        var steps = Math.Round((wanted - anchor) / inc, MidpointRounding.AwayFromZero);
+        return anchor + (long)steps * inc;
+    }
 
     public Task ExecuteAsync() => ApplyAsync(() => ((ICommand)_node).ExecuteAsync().AsTask());
 

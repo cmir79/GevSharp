@@ -67,7 +67,7 @@
         <ColumnDefinition Width="470" MinWidth="300" />
       </Grid.ColumnDefinitions>
 
-      <!-- 왼쪽: 검색된 장치와 연결·라이브 조작 -->
+      <!-- 왼쪽: 검색된 장치와, 고른 카메라의 조작 -->
       <Border Grid.Column="0" Classes="panel">
         <DockPanel>
           <StackPanel DockPanel.Dock="Top" Spacing="6">
@@ -75,26 +75,26 @@
                     Click="OnDiscover" IsEnabled="{Binding IsIdle}" />
             <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
               <Button Grid.Column="0" Content="Connect" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                      Click="OnConnect" IsEnabled="{Binding IsIdle}" />
+                      Click="OnConnect" IsEnabled="{Binding CanConnect}" />
               <Button Grid.Column="1" Content="Close" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                      Click="OnDisconnect" IsEnabled="{Binding IsConnected}" />
+                      Click="OnDisconnect" IsEnabled="{Binding HasSelectedCam}" />
             </Grid>
             <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
               <Button Grid.Column="0" Content="Live" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                      Click="OnStartLive" IsEnabled="{Binding IsConnected}" />
+                      Click="OnStartLive" IsEnabled="{Binding SelectedCam.IsNotLive, FallbackValue=False}" />
               <Button Grid.Column="1" Content="Stop" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                      Click="OnStopLive" IsEnabled="{Binding IsLive}" />
+                      Click="OnStopLive" IsEnabled="{Binding SelectedCam.IsLive, FallbackValue=False}" />
             </Grid>
 
-            <StackPanel Spacing="2" Margin="0,4,0,0">
+            <StackPanel Spacing="2" Margin="0,4,0,0" IsEnabled="{Binding HasSelectedCam}">
               <TextBlock Classes="caption" Text="Inter-packet delay (microseconds)" />
-              <NumericUpDown Value="{Binding PacketDelayUs}" Minimum="0" Maximum="100000" Increment="25"
-                             FormatString="0" IsEnabled="{Binding IsNotLive}" />
+              <NumericUpDown Value="{Binding SelectedCam.PacketDelayUs, FallbackValue=0}" Minimum="0" Maximum="100000"
+                             Increment="25" FormatString="0" IsEnabled="{Binding SelectedCam.IsNotLive, FallbackValue=False}" />
               <TextBlock Classes="caption" TextWrapping="Wrap"
-                         Text="Leave at 0 for one camera per port. With several cameras sharing a port, raise it until frames stop arriving incomplete — capping the frame rate alone does not stop the bursts from colliding. Two 5 MP cameras on one 1 GbE port needed about 150 us." />
+                         Text="Leave at 0 when each camera has its own port. When several share one port, raise it until frames stop arriving incomplete — capping the frame rate alone does not stop the bursts from colliding. Two 5 MP cameras on one 1 GbE port needed about 150 us." />
             </StackPanel>
 
-            <TextBlock Classes="caption" Text="{Binding StreamInfo}" TextWrapping="Wrap" Margin="0,4,0,0" />
+            <TextBlock Classes="caption" Text="{Binding SelectedCam.StreamInfo}" TextWrapping="Wrap" Margin="0,4,0,0" />
             <Separator Margin="0,6" />
           </StackPanel>
 
@@ -102,7 +102,9 @@
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="vm:DeviceVm">
                 <StackPanel Spacing="1" Margin="0,2">
-                  <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <!-- 열어 둔 장치는 굵게 — 목록만 보고 무엇이 붙어 있는지 알 수 있어야 한다. -->
+                  <TextBlock Text="{Binding Title}" TextWrapping="Wrap"
+                             FontWeight="{Binding IsOpen, Converter={x:Static vm:VmConverters.OpenWeight}}" />
                   <TextBlock Classes="caption" Text="{Binding Detail}" TextWrapping="Wrap" />
                   <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
                              IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
@@ -115,43 +117,85 @@
 
       <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
 
-      <!-- 가운데: 라이브 영상과, 트리에서 고른 항목의 설명 -->
+      <!-- 가운데: 열어 둔 카메라를 균등한 격자로 나란히. 타일을 누르면 오른쪽 속성이 그 카메라로 바뀐다. -->
       <Border Grid.Column="2" Classes="panel" Background="#11000000">
         <DockPanel>
-          <StackPanel DockPanel.Dock="Bottom" Spacing="4" Margin="0,6,0,0">
-            <TextBlock Classes="caption" Text="{Binding FrameInfo}" />
-            <Border Background="#18808080" CornerRadius="3" Padding="8,5" MinHeight="52"
-                    IsVisible="{Binding SelectedTitle, Converter={x:Static ObjectConverters.IsNotNull}}">
-              <StackPanel Spacing="2">
-                <TextBlock Text="{Binding SelectedTitle}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
-                <TextBlock Text="{Binding SelectedHint}" FontSize="11" Opacity="0.75" TextWrapping="Wrap" />
-              </StackPanel>
-            </Border>
-          </StackPanel>
-          <Image Source="{Binding Image}" Stretch="Uniform" />
+          <Border DockPanel.Dock="Bottom" Background="#18808080" CornerRadius="3" Padding="8,5" MinHeight="52"
+                  Margin="0,6,0,0"
+                  IsVisible="{Binding SelectedCam.SelectedTitle, Converter={x:Static ObjectConverters.IsNotNull}}">
+            <StackPanel Spacing="2">
+              <TextBlock Text="{Binding SelectedCam.SelectedTitle}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding SelectedCam.SelectedHint}" FontSize="11" Opacity="0.75" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+
+          <TextBlock Classes="caption" Text="No camera open. Discover, pick one and press Connect."
+                     HorizontalAlignment="Center" VerticalAlignment="Center"
+                     IsVisible="{Binding !HasSelectedCam}" />
+
+          <ItemsControl ItemsSource="{Binding Cams}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <UniformGrid Columns="{Binding TileColumns}" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:CamVm">
+                <Border Margin="3" CornerRadius="3" BorderThickness="2" Padding="4"
+                        BorderBrush="{Binding IsSelected, Converter={x:Static vm:VmConverters.SelectedBorder}}">
+                  <DockPanel>
+                    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,0,3">
+                      <TextBlock Grid.Column="0" Text="{Binding Title}" FontSize="11" FontWeight="SemiBold"
+                                 TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                        <TextBlock Classes="caption" Text="{Binding ZoomText}" VerticalAlignment="Center" />
+                        <Button Content="Fit" FontSize="11" Padding="6,1" Click="OnFit" />
+                        <Button Content="Save" FontSize="11" Padding="6,1" Click="OnSave" />
+                      </StackPanel>
+                    </Grid>
+
+                    <!-- 아래 줄: 프레임 정보와, 커서 아래 화소의 좌표·값 -->
+                    <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" Margin="0,3,0,0">
+                      <TextBlock Grid.Column="0" Classes="caption" Text="{Binding FrameInfo}"
+                                 TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="1" Classes="caption" Text="{Binding CursorInfo}" Margin="8,0,0,0" />
+                    </Grid>
+
+                    <!-- 확대·이동은 그림 위에 얹은 변환이다. 밖으로 나간 부분은 잘라 낸다. -->
+                    <Panel ClipToBounds="True" Background="#01000000"
+                           PointerPressed="OnImagePressed" PointerMoved="OnImageMoved"
+                           PointerReleased="OnImageReleased" PointerExited="OnImageExited"
+                           PointerWheelChanged="OnImageWheel">
+                      <Image Source="{Binding Image}" Stretch="Uniform"
+                             RenderTransform="{Binding ViewTransform}" RenderTransformOrigin="0%,0%" />
+                    </Panel>
+                  </DockPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
         </DockPanel>
       </Border>
 
       <GridSplitter Grid.Column="3" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
 
-      <!-- 오른쪽: 카메라가 XML 로 스스로 설명한 대로 그리는 속성 트리 -->
+      <!-- 오른쪽: 고른 카메라가 XML 로 스스로 설명한 대로 그리는 속성 트리 -->
       <Border Grid.Column="4" Classes="panel">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Classes="caption" Margin="0,0,0,6" TextWrapping="Wrap"
-                     Text="Features as the camera declares them. Click one to read it — each read is a round trip to the device. What it means is shown under the image." />
+                     Text="Features as the selected camera declares them. Click one to read it — each read is a round trip to the device. What it means is shown under the images." />
 
           <!-- 이름칸과 값칸의 경계. 표의 열 구분선처럼 여기를 끌어 값칸 폭을 바꾼다. -->
           <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,16,4">
             <TextBlock Grid.Column="0" Classes="caption" Text="Feature" VerticalAlignment="Center" />
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-              <Thumb Name="ValueSplitter" Width="7" Cursor="SizeWestEast" Background="#22808080"
-                     DragDelta="OnValueColumnDrag" />
+              <Thumb Width="7" Cursor="SizeWestEast" Background="#22808080" DragDelta="OnValueColumnDrag" />
               <TextBlock Classes="caption" Text="Value" VerticalAlignment="Center" Margin="6,0,0,0"
                          Width="{Binding ValueColumnWidth}" />
             </StackPanel>
           </Grid>
 
-          <TreeView Classes="features" ItemsSource="{Binding Nodes}" SelectionChanged="OnNodeSelected"
+          <TreeView Classes="features" ItemsSource="{Binding SelectedCam.Nodes}" SelectionChanged="OnNodeSelected"
                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <TreeView.ItemTemplate>
               <TreeDataTemplate x:DataType="vm:NodeVm" ItemsSource="{Binding Children}">

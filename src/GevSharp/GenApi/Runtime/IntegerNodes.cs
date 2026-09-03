@@ -57,7 +57,13 @@ internal abstract class IntegerNodeBase : NodeBase, IInteger
 
         var inc = await GetIncAsync(ct).ConfigureAwait(false);
         if (inc > 1 && !IsOnGrid(value, min, inc))
-            throw new GenApiException($"Value {value} for node '{Name}' is not on the increment grid (min {min}, inc {inc}).", Name);
+        {
+            // 격자를 아는 것은 이 노드뿐이다. 변환 노드를 통해 들어온 쪽은 간격을 볼 수 없으므로 값으로도 실어 보낸다.
+            var grid = new GenApiException($"Value {value} for node '{Name}' is not on the increment grid (min {min}, inc {inc}).", Name);
+            grid.Data[GenApiException.GridAnchorKey] = min == long.MinValue ? 0L : min;
+            grid.Data[GenApiException.GridIncrementKey] = inc;
+            throw grid;
+        }
 
         if (_baseDef.ValidValueSet is { } set)
         {
