@@ -5,13 +5,15 @@
         x:DataType="vm:MainVm"
         Title="GevSharp Viewer"
         Width="1360" Height="860"
-        MinWidth="900" MinHeight="600">
+        MinWidth="900" MinHeight="600"
+        Background="#33383F">
 
   <Window.Resources>
     <!-- 22x22 격자에 그린 선 도형들. 폰트 아이콘을 쓰지 않는 것은 플랫폼마다 있는 글리프가 다르기 때문이다. -->
     <StreamGeometry x:Key="IcoDiscover">M10,3 A7,7 0 1,0 10,17 A7,7 0 1,0 10,3 M15.2,15.2 L20,20</StreamGeometry>
-    <StreamGeometry x:Key="IcoConnect">M11,3 A8,8 0 1,0 11,19 A8,8 0 1,0 11,3 M11,7 L11,15 M7,11 L15,11</StreamGeometry>
-    <StreamGeometry x:Key="IcoClose">M11,3 A8,8 0 1,0 11,19 A8,8 0 1,0 11,3 M8,8 L14,14 M14,8 L8,14</StreamGeometry>
+    <!-- 연결은 이어진 고리, 해제는 가운데가 끊긴 고리 — 더하기·빼기보다 무엇을 하는지가 바로 읽힌다. -->
+    <StreamGeometry x:Key="IcoConnect">M9,6 L7,6 A5,5 0 0,0 7,16 L9,16 M13,6 L15,6 A5,5 0 0,1 15,16 L13,16 M8,11 L14,11</StreamGeometry>
+    <StreamGeometry x:Key="IcoClose">M9,6 L7,6 A5,5 0 0,0 7,16 L9,16 M13,6 L15,6 A5,5 0 0,1 15,16 L13,16 M7.5,11 L9.5,11 M12.5,11 L14.5,11</StreamGeometry>
     <StreamGeometry x:Key="IcoLive">M7,4 L18,11 L7,18 Z</StreamGeometry>
     <StreamGeometry x:Key="IcoStop">M6,6 L16,6 L16,16 L6,16 Z</StreamGeometry>
     <StreamGeometry x:Key="IcoFit">M4,9 L4,4 L9,4 M13,4 L18,4 L18,9 M18,13 L18,18 L13,18 M9,18 L4,18 L4,13</StreamGeometry>
@@ -24,20 +26,36 @@
       <Setter Property="FontSize" Value="11" />
     </Style>
     <Style Selector="Border.panel">
-      <Setter Property="BorderBrush" Value="#33808080" />
+      <Setter Property="Background" Value="#2E333A" />
+      <Setter Property="BorderBrush" Value="#4A515A" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="4" />
       <Setter Property="Padding" Value="8" />
     </Style>
     <Style Selector="GridSplitter">
-      <Setter Property="Background" Value="#22808080" />
+      <Setter Property="Background" Value="#4A515A" />
     </Style>
 
-    <!-- 리본의 단추는 도형 하나만 담는다. 무엇인지는 툴팁으로 알린다. -->
+    <!-- 리본의 단추는 도형 하나만 담는다. 무엇인지는 툴팁으로 알린다.
+         바탕은 비워 두고 커서가 올라올 때만 옅게 깔린다 — 회색 상자가 줄지어 있으면 정작 도형이 안 보인다. -->
     <Style Selector="Button.ribbon">
       <Setter Property="Padding" Value="8,5" />
       <Setter Property="MinWidth" Value="40" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="5" />
+    </Style>
+    <Style Selector="Button.ribbon /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="5" />
+    </Style>
+    <Style Selector="Button.ribbon:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#20FFFFFF" />
+    </Style>
+    <Style Selector="Button.ribbon:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#33FFFFFF" />
     </Style>
     <Style Selector="Button.ribbon Path">
       <Setter Property="Stroke" Value="{Binding $parent[Button].Foreground}" />
@@ -50,6 +68,23 @@
     </Style>
     <Style Selector="Button.ribbon.filled Path">
       <Setter Property="Fill" Value="{Binding $parent[Button].Foreground}" />
+    </Style>
+    <!-- 잇는 동작은 초록, 끊는 동작은 빨강. 색이 있으면 아이콘을 읽기 전에 무엇인지 안다. -->
+    <Style Selector="Button.ribbon.ok Path">
+      <Setter Property="Stroke" Value="#2E9E4F" />
+    </Style>
+    <Style Selector="Button.ribbon.warn Path">
+      <Setter Property="Stroke" Value="#D0453B" />
+    </Style>
+    <Style Selector="Button.ribbon.filled.ok Path">
+      <Setter Property="Fill" Value="#2E9E4F" />
+    </Style>
+    <Style Selector="Button.ribbon.filled.warn Path">
+      <Setter Property="Fill" Value="#D0453B" />
+    </Style>
+    <!-- 색을 직접 준 도형은 단추가 죽어도 그대로 진하다 — 흐리게 해서 눌리지 않는 것을 보이게 한다. -->
+    <Style Selector="Button.ribbon:disabled Path">
+      <Setter Property="Opacity" Value="0.3" />
     </Style>
 
     <!-- 장치 목록과 속성 트리는 본문보다 작게. 값 칸이 커지면 라벨이 밀려 무슨 항목인지 안 보인다. -->
@@ -86,18 +121,22 @@
   <DockPanel>
 
     <!-- 상단 리본: 고른 카메라에 대해 도는 조작들 -->
-    <Border DockPanel.Dock="Top" Background="#18808080" Padding="8,6">
+    <Border DockPanel.Dock="Top" Background="#3B4149" BorderBrush="#4A515A" BorderThickness="0,0,0,1" Padding="8,6">
       <StackPanel Orientation="Horizontal" Spacing="6">
         <Button Classes="ribbon" Click="OnDiscover" IsEnabled="{Binding IsIdle}" ToolTip.Tip="Discover cameras">
           <Path Data="{StaticResource IcoDiscover}" />
         </Button>
-        <Button Classes="ribbon" Click="OnConnect" IsEnabled="{Binding CanConnect}" ToolTip.Tip="Open the selected camera">
+        <ToggleSwitch IsChecked="{Binding AutoScan}" OnContent="Auto" OffContent="Auto" MinWidth="0"
+                      VerticalAlignment="Center" Margin="2,0,0,0"
+                      ToolTip.Tip="Keep looking for cameras once a second" />
+        <Rectangle Width="1" Fill="#4A515A" Margin="6,2" />
+        <Button Classes="ribbon ok" Click="OnConnect" IsEnabled="{Binding CanConnect}" ToolTip.Tip="Open the selected camera">
           <Path Data="{StaticResource IcoConnect}" />
         </Button>
-        <Button Classes="ribbon" Click="OnDisconnect" IsEnabled="{Binding HasSelectedCam}" ToolTip.Tip="Close this camera">
+        <Button Classes="ribbon warn" Click="OnDisconnect" IsEnabled="{Binding HasSelectedCam}" ToolTip.Tip="Close this camera">
           <Path Data="{StaticResource IcoClose}" />
         </Button>
-        <Rectangle Width="1" Fill="#33808080" Margin="6,2" />
+        <Rectangle Width="1" Fill="#4A515A" Margin="6,2" />
         <Button Classes="ribbon filled" Click="OnStartLive" ToolTip.Tip="Start live"
                 IsEnabled="{Binding SelectedCam.IsNotLive, FallbackValue=False}">
           <Path Data="{StaticResource IcoLive}" />
@@ -106,7 +145,7 @@
                 IsEnabled="{Binding SelectedCam.IsLive, FallbackValue=False}">
           <Path Data="{StaticResource IcoStop}" />
         </Button>
-        <Rectangle Width="1" Fill="#33808080" Margin="6,2" />
+        <Rectangle Width="1" Fill="#4A515A" Margin="6,2" />
         <Button Classes="ribbon" Click="OnFit" IsEnabled="{Binding HasSelectedCam}" ToolTip.Tip="Fit the image to the tile">
           <Path Data="{StaticResource IcoFit}" />
         </Button>
@@ -120,7 +159,7 @@
     </Border>
 
     <!-- 상태 줄: 무엇을 하는 중인지와, 실패했다면 그 이유를 그대로 -->
-    <Border DockPanel.Dock="Bottom" Padding="10,6" Background="#22808080">
+    <Border DockPanel.Dock="Bottom" Padding="10,6" Background="#3B4149" BorderBrush="#4A515A" BorderThickness="0,1,0,0">
       <StackPanel Orientation="Horizontal" Spacing="12">
         <TextBlock Text="{Binding Status}" VerticalAlignment="Center" />
         <TextBlock Text="{Binding Error}" Foreground="#E06C75" VerticalAlignment="Center" TextWrapping="Wrap"
@@ -151,8 +190,10 @@
                 <StackPanel Spacing="0">
                   <!-- 열어 둔 장치는 굵게 — 목록만 보고 무엇이 붙어 있는지 알 수 있어야 한다. -->
                   <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding Title}" ToolTip.ShowDelay="400"
                              FontWeight="{Binding IsOpen, Converter={x:Static vm:VmConverters.OpenWeight}}" />
-                  <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding Detail}" ToolTip.ShowDelay="400" />
                   <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
                              IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
                 </StackPanel>
@@ -169,14 +210,14 @@
             <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,16,4">
               <TextBlock Grid.Column="0" Classes="caption" Text="Feature" VerticalAlignment="Center" />
               <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Thumb Width="7" Cursor="SizeWestEast" Background="#22808080" DragDelta="OnValueColumnDrag" />
+                <Thumb Width="7" Cursor="SizeWestEast" Background="#4A515A" DragDelta="OnValueColumnDrag" />
                 <TextBlock Classes="caption" Text="Value" VerticalAlignment="Center" Margin="6,0,0,0"
                            Width="{Binding ValueColumnWidth}" />
               </StackPanel>
             </Grid>
 
             <!-- 고른 항목의 뜻은 트리 아래에 적는다. 트리 안에 띄우면 그만큼 줄이 벌어져 값 칸이 좁아진다. -->
-            <Border DockPanel.Dock="Bottom" Background="#18808080" CornerRadius="3" Padding="8,5" MinHeight="48"
+            <Border DockPanel.Dock="Bottom" Background="#3B4149" CornerRadius="3" Padding="8,5" MinHeight="48"
                     Margin="0,6,0,0"
                     IsVisible="{Binding SelectedCam.SelectedTitle, Converter={x:Static ObjectConverters.IsNotNull}}">
               <StackPanel Spacing="2">
@@ -196,7 +237,8 @@
                       <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Spacing="0" VerticalAlignment="Center" Margin="0,0,8,0">
-                      <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
+                                 ToolTip.Tip="{Binding LabelTip}" ToolTip.ShowDelay="400" />
                       <TextBlock Classes="caption" Text="{Binding Status}" TextTrimming="CharacterEllipsis"
                                  IsVisible="{Binding Status, Converter={x:Static ObjectConverters.IsNotNull}}" />
                     </StackPanel>
@@ -230,7 +272,7 @@
       <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
 
       <!-- 오른쪽: 열어 둔 카메라를 균등한 격자로 나란히. 타일을 누르면 왼쪽 선택이 그 카메라로 바뀐다. -->
-      <Border Grid.Column="2" Classes="panel" Background="#11000000">
+      <Border Grid.Column="2" Classes="panel" Background="#282C32">
         <Panel>
           <TextBlock Classes="caption" Text="No camera open. Pick one on the left and press Connect."
                      HorizontalAlignment="Center" VerticalAlignment="Center"

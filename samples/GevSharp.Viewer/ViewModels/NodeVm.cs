@@ -47,6 +47,12 @@ public sealed class NodeVm : VmBase
     public Visibility Visibility => _node.Visibility;
     public string? Unit => (_node as IInteger)?.Unit ?? (_node as IFloat)?.Unit;
 
+    /// <summary>
+    /// 이름 위에 띄울 글. 패널을 좁히면 이름이 말줄임으로 잘리므로 전체를 여기서 보여 준다.
+    /// 표시 이름과 심볼 이름이 다르면 둘 다 적는다 — 문서나 다른 도구에서 찾을 때 필요한 것은 심볼 이름이다.
+    /// </summary>
+    public string LabelTip => string.Equals(Label, Name, StringComparison.Ordinal) ? Label : $"{Label}  ({Name})";
+
     /// <summary>툴팁이 없으면 설명으로 대신한다 — 둘 다 없는 노드도 있다.</summary>
     public string? Hint => string.IsNullOrWhiteSpace(_node.ToolTip) ? _node.Description : _node.ToolTip;
 

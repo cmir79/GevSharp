@@ -20,6 +20,7 @@ public sealed class MainVm : VmBase
     private readonly DispatcherTimer _poll;
     private readonly DispatcherTimer _scan;
     private bool _isScanning;
+    private bool _autoScan = true;
     private DeviceVm? _selectedDevice;
     private CamVm? _selectedCam;
     private bool _isBusy;
@@ -48,6 +49,16 @@ public sealed class MainVm : VmBase
     /// </summary>
     public int TileColumns => Cams.Count <= 1 ? 1 : (int)Math.Ceiling(Math.Sqrt(Cams.Count));
 
+    /// <summary>
+    /// 장치를 주기적으로 다시 찾을지. 기본은 켬 — 케이블을 꽂으면 목록에 나타나는 것이 당연한 동작이다.
+    /// 검색은 브로드캐스트라, 망을 조용히 두어야 하는 자리에서는 끌 수 있어야 한다.
+    /// </summary>
+    public bool AutoScan
+    {
+        get => _autoScan;
+        set => Set(ref _autoScan, value);
+    }
+
     public ObservableCollection<DeviceVm> Devices { get; } = new();
 
     /// <summary>열어 둔 카메라들. 영상은 이 순서대로 격자에 깔린다.</summary>
@@ -60,11 +71,9 @@ public sealed class MainVm : VmBase
         {
             if (!Set(ref _selectedDevice, value)) return;
             Raise(nameof(CanConnect));
-            // 목록에서 고른 장치가 이미 열려 있으면 속성 패널도 그리로 따라간다 —
-            // 여는 것과 만지는 것을 같은 곳에서 고를 수 있어야 한다.
-            if (value is null) return;
-            var open = Cams.FirstOrDefault(c => c.Address == value.Address);
-            if (open is not null) SelectedCam = open;
+            // 목록 선택이 유일한 기준이다. 고른 장치가 열려 있으면 그 세션을, 아니면 아무것도 가리키지 않는다 —
+            // 그래야 연결·해제·라이브가 전부 같은 대상을 보고, 목록에서 고른 것과 단추가 미는 것이 어긋나지 않는다.
+            SelectedCam = value is null ? null : Cams.FirstOrDefault(c => c.Address == value.Address);
         }
     }
 
@@ -140,7 +149,7 @@ public sealed class MainVm : VmBase
     /// </summary>
     private async Task ScanAsync()
     {
-        if (_isScanning || IsBusy) return;
+        if (!AutoScan || _isScanning || IsBusy) return;
         _isScanning = true;
         try
         {
@@ -202,8 +211,10 @@ public sealed class MainVm : VmBase
         return RunAsync($"Closing {cam.Address}", async () =>
         {
             Cams.Remove(cam);
-            SelectedCam = Cams.FirstOrDefault();
             foreach (var d in Devices.Where(d => d.Address == cam.Address)) d.IsOpen = false;
+            // 목록의 선택은 그대로 두고 세션만 놓는다 — 방금 닫은 장치가 목록에서 계속 골라져 있어야
+            // 바로 다시 열 수 있고, 연결 단추도 그 장치를 가리킨 채로 살아난다.
+            SelectedCam = null;
             Raise(nameof(CanConnect));
             await cam.DisposeAsync().ConfigureAwait(true);
             Status = "Closed.";
