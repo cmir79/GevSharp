@@ -22,8 +22,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: |
             8.0.x
@@ -35,20 +35,20 @@ jobs:
       # 시한과 멈춘-테스트 탐지를 함께 건다. 잡이 밖에서 취소되면 로그가 통째로 사라지지만,
       # 여기서 시한을 넘겨 실패하면 그때까지의 출력이 남고 --long-running 이 어느 테스트가 붙들고 있었는지 이름을 찍는다.
       - name: Test (in-process simulator)
-        timeout-minutes: 5
+        timeout-minutes: 3
         # 진단 로그를 디스크에 동기로 쓴다 — 프로세스가 시한으로 강제 종료돼도 어디까지 갔는지 파일에 남는다.
         # (stdout 은 버퍼에 있다가 종료와 함께 사라져, 12분을 돌고도 한 줄도 건지지 못한 적이 있다.)
         run: >-
           dotnet test --no-build -c Release --report-trx --results-directory TestResults
-          --long-running 30 --timeout 3m
+          --long-running 20 --timeout 2m
           --diagnostic --diagnostic-output-directory TestResults/diag
-          --diagnostic-synchronous-write --diagnostic-verbosity Information
+          --diagnostic-synchronous-write --diagnostic-verbosity Debug
       # netstandard2.0 자산을 실제로 실행하는 다리 — net48 은 Windows 에서만 복원된다.
       - name: Test (netstandard2.0 asset on .NET Framework)
         if: matrix.os == 'windows-latest'
-        timeout-minutes: 5
-        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 30 --timeout 3m
-      - uses: actions/upload-artifact@v4
+        timeout-minutes: 4
+        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 20 --timeout 2m
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: test-results-${{ matrix.os }}
@@ -61,8 +61,8 @@ jobs:
   virtual-camera:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: |
             8.0.x
@@ -92,15 +92,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: |
             8.0.x
             10.0.x
       - name: Pack
         run: dotnet pack src/GevSharp/GevSharp.csproj -c Release -o out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: nupkg
           path: out/*.nupkg
