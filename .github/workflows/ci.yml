@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # 손으로 다시 돌릴 수 있게 — 결과만 보고 싶을 때 빈 커밋을 만들지 않으려고.
+  workflow_dispatch:
+
+# 연달아 밀어 넣으면 마지막 것만 돌린다 — 중간 커밋의 실행은 시작 즉시 취소된다.
+# (macOS 러너가 특히 느려서, 앞선 커밋들이 줄을 서면 정작 보고 싶은 마지막 결과가 한참 뒤에 나온다.)
+# 브랜치별로 묶으므로 main 과 PR 은 서로 취소하지 않는다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Restore
+        run: dotnet restore
+      - name: Build (all TFMs)
+        run: dotnet build --no-restore -c Release
+      - name: Test (in-process simulator)
+        run: dotnet test --no-build -c Release --report-trx --results-directory TestResults
+      # netstandard2.0 자산을 실제로 실행하는 다리 — net48 은 Windows 에서만 복원된다.
+      - name: Test (netstandard2.0 asset on .NET Framework)
+        if: matrix.os == 'windows-latest'
+        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: "TestResults/**/*.trx"
+
+  # 남이 만든 가상 카메라 대향 — 별도 프로세스를 띄워 프로토콜로만 대화한다(링크하지 않는다).
+  # 설치 명령의 패키지·실행 파일 이름은 그 배포판이 정한 이름이라 그대로 쓴다.
+  virtual-camera:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Install the virtual camera
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aravis-tools
+      - name: Start the virtual camera on loopback
+        run: |
+          FAKE=$(ls /usr/bin/arv-fake-gv-camera-* | head -1)
+          echo "using $FAKE"
+          nohup "$FAKE" -i lo > virtual-camera.log 2>&1 &
+          sleep 2
+          cat virtual-camera.log || true
+      - name: Build
+        run: dotnet build -c Release
+      - name: Integration tests against the virtual camera
+        env:
+          GEVSHARP_VIRTUAL_CAMERA: "127.0.0.1"
+        run: dotnet test --no-build -c Release --filter-trait "Category=VirtualCamera"
+      - name: Virtual camera log
+        if: always()
+        run: cat virtual-camera.log || true
+
+  pack:
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Pack
+        run: dotnet pack src/GevSharp/GevSharp.csproj -c Release -o out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: out/*.nupkg

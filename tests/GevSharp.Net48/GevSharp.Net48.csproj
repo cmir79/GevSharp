@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    netstandard2.0 자산을 실제로 실행해 보는 다리. 라이브러리는 세 TFM 으로 컴파일되지만 스위트는 net8.0 하나만
+    돌므로, ns2.0 에서만 타는 갈래(Span 오버로드가 없는 송신, 덮어쓰기 Move 가 없는 캐시 교체, NumericCodec·
+    CappedReadStream 의 폴백)는 컴파일만 될 뿐 실행된 적이 없다. 여기서 같은 테스트 소스를 net48 로 다시 컴파일해
+    돌린다 — 테스트를 새로 쓰지 않고 링크만 하므로 두 벌이 갈릴 일이 없다.
+
+    시뮬레이터(net8.0)에 기대는 테스트는 제외한다. 그 경계 때문에 통합·Sim 테스트는 여기 없고,
+    ns2.0 갈래를 지나는 GenApi·Pfnc·Xml·GVCP·GVSP 테스트가 들어온다.
+
+    Windows 전용이라 솔루션에 넣지 않는다 — net48 은 다른 OS 에서 복원되지 않아, 솔루션에 있으면 리눅스·macOS 빌드가
+    통째로 깨진다. 대신 CI 의 windows 잡과 아래 명령이 경로로 직접 부른다:
+        dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Debug
+    (저장소 뿌리의 dotnet build/test 는 이 프로젝트를 짓지 않는다 — 링크해 온 소스를 고쳤으면 이 명령도 따로 돌린다.)
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>GevSharp.Tests</RootNamespace>
+    <AssemblyName>GevSharp.Net48</AssemblyName>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- 링크해 온 소스가 이 자산에서 안 도는 것을 발견하면 빌드가 아니라 테스트로 알린다. -->
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.3.3" />
+    <!-- 테스트 소스가 쓰는 언어 기능(record·init·file-scoped 등)을 net48 에서도 컴파일되게 한다. -->
+    <PackageReference Include="PolySharp" Version="1.16.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GevSharp\GevSharp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- net48 은 ZIP 을 별도 어셈블리로 가진다 — 카메라 XML 의 ZIP 갈래를 시험하려면 필요하다. -->
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 같은 테스트 소스를 그대로 링크한다. 시뮬레이터를 쓰는 것만 뺀다. -->
+    <Compile Include="..\GevSharp.Tests\TestAsync.cs" />
+    <Compile Include="..\GevSharp.Tests\Pfnc\**\*.cs" LinkBase="Pfnc" />
+    <Compile Include="..\GevSharp.Tests\Xml\**\*.cs" LinkBase="Xml" />
+    <Compile Include="..\GevSharp.Tests\Gvsp\**\*.cs" LinkBase="Gvsp" />
+    <Compile Include="..\GevSharp.Tests\Gvcp\**\*.cs" LinkBase="Gvcp"
+             Exclude="..\GevSharp.Tests\Gvcp\GevDeviceInfoReadTests.cs" />
+    <Compile Include="..\GevSharp.Tests\GenApi\**\*.cs" LinkBase="GenApi"
+             Exclude="..\GevSharp.Tests\GenApi\Runtime\CacheInvalidationTests.cs;..\GevSharp.Tests\GenApi\Runtime\NodeMapBindTests.cs;..\GevSharp.Tests\GenApi\Runtime\SimNodeMapTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 픽스처는 같은 논리 이름으로 실어야 링크해 온 테스트가 그대로 찾는다. -->
+    <EmbeddedResource Include="..\GevSharp.Tests\Fixtures\**\*.xml" WithCulture="false" LogicalName="GevSharp.Tests.Fixtures.%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

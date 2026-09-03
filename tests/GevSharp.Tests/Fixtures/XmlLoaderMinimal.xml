@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RegisterDescription ModelName="XmlLoaderMinimal" VendorName="GevSharpTests" ToolTip="Hand-authored fixture for the XML loader tests" StandardNameSpace="GEV" SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0" MajorVersion="1" MinorVersion="0" SubMinorVersion="0" ProductGuid="0a1b2c3d-0000-4000-8000-000000000001" VersionGuid="0a1b2c3d-0000-4000-8000-000000000002" xmlns="http://www.genicam.org/GenApi/Version_1_1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.genicam.org/GenApi/Version_1_1 http://www.genicam.org/GenApi/GenApiSchema_Version_1_1.xsd">
+
+  <Category Name="Root" NameSpace="Standard">
+    <ToolTip>Entry point of the feature tree</ToolTip>
+    <pFeature>DeviceControl</pFeature>
+    <pFeature>ImageFormatControl</pFeature>
+    <pFeature>AcquisitionControl</pFeature>
+  </Category>
+
+  <Category Name="DeviceControl" NameSpace="Standard">
+    <ToolTip>Device identification and reset</ToolTip>
+    <pFeature>DeviceVendorName</pFeature>
+    <pFeature>DeviceModelName</pFeature>
+    <pFeature>DeviceReset</pFeature>
+  </Category>
+
+  <StringReg Name="DeviceVendorName" NameSpace="Standard">
+    <ToolTip>Name of the device manufacturer</ToolTip>
+    <Address>0x48</Address>
+    <Length>32</Length>
+    <AccessMode>RO</AccessMode>
+    <pPort>Device</pPort>
+  </StringReg>
+
+  <StringReg Name="DeviceModelName" NameSpace="Standard">
+    <ToolTip>Model name of the device</ToolTip>
+    <Address>0x68</Address>
+    <Length>32</Length>
+    <AccessMode>RO</AccessMode>
+    <pPort>Device</pPort>
+  </StringReg>
+
+  <Command Name="DeviceReset" NameSpace="Standard">
+    <ToolTip>Resets the device to its power-up state</ToolTip>
+    <pValue>DeviceResetReg</pValue>
+    <CommandValue>1</CommandValue>
+  </Command>
+
+  <IntReg Name="DeviceResetReg" NameSpace="Custom">
+    <Address>0x10000</Address>
+    <Length>4</Length>
+    <AccessMode>WO</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Category Name="ImageFormatControl" NameSpace="Standard">
+    <ToolTip>Image size and pixel format</ToolTip>
+    <pFeature>Width</pFeature>
+    <pFeature>Height</pFeature>
+    <pFeature>PixelFormat</pFeature>
+  </Category>
+
+  <Integer Name="Width" NameSpace="Standard">
+    <ToolTip>Width of the image in pixels</ToolTip>
+    <pValue>WidthReg</pValue>
+    <Min>8</Min>
+    <Max>1920</Max>
+    <Inc>8</Inc>
+    <Unit>px</Unit>
+  </Integer>
+
+  <IntReg Name="WidthReg" NameSpace="Custom">
+    <Address>0x10100</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Integer Name="Height" NameSpace="Standard">
+    <ToolTip>Height of the image in pixels</ToolTip>
+    <pValue>HeightReg</pValue>
+    <Min>8</Min>
+    <Max>1080</Max>
+    <Inc>2</Inc>
+    <Unit>px</Unit>
+  </Integer>
+
+  <IntReg Name="HeightReg" NameSpace="Custom">
+    <Address>0x10104</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Enumeration Name="PixelFormat" NameSpace="Standard">
+    <ToolTip>Format of the pixels delivered by the device</ToolTip>
+    <EnumEntry Name="Mono8" NameSpace="Standard">
+      <Value>17301505</Value>
+    </EnumEntry>
+    <EnumEntry Name="Mono12" NameSpace="Standard">
+      <Value>17825797</Value>
+    </EnumEntry>
+    <pValue>PixelFormatReg</pValue>
+  </Enumeration>
+
+  <IntReg Name="PixelFormatReg" NameSpace="Custom">
+    <Address>0x10108</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Category Name="AcquisitionControl" NameSpace="Standard">
+    <ToolTip>Start and stop of image acquisition</ToolTip>
+    <pFeature>AcquisitionStart</pFeature>
+    <pFeature>AcquisitionStop</pFeature>
+  </Category>
+
+  <Command Name="AcquisitionStart" NameSpace="Standard">
+    <ToolTip>Starts the acquisition</ToolTip>
+    <pValue>AcquisitionStartReg</pValue>
+    <CommandValue>1</CommandValue>
+  </Command>
+
+  <IntReg Name="AcquisitionStartReg" NameSpace="Custom">
+    <Address>0x10200</Address>
+    <Length>4</Length>
+    <AccessMode>WO</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Command Name="AcquisitionStop" NameSpace="Standard">
+    <ToolTip>Stops the acquisition</ToolTip>
+    <pValue>AcquisitionStopReg</pValue>
+    <CommandValue>1</CommandValue>
+  </Command>
+
+  <IntReg Name="AcquisitionStopReg" NameSpace="Custom">
+    <Address>0x10204</Address>
+    <Length>4</Length>
+    <AccessMode>WO</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Port Name="Device" NameSpace="Standard">
+    <ToolTip>Register space of the device</ToolTip>
+  </Port>
+
+</RegisterDescription>

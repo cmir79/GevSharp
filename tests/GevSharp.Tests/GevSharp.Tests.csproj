@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" PrivateAssets="all" />
+    <!-- CI 의 report-trx 옵션이 쓰는 TRX 리포터 (없으면 MTP 가 옵션을 거부해 0건 실행, exit 5) -->
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.3.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GevSharp\GevSharp.csproj" />
+    <ProjectReference Include="..\GevSharp.Sim\GevSharp.Sim.csproj" />
+    <ProjectReference Include="..\..\samples\GevSharp.Cli\GevSharp.Cli.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- CLI 테스트는 소스가 샘플 프로젝트에 살고(그쪽은 Compile Remove) 이 스위트가 가져다 컴파일한다. -->
+    <Compile Include="..\..\samples\GevSharp.Cli\Tests\**\*.cs" LinkBase="Cli" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 자작 GenICam XML 픽스처 — 벤더 XML 은 절대 넣지 않는다. -->
+    <EmbeddedResource Include="Fixtures\**\*.xml" WithCulture="false" LogicalName="GevSharp.Tests.Fixtures.%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

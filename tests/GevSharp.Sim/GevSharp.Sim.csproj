@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 인프로세스 장치 시뮬레이터 — 테스트·CI 대향용. 라이브러리 상수만 빌려 쓰고 패킷 조립·해석은 독립 구현한다(오류 상쇄 방지). -->
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GevSharp\GevSharp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 시뮬레이터의 자작 GenICam XML — 레지스터 맵은 docs/sim-register-map.md 에 문서화한다. -->
+    <EmbeddedResource Include="Assets\*.xml" WithCulture="false" LogicalName="GevSharp.Sim.Assets.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

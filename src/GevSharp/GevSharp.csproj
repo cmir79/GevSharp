@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- netstandard2.0 = .NET Framework 4.6.2+ / 구형 Unity, netstandard2.1 = Unity 2021+ / Mono, net8.0 = 최신 런타임 고속 경로.
+         코드는 netstandard2.0 API 면으로 쓰고, 상위 TFM 전용 경로는 #if NETSTANDARD2_1_OR_GREATER / NET8_0_OR_GREATER 로만 얹는다.
+         2.0 자산은 컴파일만 되는 것이 아니라 실행까지 확인한다 — tests/GevSharp.Net48 이 같은 테스트를 .NET Framework 4.8 로 다시 돌린다. -->
+    <TargetFrameworks>netstandard2.0;netstandard2.1;net8.0</TargetFrameworks>
+    <RootNamespace>GevSharp</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <IsPackable>true</IsPackable>
+    <IsAotCompatible Condition="'$(TargetFramework)' == 'net8.0'">true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>GevSharp</PackageId>
+    <!-- 버전·공통 메타데이터는 루트 Directory.Build.props (락스텝) -->
+    <Description>Vendor-free, pure managed C# library for industrial GigE cameras — GVCP device control, GVSP streaming with packet resend, and GenICam GenApi XML feature access. No native dependencies, no vendor SDK, no filter driver.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>gige;gvcp;gvsp;genicam;genapi;camera;machine-vision;industrial-camera;streaming</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 컴파일 시점 폴리필(init/record/required/Index 등) — 빌드 전용, 패키지 의존성에 남지 않는다. -->
+    <PackageReference Include="PolySharp" Version="1.16.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <!-- 2.0 자산만 끄는 런타임 의존성 — Span/Memory/BinaryPrimitives, ValueTask, IAsyncDisposable. 2.1 이상은 인박스. -->
+    <PackageReference Include="System.Memory" Version="4.6.3" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="GevSharp.Tests" />
+    <InternalsVisibleTo Include="GevSharp.Sim" />
+    <InternalsVisibleTo Include="GevSharp.Net48" />
+    <!-- 평가용 CLI 는 표준 포트가 아닌 장치(시뮬레이터)를 열려고 IPEndPoint 오버로드가 필요하다. -->
+    <InternalsVisibleTo Include="GevSharp.Cli" />
+  </ItemGroup>
+
+</Project>

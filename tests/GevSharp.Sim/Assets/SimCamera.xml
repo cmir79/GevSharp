@@ -1,0 +1,918 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GevSharp SimCamera — 인프로세스 시뮬레이터의 GenApi 기술. 손으로 작성한 자작 XML.
+  레지스터 주소·폭·리셋값은 docs/sim-register-map.md 와 SimFeatureAddr 에 정의돼 있다.
+  BigEndian 레지스터의 비트 번호는 bit 0 = MSB 규약을 따른다(정수 bit k = XML bit 31-k).
+-->
+<RegisterDescription
+    ModelName="SimCamera"
+    VendorName="GevSharp"
+    ToolTip="In-process GigE camera simulator"
+    StandardNameSpace="GEV"
+    SchemaMajorVersion="1"
+    SchemaMinorVersion="1"
+    SchemaSubMinorVersion="0"
+    MajorVersion="1"
+    MinorVersion="0"
+    SubMinorVersion="0"
+    ProductGuid="6f1c4c2e-1b7a-4b3e-9a55-3d1a2c9f0e01"
+    VersionGuid="9d2e7b41-5c8f-4a06-8e3b-7f0c1d2a3b45"
+    xmlns="http://www.genicam.org/GenApi/Version_1_1"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.genicam.org/GenApi/Version_1_1 http://www.genicam.org/GenApi/GenApiSchema_Version_1_1.xsd">
+
+  <Category Name="Root" NameSpace="Standard">
+    <ToolTip>Feature tree entry point</ToolTip>
+    <pFeature>DeviceControl</pFeature>
+    <pFeature>ImageFormatControl</pFeature>
+    <pFeature>AcquisitionControl</pFeature>
+    <pFeature>AnalogControl</pFeature>
+    <pFeature>UserSetControl</pFeature>
+    <pFeature>TransportLayerControl</pFeature>
+  </Category>
+
+  <Port Name="Device" NameSpace="Standard">
+    <ToolTip>GVCP register access</ToolTip>
+  </Port>
+
+  <!-- ====================================================================== -->
+  <Group Comment="DeviceControl">
+
+    <Category Name="DeviceControl" NameSpace="Standard">
+      <ToolTip>Device identification and timestamp</ToolTip>
+      <pFeature>DeviceVendorName</pFeature>
+      <pFeature>DeviceModelName</pFeature>
+      <pFeature>DeviceVersion</pFeature>
+      <pFeature>DeviceSerialNumber</pFeature>
+      <pFeature>DeviceUserID</pFeature>
+      <pFeature>TimestampTickFrequency</pFeature>
+      <pFeature>TimestampLatch</pFeature>
+      <pFeature>TimestampLatchValue</pFeature>
+    </Category>
+
+    <StringReg Name="DeviceVendorName" NameSpace="Standard">
+      <ToolTip>Manufacturer name (bootstrap 0x0048)</ToolTip>
+      <Address>0x48</Address>
+      <Length>32</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+    </StringReg>
+
+    <StringReg Name="DeviceModelName" NameSpace="Standard">
+      <ToolTip>Model name (bootstrap 0x0068)</ToolTip>
+      <Address>0x68</Address>
+      <Length>32</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+    </StringReg>
+
+    <StringReg Name="DeviceVersion" NameSpace="Standard">
+      <ToolTip>Device version (bootstrap 0x0088)</ToolTip>
+      <Address>0x88</Address>
+      <Length>32</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+    </StringReg>
+
+    <StringReg Name="DeviceSerialNumber" NameSpace="Standard">
+      <ToolTip>Serial number (bootstrap 0x00D8)</ToolTip>
+      <Address>0xD8</Address>
+      <Length>16</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+    </StringReg>
+
+    <StringReg Name="DeviceUserID" NameSpace="Standard">
+      <ToolTip>User-defined name (bootstrap 0x00E8), writable</ToolTip>
+      <Address>0xE8</Address>
+      <Length>16</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+    </StringReg>
+
+    <Integer Name="TimestampTickFrequency" NameSpace="Standard">
+      <ToolTip>Timestamp counter frequency in Hz (bootstrap 0x093C, 64-bit)</ToolTip>
+      <pValue>TimestampTickFrequencyReg</pValue>
+      <Unit>Hz</Unit>
+      <Representation>PureNumber</Representation>
+    </Integer>
+
+    <IntReg Name="TimestampTickFrequencyReg">
+      <Address>0x93C</Address>
+      <Length>8</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Command Name="TimestampLatch" NameSpace="Standard">
+      <ToolTip>Latch the timestamp counter into TimestampLatchValue (bootstrap 0x0944 = 1)</ToolTip>
+      <pValue>TimestampControlReg</pValue>
+      <CommandValue>1</CommandValue>
+    </Command>
+
+    <IntReg Name="TimestampControlReg">
+      <Address>0x944</Address>
+      <Length>4</Length>
+      <AccessMode>WO</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="TimestampLatchValue" NameSpace="Standard">
+      <ToolTip>Latched timestamp in ticks (bootstrap 0x0948, 64-bit)</ToolTip>
+      <pValue>TimestampLatchValueReg</pValue>
+      <Representation>PureNumber</Representation>
+    </Integer>
+
+    <IntReg Name="TimestampLatchValueReg">
+      <Address>0x948</Address>
+      <Length>8</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+      <Cachable>NoCache</Cachable>
+      <pInvalidator>TimestampLatch</pInvalidator>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+  </Group>
+
+  <!-- ====================================================================== -->
+  <Group Comment="ImageFormatControl">
+
+    <Category Name="ImageFormatControl" NameSpace="Standard">
+      <ToolTip>Image size, offsets and pixel format</ToolTip>
+      <pFeature>Width</pFeature>
+      <pFeature>Height</pFeature>
+      <pFeature>WidthMax</pFeature>
+      <pFeature>HeightMax</pFeature>
+      <pFeature>OffsetX</pFeature>
+      <pFeature>OffsetY</pFeature>
+      <pFeature>PixelFormat</pFeature>
+      <pFeature>TestPattern</pFeature>
+      <pFeature>ReverseX</pFeature>
+    </Category>
+
+    <Integer Name="Width" NameSpace="Standard">
+      <ToolTip>Image width in pixels; locked while acquiring</ToolTip>
+      <Description>Width of the image delivered by the device. Changing it while the device is acquiring is refused.</Description>
+      <pIsLocked>AcquisitionActive</pIsLocked>
+      <Streamable>Yes</Streamable>
+      <pValue>WidthReg</pValue>
+      <Min>8</Min>
+      <pMax>WidthMax</pMax>
+      <Inc>4</Inc>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <IntReg Name="WidthReg">
+      <Address>0x10000</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="Height" NameSpace="Standard">
+      <ToolTip>Image height in pixels; locked while acquiring</ToolTip>
+      <pIsLocked>AcquisitionActive</pIsLocked>
+      <Streamable>Yes</Streamable>
+      <pValue>HeightReg</pValue>
+      <Min>8</Min>
+      <pMax>HeightMax</pMax>
+      <Inc>2</Inc>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <IntReg Name="HeightReg">
+      <Address>0x10004</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="WidthMax" NameSpace="Standard">
+      <ToolTip>Maximum width</ToolTip>
+      <pValue>WidthMaxReg</pValue>
+    </Integer>
+
+    <IntReg Name="WidthMaxReg">
+      <Address>0x10054</Address>
+      <Length>4</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="HeightMax" NameSpace="Standard">
+      <ToolTip>Maximum height</ToolTip>
+      <pValue>HeightMaxReg</pValue>
+    </Integer>
+
+    <IntReg Name="HeightMaxReg">
+      <Address>0x10058</Address>
+      <Length>4</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="OffsetX" NameSpace="Standard">
+      <ToolTip>Horizontal offset of the region of interest</ToolTip>
+      <Streamable>Yes</Streamable>
+      <pValue>OffsetXReg</pValue>
+      <Min>0</Min>
+      <Max>4088</Max>
+      <Inc>4</Inc>
+    </Integer>
+
+    <IntReg Name="OffsetXReg">
+      <Address>0x10008</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="OffsetY" NameSpace="Standard">
+      <ToolTip>Vertical offset of the region of interest</ToolTip>
+      <Streamable>Yes</Streamable>
+      <pValue>OffsetYReg</pValue>
+      <Min>0</Min>
+      <Max>4094</Max>
+      <Inc>2</Inc>
+    </Integer>
+
+    <IntReg Name="OffsetYReg">
+      <Address>0x1000C</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Enumeration Name="PixelFormat" NameSpace="Standard">
+      <ToolTip>Pixel format (register holds the PFNC code); locked while acquiring</ToolTip>
+      <pIsLocked>AcquisitionActive</pIsLocked>
+      <Streamable>Yes</Streamable>
+      <EnumEntry Name="EnumEntry_PixelFormat_Mono8" NameSpace="Standard">
+        <Value>0x01080001</Value>
+        <Symbolic>Mono8</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_PixelFormat_Mono10" NameSpace="Standard">
+        <Value>0x01100003</Value>
+        <Symbolic>Mono10</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_PixelFormat_Mono12" NameSpace="Standard">
+        <Value>0x01100005</Value>
+        <Symbolic>Mono12</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_PixelFormat_Mono16" NameSpace="Standard">
+        <Value>0x01100007</Value>
+        <Symbolic>Mono16</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_PixelFormat_BayerRG8" NameSpace="Standard">
+        <Value>0x01080009</Value>
+        <Symbolic>BayerRG8</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_PixelFormat_RGB8" NameSpace="Standard">
+        <Value>0x02180014</Value>
+        <Symbolic>RGB8</Symbolic>
+      </EnumEntry>
+      <pValue>PixelFormatReg</pValue>
+    </Enumeration>
+
+    <IntReg Name="PixelFormatReg">
+      <Address>0x10010</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Enumeration Name="TestPattern" NameSpace="Standard">
+      <ToolTip>Content of the generated image</ToolTip>
+      <EnumEntry Name="EnumEntry_TestPattern_Off" NameSpace="Standard">
+        <ToolTip>All pixel bytes are zero</ToolTip>
+        <Value>0</Value>
+        <Symbolic>Off</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_TestPattern_DiagonalRamp" NameSpace="Custom">
+        <ToolTip>Byte b of line y in frame f is (b + y + f) modulo 256</ToolTip>
+        <Value>1</Value>
+        <Symbolic>DiagonalRamp</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_TestPattern_FrameCounter" NameSpace="Custom">
+        <ToolTip>Every byte equals the frame id modulo 256</ToolTip>
+        <Value>2</Value>
+        <Symbolic>FrameCounter</Symbolic>
+      </EnumEntry>
+      <pValue>TestPatternReg</pValue>
+    </Enumeration>
+
+    <IntReg Name="TestPatternReg">
+      <Address>0x10040</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Boolean Name="ReverseX" NameSpace="Standard">
+      <ToolTip>Horizontal flip flag (register round-trip only; the simulator pattern is not mirrored)</ToolTip>
+      <Streamable>Yes</Streamable>
+      <pValue>ReverseXReg</pValue>
+      <OnValue>1</OnValue>
+      <OffValue>0</OffValue>
+    </Boolean>
+
+    <IntReg Name="ReverseXReg">
+      <Address>0x10050</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+  </Group>
+
+  <!-- ====================================================================== -->
+  <Group Comment="AcquisitionControl">
+
+    <Category Name="AcquisitionControl" NameSpace="Standard">
+      <ToolTip>Acquisition, exposure and trigger</ToolTip>
+      <pFeature>AcquisitionMode</pFeature>
+      <pFeature>AcquisitionStart</pFeature>
+      <pFeature>AcquisitionStop</pFeature>
+      <pFeature>AcquisitionFrameCount</pFeature>
+      <pFeature>AcquisitionFrameRate</pFeature>
+      <pFeature>ExposureTime</pFeature>
+      <pFeature>ExposureTimeRaw</pFeature>
+      <pFeature>TriggerMode</pFeature>
+      <pFeature>TriggerSource</pFeature>
+      <pFeature>TriggerSoftware</pFeature>
+      <pFeature>AcquisitionActive</pFeature>
+    </Category>
+
+    <Enumeration Name="AcquisitionMode" NameSpace="Standard">
+      <ToolTip>Continuous, SingleFrame or MultiFrame</ToolTip>
+      <Streamable>Yes</Streamable>
+      <EnumEntry Name="EnumEntry_AcquisitionMode_Continuous" NameSpace="Standard">
+        <Value>0</Value>
+        <Symbolic>Continuous</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_AcquisitionMode_SingleFrame" NameSpace="Standard">
+        <Value>1</Value>
+        <Symbolic>SingleFrame</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_AcquisitionMode_MultiFrame" NameSpace="Standard">
+        <Value>2</Value>
+        <Symbolic>MultiFrame</Symbolic>
+      </EnumEntry>
+      <pValue>AcquisitionModeReg</pValue>
+    </Enumeration>
+
+    <IntReg Name="AcquisitionModeReg">
+      <Address>0x1002C</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Command Name="AcquisitionStart" NameSpace="Standard">
+      <ToolTip>Start streaming frames to SCDA:SCP. The bit clears itself once the device has started.</ToolTip>
+      <pIsLocked>AcquisitionCommandLocked</pIsLocked>
+      <ImposedAccessMode>WO</ImposedAccessMode>
+      <pValue>AcquisitionStartReg</pValue>
+      <CommandValue>1</CommandValue>
+      <PollingTime>10</PollingTime>
+    </Command>
+
+    <IntReg Name="AcquisitionStartReg">
+      <Address>0x10030</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Cachable>NoCache</Cachable>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Command Name="AcquisitionStop" NameSpace="Standard">
+      <ToolTip>Stop streaming. The bit clears itself once the device has stopped.</ToolTip>
+      <pIsLocked>AcquisitionCommandLocked</pIsLocked>
+      <ImposedAccessMode>WO</ImposedAccessMode>
+      <pValue>AcquisitionStopReg</pValue>
+      <CommandValue>1</CommandValue>
+      <PollingTime>10</PollingTime>
+    </Command>
+
+    <IntReg Name="AcquisitionStopReg">
+      <Address>0x10034</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Cachable>NoCache</Cachable>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="AcquisitionActive" NameSpace="Custom">
+      <ToolTip>1 while the device is acquiring; used as the lock predicate of Width, Height and PixelFormat</ToolTip>
+      <Visibility>Guru</Visibility>
+      <pValue>AcquisitionActiveReg</pValue>
+      <Representation>Boolean</Representation>
+    </Integer>
+
+    <IntReg Name="AcquisitionActiveReg">
+      <Address>0x10038</Address>
+      <Length>4</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+      <Cachable>NoCache</Cachable>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="AcquisitionFrameCount" NameSpace="Standard">
+      <ToolTip>Frames per AcquisitionStart in MultiFrame mode</ToolTip>
+      <pIsAvailable>AcquisitionModeIsMultiFrame</pIsAvailable>
+      <Streamable>Yes</Streamable>
+      <pValue>AcquisitionFrameCountReg</pValue>
+      <Min>1</Min>
+      <Max>65535</Max>
+      <Inc>1</Inc>
+    </Integer>
+
+    <IntReg Name="AcquisitionFrameCountReg">
+      <Address>0x1004C</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <IntSwissKnife Name="AcquisitionModeIsMultiFrame">
+      <pVariable Name="MODE">AcquisitionModeReg</pVariable>
+      <Formula>MODE = 2</Formula>
+    </IntSwissKnife>
+
+    <Float Name="AcquisitionFrameRate" NameSpace="Standard">
+      <ToolTip>Frame rate in free-running mode</ToolTip>
+      <Streamable>Yes</Streamable>
+      <pValue>AcquisitionFrameRateReg</pValue>
+      <Min>1.0</Min>
+      <Max>1000.0</Max>
+      <Unit>Hz</Unit>
+      <Representation>Linear</Representation>
+      <DisplayNotation>Fixed</DisplayNotation>
+      <DisplayPrecision>2</DisplayPrecision>
+    </Float>
+
+    <FloatReg Name="AcquisitionFrameRateReg">
+      <Address>0x1003C</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Endianess>BigEndian</Endianess>
+    </FloatReg>
+
+    <Converter Name="ExposureTime" NameSpace="Standard">
+      <ToolTip>Exposure time in microseconds, converted from timestamp ticks through the tick frequency</ToolTip>
+      <Streamable>Yes</Streamable>
+      <pVariable Name="TICKFREQ">TimestampTickFrequency</pVariable>
+      <FormulaTo>FROM * TICKFREQ / 1000000</FormulaTo>
+      <FormulaFrom>TO * 1000000.0 / TICKFREQ</FormulaFrom>
+      <pValue>ExposureTimeRaw</pValue>
+      <Unit>us</Unit>
+      <Representation>Linear</Representation>
+      <DisplayNotation>Fixed</DisplayNotation>
+      <DisplayPrecision>1</DisplayPrecision>
+      <Slope>Increasing</Slope>
+      <IsLinear>Yes</IsLinear>
+    </Converter>
+
+    <Integer Name="ExposureTimeRaw" NameSpace="Custom">
+      <ToolTip>Exposure time in timestamp ticks (1 GHz)</ToolTip>
+      <Visibility>Guru</Visibility>
+      <pValue>ExposureTimeRawReg</pValue>
+      <Min>1000</Min>
+      <Max>2000000000</Max>
+      <Inc>1</Inc>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <IntReg Name="ExposureTimeRawReg">
+      <Address>0x10014</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Group Comment="Trigger">
+
+      <StructReg Comment="TriggerControl register: bit 0 (MSB numbering 31) = mode, bits 7:4 (MSB numbering 27..24) = source">
+        <Address>0x10028</Address>
+        <Length>4</Length>
+        <AccessMode>RW</AccessMode>
+        <pPort>Device</pPort>
+        <Endianess>BigEndian</Endianess>
+        <StructEntry Name="TriggerModeReg">
+          <ToolTip>Trigger mode bit</ToolTip>
+          <Bit>31</Bit>
+          <Sign>Unsigned</Sign>
+        </StructEntry>
+        <StructEntry Name="TriggerSourceReg">
+          <ToolTip>Trigger source field</ToolTip>
+          <LSB>27</LSB>
+          <MSB>24</MSB>
+          <Sign>Unsigned</Sign>
+        </StructEntry>
+      </StructReg>
+
+      <Enumeration Name="TriggerMode" NameSpace="Standard">
+        <ToolTip>Off = free running at AcquisitionFrameRate, On = one frame per trigger</ToolTip>
+        <Streamable>Yes</Streamable>
+        <EnumEntry Name="EnumEntry_TriggerMode_Off" NameSpace="Standard">
+          <Value>0</Value>
+          <Symbolic>Off</Symbolic>
+        </EnumEntry>
+        <EnumEntry Name="EnumEntry_TriggerMode_On" NameSpace="Standard">
+          <Value>1</Value>
+          <Symbolic>On</Symbolic>
+        </EnumEntry>
+        <pValue>TriggerModeReg</pValue>
+      </Enumeration>
+
+      <Enumeration Name="TriggerSource" NameSpace="Standard">
+        <ToolTip>Trigger source; available only while TriggerMode is On</ToolTip>
+        <pIsAvailable>TriggerModeIsOn</pIsAvailable>
+        <Streamable>Yes</Streamable>
+        <EnumEntry Name="EnumEntry_TriggerSource_Software" NameSpace="Standard">
+          <Value>0</Value>
+          <Symbolic>Software</Symbolic>
+        </EnumEntry>
+        <EnumEntry Name="EnumEntry_TriggerSource_Line0" NameSpace="Standard">
+          <Value>1</Value>
+          <Symbolic>Line0</Symbolic>
+        </EnumEntry>
+        <EnumEntry Name="EnumEntry_TriggerSource_Line1" NameSpace="Standard">
+          <Value>2</Value>
+          <Symbolic>Line1</Symbolic>
+        </EnumEntry>
+        <pValue>TriggerSourceReg</pValue>
+      </Enumeration>
+
+      <IntSwissKnife Name="TriggerModeIsOn">
+        <pVariable Name="MODE">TriggerModeReg</pVariable>
+        <Formula>MODE = 1</Formula>
+      </IntSwissKnife>
+
+      <Command Name="TriggerSoftware" NameSpace="Standard">
+        <ToolTip>Generate one software trigger; available when TriggerMode is On and TriggerSource is Software</ToolTip>
+        <pIsAvailable>TriggerSoftwareIsAvailable</pIsAvailable>
+        <pValue>TriggerSoftwareReg</pValue>
+        <CommandValue>1</CommandValue>
+      </Command>
+
+      <IntSwissKnife Name="TriggerSoftwareIsAvailable">
+        <pVariable Name="MODE">TriggerModeReg</pVariable>
+        <pVariable Name="SRC">TriggerSourceReg</pVariable>
+        <Formula>(MODE = 1) &amp;&amp; (SRC = 0)</Formula>
+      </IntSwissKnife>
+
+      <IntReg Name="TriggerSoftwareReg">
+        <Address>0x10060</Address>
+        <Length>4</Length>
+        <AccessMode>RW</AccessMode>
+        <pPort>Device</pPort>
+        <Cachable>NoCache</Cachable>
+        <Sign>Unsigned</Sign>
+        <Endianess>BigEndian</Endianess>
+      </IntReg>
+
+    </Group>
+
+  </Group>
+
+  <!-- ====================================================================== -->
+  <Group Comment="AnalogControl">
+
+    <Category Name="AnalogControl" NameSpace="Standard">
+      <ToolTip>Gain (selector-indexed)</ToolTip>
+      <pFeature>GainSelector</pFeature>
+      <pFeature>Gain</pFeature>
+      <pFeature>GainRaw</pFeature>
+    </Category>
+
+    <Enumeration Name="GainSelector" NameSpace="Standard">
+      <ToolTip>Selects which of the three gain registers Gain and GainRaw address</ToolTip>
+      <EnumEntry Name="EnumEntry_GainSelector_AnalogAll" NameSpace="Standard">
+        <Value>0</Value>
+        <Symbolic>AnalogAll</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_GainSelector_DigitalAll" NameSpace="Standard">
+        <Value>1</Value>
+        <Symbolic>DigitalAll</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_GainSelector_DigitalRed" NameSpace="Standard">
+        <Value>2</Value>
+        <Symbolic>DigitalRed</Symbolic>
+      </EnumEntry>
+      <pValue>GainSelectorReg</pValue>
+      <pSelected>Gain</pSelected>
+      <pSelected>GainRaw</pSelected>
+    </Enumeration>
+
+    <IntReg Name="GainSelectorReg">
+      <Address>0x10018</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Converter Name="Gain" NameSpace="Standard">
+      <ToolTip>Gain in dB (raw / 10)</ToolTip>
+      <Streamable>Yes</Streamable>
+      <FormulaTo>FROM * 10</FormulaTo>
+      <FormulaFrom>TO / 10.0</FormulaFrom>
+      <pValue>GainRaw</pValue>
+      <Unit>dB</Unit>
+      <Representation>Linear</Representation>
+      <Slope>Increasing</Slope>
+      <IsLinear>Yes</IsLinear>
+    </Converter>
+
+    <Integer Name="GainRaw" NameSpace="Custom">
+      <ToolTip>Raw gain of the selected channel (0.1 dB units)</ToolTip>
+      <Streamable>Yes</Streamable>
+      <pValue>GainRawReg</pValue>
+      <Min>0</Min>
+      <Max>1023</Max>
+      <Inc>1</Inc>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <IntReg Name="GainRawReg">
+      <ToolTip>GainRaw[GainSelector]: base 0x1001C, 4 bytes per index</ToolTip>
+      <Address>0x1001C</Address>
+      <pIndex Offset="4">GainSelectorReg</pIndex>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+  </Group>
+
+  <!-- ====================================================================== -->
+  <Group Comment="UserSetControl">
+
+    <Category Name="UserSetControl" NameSpace="Standard">
+      <ToolTip>Feature presets</ToolTip>
+      <pFeature>UserSetSelector</pFeature>
+      <pFeature>UserSetLoad</pFeature>
+    </Category>
+
+    <Enumeration Name="UserSetSelector" NameSpace="Standard">
+      <ToolTip>Selects the user set UserSetLoad acts on</ToolTip>
+      <EnumEntry Name="EnumEntry_UserSetSelector_Default" NameSpace="Standard">
+        <Value>0</Value>
+        <Symbolic>Default</Symbolic>
+      </EnumEntry>
+      <EnumEntry Name="EnumEntry_UserSetSelector_UserSet1" NameSpace="Standard">
+        <Value>1</Value>
+        <Symbolic>UserSet1</Symbolic>
+      </EnumEntry>
+      <pValue>UserSetSelectorReg</pValue>
+      <pSelected>UserSetLoad</pSelected>
+    </Enumeration>
+
+    <IntReg Name="UserSetSelectorReg">
+      <Address>0x10044</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Command Name="UserSetLoad" NameSpace="Standard">
+      <ToolTip>Restore the feature registers of the selected user set (the simulator restores its construction defaults)</ToolTip>
+      <pValue>UserSetLoadReg</pValue>
+      <CommandValue>1</CommandValue>
+      <PollingTime>10</PollingTime>
+    </Command>
+
+    <IntReg Name="UserSetLoadReg">
+      <Address>0x10048</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Cachable>NoCache</Cachable>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+  </Group>
+
+  <!-- ====================================================================== -->
+  <Group Comment="TransportLayerControl">
+
+    <Category Name="TransportLayerControl" NameSpace="Standard">
+      <ToolTip>GVCP/GVSP bootstrap registers exposed as features</ToolTip>
+      <pFeature>PayloadSize</pFeature>
+      <pFeature>GevHeartbeatTimeout</pFeature>
+      <pFeature>GevSCPSPacketSize</pFeature>
+      <pFeature>GevSCPD</pFeature>
+      <pFeature>GevSCDA</pFeature>
+      <pFeature>GevSCPHostPort</pFeature>
+      <pFeature>GevCCP</pFeature>
+      <pFeature>GevSCCExtendedIds</pFeature>
+      <pFeature>GevSCCFGExtendedIds</pFeature>
+      <pFeature>TLParamsLocked</pFeature>
+    </Category>
+
+    <IntSwissKnife Name="PayloadSize" NameSpace="Standard">
+      <ToolTip>Bytes of one image: ceil(Width * bitsPerPixel / 8) * Height, where bitsPerPixel is bits 23..16 of the PFNC code</ToolTip>
+      <pInvalidator>Width</pInvalidator>
+      <pInvalidator>Height</pInvalidator>
+      <pInvalidator>PixelFormat</pInvalidator>
+      <pVariable Name="WIDTH">Width</pVariable>
+      <pVariable Name="HEIGHT">Height</pVariable>
+      <pVariable Name="PIXFMT">PixelFormatReg</pVariable>
+      <Formula>((WIDTH * ((PIXFMT &gt;&gt; 16) &amp; 0xFF) + 7) / 8) * HEIGHT</Formula>
+      <Representation>Linear</Representation>
+    </IntSwissKnife>
+
+    <Integer Name="GevHeartbeatTimeout" NameSpace="Standard">
+      <ToolTip>Heartbeat timeout in ms (bootstrap 0x0938); 0 disables the timeout in the simulator</ToolTip>
+      <pValue>GevHeartbeatTimeoutReg</pValue>
+      <Unit>ms</Unit>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <IntReg Name="GevHeartbeatTimeoutReg">
+      <Address>0x938</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="GevSCPSPacketSize" NameSpace="Standard">
+      <ToolTip>Stream packet size including IP and UDP headers (bootstrap 0x0D04, bits 15..0)</ToolTip>
+      <pValue>GevSCPSPacketSizeReg</pValue>
+      <Min>220</Min>
+      <Max>16000</Max>
+      <Inc>1</Inc>
+      <Unit>B</Unit>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <MaskedIntReg Name="GevSCPSPacketSizeReg">
+      <Address>0xD04</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <LSB>31</LSB>
+      <MSB>16</MSB>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </MaskedIntReg>
+
+    <Integer Name="GevSCPD" NameSpace="Standard">
+      <ToolTip>Inter-packet delay in timestamp ticks (bootstrap 0x0D08)</ToolTip>
+      <pValue>GevSCPDReg</pValue>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <IntReg Name="GevSCPDReg">
+      <Address>0xD08</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="GevSCDA" NameSpace="Standard">
+      <ToolTip>Stream destination IPv4 address (bootstrap 0x0D18)</ToolTip>
+      <pValue>GevSCDAReg</pValue>
+      <Representation>IPV4Address</Representation>
+    </Integer>
+
+    <IntReg Name="GevSCDAReg">
+      <Address>0xD18</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Integer Name="GevSCPHostPort" NameSpace="Standard">
+      <ToolTip>Stream destination UDP port (bootstrap 0x0D00, bits 15..0); 0 closes the channel</ToolTip>
+      <pValue>GevSCPHostPortReg</pValue>
+      <Min>0</Min>
+      <Max>65535</Max>
+      <Representation>Linear</Representation>
+    </Integer>
+
+    <MaskedIntReg Name="GevSCPHostPortReg">
+      <Address>0xD00</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <LSB>31</LSB>
+      <MSB>16</MSB>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </MaskedIntReg>
+
+    <Integer Name="GevCCP" NameSpace="Standard">
+      <ToolTip>Control channel privilege (bootstrap 0x0A00): 0 open, 2 control, 3 exclusive</ToolTip>
+      <pValue>GevCCPReg</pValue>
+      <Representation>HexNumber</Representation>
+    </Integer>
+
+    <IntReg Name="GevCCPReg">
+      <Address>0xA00</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Cachable>NoCache</Cachable>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </IntReg>
+
+    <Boolean Name="GevSCCExtendedIds" NameSpace="Custom">
+      <ToolTip>Stream channel capability: 64-bit block ids supported (bootstrap 0x0D20, integer bit 1)</ToolTip>
+      <pValue>GevSCCExtendedIdsReg</pValue>
+    </Boolean>
+
+    <MaskedIntReg Name="GevSCCExtendedIdsReg">
+      <Address>0xD20</Address>
+      <Length>4</Length>
+      <AccessMode>RO</AccessMode>
+      <pPort>Device</pPort>
+      <Bit>30</Bit>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </MaskedIntReg>
+
+    <Boolean Name="GevSCCFGExtendedIds" NameSpace="Custom">
+      <ToolTip>Stream channel configuration: send 64-bit block ids (bootstrap 0x0D24, integer bit 1)</ToolTip>
+      <pValue>GevSCCFGExtendedIdsReg</pValue>
+    </Boolean>
+
+    <MaskedIntReg Name="GevSCCFGExtendedIdsReg">
+      <Address>0xD24</Address>
+      <Length>4</Length>
+      <AccessMode>RW</AccessMode>
+      <pPort>Device</pPort>
+      <Bit>30</Bit>
+      <Sign>Unsigned</Sign>
+      <Endianess>BigEndian</Endianess>
+    </MaskedIntReg>
+
+    <IntSwissKnife Name="AcquisitionCommandLocked">
+      <ToolTip>Acquisition commands stay locked until the host has configured the stream channel and set TLParamsLocked.</ToolTip>
+      <Visibility>Invisible</Visibility>
+      <pVariable Name="TLLOCKED">TLParamsLocked</pVariable>
+      <Formula>TLLOCKED = 0</Formula>
+    </IntSwissKnife>
+
+    <Integer Name="TLParamsLocked" NameSpace="Standard">
+      <ToolTip>Host-side flag consumers set while streaming; stored in the node map only</ToolTip>
+      <Visibility>Invisible</Visibility>
+      <Value>0</Value>
+      <Min>0</Min>
+      <Max>1</Max>
+    </Integer>
+
+  </Group>
+
+</RegisterDescription>

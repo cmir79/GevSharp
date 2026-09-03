@@ -1,0 +1,50 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.7.11919.86
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GevSharp", "src\GevSharp\GevSharp.csproj", "{3A7C1E52-9B4D-4F0E-8C21-6D5E7F8A9B01}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GevSharp.Tests", "tests\GevSharp.Tests\GevSharp.Tests.csproj", "{4B8D2F63-0C5E-4A1F-9D32-7E6F8A9B0C12}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GevSharp.Sim", "tests\GevSharp.Sim\GevSharp.Sim.csproj", "{5C9E3A74-1D6F-4B20-AE43-8F7A9B0C1D23}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GevSharp.Cli", "samples\GevSharp.Cli\GevSharp.Cli.csproj", "{6DAF4B85-2E70-4C31-BF54-9A8B0C1D2E34}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{7EB05C96-3F81-4D42-A065-AB9C1D2E3F45}"
+	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+		.gitattributes = .gitattributes
+		.gitignore = .gitignore
+		Directory.Build.props = Directory.Build.props
+		LICENSE = LICENSE
+		README.md = README.md
+		THIRD-PARTY-NOTICES.md = THIRD-PARTY-NOTICES.md
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3A7C1E52-9B4D-4F0E-8C21-6D5E7F8A9B01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3A7C1E52-9B4D-4F0E-8C21-6D5E7F8A9B01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3A7C1E52-9B4D-4F0E-8C21-6D5E7F8A9B01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3A7C1E52-9B4D-4F0E-8C21-6D5E7F8A9B01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4B8D2F63-0C5E-4A1F-9D32-7E6F8A9B0C12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4B8D2F63-0C5E-4A1F-9D32-7E6F8A9B0C12}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4B8D2F63-0C5E-4A1F-9D32-7E6F8A9B0C12}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4B8D2F63-0C5E-4A1F-9D32-7E6F8A9B0C12}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C9E3A74-1D6F-4B20-AE43-8F7A9B0C1D23}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C9E3A74-1D6F-4B20-AE43-8F7A9B0C1D23}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C9E3A74-1D6F-4B20-AE43-8F7A9B0C1D23}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C9E3A74-1D6F-4B20-AE43-8F7A9B0C1D23}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6DAF4B85-2E70-4C31-BF54-9A8B0C1D2E34}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6DAF4B85-2E70-4C31-BF54-9A8B0C1D2E34}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6DAF4B85-2E70-4C31-BF54-9A8B0C1D2E34}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6DAF4B85-2E70-4C31-BF54-9A8B0C1D2E34}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

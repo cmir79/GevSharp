@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 자작 픽스처: 루트 카테고리 하나, IntReg 하나, pValue 로 그 레지스터를 가리키는 Integer 하나, Port 하나. -->
+<RegisterDescription
+    ModelName="GevSharpMinimal"
+    VendorName="GevSharp"
+    ToolTip="Minimal hand-written GenApi fixture"
+    StandardNameSpace="GEV"
+    SchemaMajorVersion="1"
+    SchemaMinorVersion="1"
+    SchemaSubMinorVersion="0"
+    MajorVersion="1"
+    MinorVersion="2"
+    SubMinorVersion="3"
+    ProductGuid="0f0e0d0c-0b0a-4908-8706-050403020100"
+    VersionGuid="1f1e1d1c-1b1a-4918-8716-151413121110"
+    xmlns="http://www.genicam.org/GenApi/Version_1_1">
+
+  <Category Name="Root" NameSpace="Standard">
+    <ToolTip>Feature tree entry</ToolTip>
+    <pFeature>Width</pFeature>
+  </Category>
+
+  <Integer Name="Width" NameSpace="Standard">
+    <ToolTip>Image width</ToolTip>
+    <Description>Width of the image in pixels.</Description>
+    <DisplayName>Width</DisplayName>
+    <Visibility>Beginner</Visibility>
+    <Streamable>Yes</Streamable>
+    <pValue>WidthReg</pValue>
+    <Min>1</Min>
+    <Max>4096</Max>
+    <Inc>1</Inc>
+    <Representation>Linear</Representation>
+  </Integer>
+
+  <IntReg Name="WidthReg">
+    <Address>0x10000</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Sign>Unsigned</Sign>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+
+  <Port Name="Device">
+    <ToolTip>Device register space</ToolTip>
+  </Port>
+
+</RegisterDescription>

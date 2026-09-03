@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- 실카메라 평가용 콘솔 도구 — discover / info / features / get / set / grab / regtest / sim. 라이브러리 소비 예제를 겸한다. -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>GevSharp.Cli</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GevSharp\GevSharp.csproj" />
+    <!-- sim 하위 명령이 인프로세스 시뮬레이터를 독립 가짜 카메라로 띄운다. -->
+    <ProjectReference Include="..\..\tests\GevSharp.Sim\GevSharp.Sim.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Tests\ 는 xunit 테스트 소스다 — 이 실행 파일에는 넣지 않고 tests/GevSharp.Tests 가 가져다 컴파일한다. -->
+    <Compile Remove="Tests\**" />
+  </ItemGroup>
+
+</Project>

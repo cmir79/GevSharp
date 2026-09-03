@@ -1,0 +1,76 @@
+# 기본: 텍스트로 자동 판정, 체크아웃 시 CRLF 고정
+* text=auto eol=crlf
+
+# ---------- C# / .NET ----------
+*.cs        text eol=crlf
+*.csx       text eol=crlf
+*.vb        text eol=crlf
+*.fs        text eol=crlf
+
+# ---------- 프로젝트 / 솔루션 ----------
+*.csproj    text eol=crlf
+*.vbproj    text eol=crlf
+*.fsproj    text eol=crlf
+*.props     text eol=crlf
+*.targets   text eol=crlf
+*.sln       text eol=crlf
+*.slnx      text eol=crlf
+
+# ---------- XAML / XML / 설정 ----------
+*.xaml      text eol=crlf
+*.xml       text eol=crlf
+*.config    text eol=crlf
+*.resx      text eol=crlf
+*.manifest  text eol=crlf
+*.nuspec    text eol=crlf
+
+# ---------- JSON / YAML / 문서 ----------
+*.json      text eol=crlf
+*.yml       text eol=crlf
+*.yaml      text eol=crlf
+*.md        text eol=crlf
+*.txt       text eol=crlf
+
+# ---------- 스크립트 ----------
+*.ps1       text eol=crlf
+*.psm1      text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Bash/Shell 은 LF 유지 (Windows에서도 CRLF로 저장되면 실행 실패)
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# ---------- 에디터 / git 메타 ----------
+.editorconfig   text eol=crlf
+.gitignore      text eol=crlf
+.gitattributes  text eol=crlf
+
+# ---------- 바이너리 ----------
+*.dll       binary
+*.exe       binary
+*.pdb       binary
+*.snk       binary
+*.pfx       binary
+*.lib       binary
+*.so        binary
+*.dylib     binary
+
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.bmp       binary
+*.ico       binary
+*.tiff      binary
+*.webp      binary
+
+*.zip       binary
+*.7z        binary
+*.rar       binary
+*.gz        binary
+
+*.pdf       binary
+*.xlsx      binary
+*.docx      binary
+*.pptx      binary
