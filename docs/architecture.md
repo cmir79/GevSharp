@@ -634,15 +634,16 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
   frame sequences drive the simulator in software-trigger mode (`SimRig.TriggerAsync`) instead of relying
   on its free-running frame rate. A defect these tests find is fixed, not gated: the assertion message names
   the file and the cause so the test keeps guarding the fix.
-- **macOS is not a verified platform.** The suite passes on Windows and Linux (and on .NET Framework 4.8 via
-  the net48 leg). On a macOS-arm64 runner it does not finish: each namespace passes on its own in 11-13
-  seconds, but running the whole suite together starves the streaming tests of frames, so each burns its
-  10-second receive timeout and the job exceeds six minutes. Core count (reproduced locally at 3 cores),
-  the file-descriptor limit (raised to 8192, no change) and an unbounded thread join in `StopAsync` were all
-  checked; the join was a real defect and is fixed, but it was not this. The cause is unknown. macOS runs in
-  its own non-blocking CI job that keeps collecting diagnostics (`GEVSHARP_TEST_LOG` attaches the library log
-  to a file, which is how the 15-second timeout pattern was identified). Nothing here says the library is
-  broken on macOS — only that we have not shown it works.
+- **macOS: the build is verified, running the suite is not.** CI compiles all three TFMs on macOS-arm64 and
+  that check blocks like any other, so a platform-specific compile error is caught. The test suite is a
+  different matter: each namespace passes on its own in 11-13 seconds, but running the whole suite together
+  starves the streaming tests of frames, so each burns its 10-second receive timeout and the job runs past
+  six minutes. Core count (reproduced locally at 3 cores), the file-descriptor limit (raised to 8192, no
+  change) and an unbounded thread join in `StopAsync` were each checked; the join was a real defect and is
+  fixed, but it was not the cause here. **The cause is unknown**, so CI does not run the suite on macOS —
+  a permanently red check is one nobody reads, and then a real regression hides behind it. Note what this
+  does and does not say: the library compiles on macOS and nothing has shown it broken there; we simply
+  have not demonstrated that it runs. Anyone deploying on macOS should run the suite locally first.
 - `Category=VirtualCamera` tests run only when `GEVSHARP_VIRTUAL_CAMERA=<ip>` is set (CI on Linux). They point the same code at a device somebody else wrote, which is the only check we have that the receiver is not merely agreeing with our own simulator.
 - No vendor XML in the repository. Real-camera XMLs are validated locally from an ignored folder.
 - **The `netstandard2.0` asset is executed, not merely compiled.** `tests/GevSharp.Net48` links the same test

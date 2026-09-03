@@ -24,8 +24,9 @@ GVCP device control, GVSP streaming with packet resend, and GenICam GenApi XML f
 
 Early development — see `docs/` for the design and the milestone plan. The library is exercised
 against an in-process device simulator (`tests/GevSharp.Sim`) and a third-party virtual camera in CI,
-on Linux, macOS and Windows, plus a .NET Framework 4.8 run of the same tests against the
-`netstandard2.0` asset. Real-camera validation is tracked in `docs/evaluation.md`, which records what
+on Linux and Windows, plus a .NET Framework 4.8 run of the same tests against the `netstandard2.0` asset.
+macOS is compiled in CI for all three target frameworks but the suite is not run there yet — see
+`docs/architecture.md` for what that does and does not mean. Real-camera validation is tracked in `docs/evaluation.md`, which records what
 the hardware settled that no public source did.
 
 ## Quick look
