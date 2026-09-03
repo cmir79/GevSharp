@@ -356,3 +356,36 @@ both answer `INVALID_ADDRESS`. Its stream-channel writes are otherwise exact (SC
 all read back what was written). And while it saturates the link it stops answering GVCP within
 about a second of `AcquisitionStart`, so a short heartbeat timeout can misread a healthy stream as
 lost control; control recovers as soon as acquisition stops.
+
+### Two cameras at once, 10 minutes, 2026-09-03 — and why inter-packet delay is not optional
+
+Both cameras on one 1 GbE port, free-running, is not a test of this library — it is a test of the
+wire. Two 5 MP sensors at their full rate ask for about 140 MB/s and the port carries about 119,
+so the first attempt simply measured saturation: 119.4 MB/s received in total, and almost every
+frame incomplete on both cameras.
+
+Capping each camera at 5 fps drops the demand to about 50 MB/s, which fits with room to spare, and
+yet the second attempt was worse on one camera than the first: the Crevis delivered 12 frames out
+of 3000 and lost 20 % of its packets while the link ran at 363 Mbps. Bandwidth was never the
+constraint. A camera does not spread a frame over the frame period — it sends the whole frame at
+line rate and then idles, so two cameras that happen to burst together ask for 2 Gbps from a 1 Gbps
+port no matter how low the frame rate is. Whatever buffers that burst overflows, and the loss lands
+on whichever camera the switch drops.
+
+Inter-packet delay is what spreads the burst. Setting SCPD so that packets leave about 150 us apart
+(18,750 ticks at the Basler's 125 MHz, 10,000 at the Crevis's 66.67 MHz) turns the same run into
+this:
+
+| Camera | Frames | Incomplete | Packets | Missing | Throughput |
+|---|---|---|---|---|---|
+| Basler acA2500-14gm | 3000 / 3000 at 5.00 fps | 0 | 1,695,000 | 0 | 25.22 MB/s |
+| Crevis MG-A500M-22 | 3000 / 3000 at 5.00 fps | 0 | 1,704,000 | 0 | 25.35 MB/s |
+
+Ten minutes, two vendors, 3.4 million packets, nothing missing and no incomplete frame. The Crevis
+asked for 436 resends it did not need — the 20 ms packet timeout fires on a packet that is merely
+spaced out rather than lost, and the original arrives before the resend would have. Raising
+`--packet-timeout` alongside a large packet delay removes that noise; it costs nothing here because
+no frame was ever short.
+
+The practical rule for more than one camera on one port: cap the frame rates so the average fits,
+then set SCPD so the bursts do too. The first alone is not enough.
