@@ -34,11 +34,20 @@ jobs:
         run: dotnet build --no-restore -c Release
       # 시한과 멈춘-테스트 탐지를 함께 건다. 잡이 밖에서 취소되면 로그가 통째로 사라지지만,
       # 여기서 시한을 넘겨 실패하면 그때까지의 출력이 남고 --long-running 이 어느 테스트가 붙들고 있었는지 이름을 찍는다.
+      # macOS 는 프로세스당 파일 디스크립터 한도가 기본 256 으로 낮다(리눅스는 수만). 이 스위트는 테스트마다
+      # UDP 소켓을 여러 개 열고 병렬로 도므로 한도에 닿으면 소켓 생성이 실패하거나 막힌다 — 묶음을 따로 돌리면
+      # 동시 소켓 수가 적어 통과하고 전체를 함께 돌리면 서던 것이 이것과 맞는다. 한도를 올려 확인한다.
+      - name: Raise the file-descriptor limit (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          ulimit -n || true
+          echo "soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
       - name: Test (in-process simulator)
         timeout-minutes: 5
         # 진단 로그를 디스크에 동기로 쓴다 — 프로세스가 시한으로 강제 종료돼도 어디까지 갔는지 파일에 남는다.
         # (stdout 은 버퍼에 있다가 종료와 함께 사라져, 12분을 돌고도 한 줄도 건지지 못한 적이 있다.)
-        run: >-
+        run: |
+          if [ "${{ runner.os }}" != "Windows" ]; then ulimit -n 8192 2>/dev/null || ulimit -n $(ulimit -Hn) 2>/dev/null || true; echo "fd limit now $(ulimit -Sn)"; fi
           dotnet test --no-build -c Release --report-trx --results-directory TestResults
           --long-running 30 --timeout 4m
           --diagnostic --diagnostic-output-directory TestResults/diag
