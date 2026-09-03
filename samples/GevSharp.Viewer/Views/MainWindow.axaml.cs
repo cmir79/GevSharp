@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
@@ -35,8 +36,35 @@ public partial class MainWindow : Window
         _ = node.CommitTextAsync();
     }
 
+    // 커서가 들어온 칸은 주기 갱신이 건드리지 않는다.
+    private void OnValueGotFocus(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is NodeVm node) node.BeginEdit();
+    }
+
+    // 칸을 벗어날 때도 쓴다 — Enter 를 안 치고 다른 곳을 눌러도 고친 값이 사라지지 않게.
+    private void OnValueLostFocus(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is not NodeVm node) return;
+        node.EndEdit();
+        if (node.IsDirty) _ = node.CommitTextAsync();
+    }
+
     private void OnExecute(object? sender, RoutedEventArgs e)
     {
         if ((sender as Control)?.DataContext is NodeVm node) _ = node.ExecuteAsync();
+    }
+
+    // 이름칸과 값칸의 경계를 끄는 동작. 오른쪽이 값칸이므로 오른쪽으로 끌면 값칸이 좁아진다.
+    private void OnValueColumnDrag(object? sender, VectorEventArgs e)
+    {
+        if (Vm is not { } vm) return;
+        vm.ValueColumnWidth = Math.Clamp(vm.ValueColumnWidth - e.Vector.X, 70, 400);
+    }
+
+    // 값 읽기는 UDP 왕복이라 트리를 통째로 읽지 않는다. 고른 것만 읽고, 카테고리를 고르면 그 안을 읽는다.
+    private void OnNodeSelected(object? sender, SelectionChangedEventArgs e)
+    {
+        if (e.AddedItems.Count > 0 && e.AddedItems[0] is NodeVm node) _ = Vm?.SelectNodeAsync(node);
     }
 }

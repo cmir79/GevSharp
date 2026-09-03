@@ -29,7 +29,22 @@ public sealed class MainVm : VmBase
     private Bitmap? _image;
     private string _frameInfo = "";
     private string _streamInfo = "";
-    private int _packetDelay;
+    private int _packetDelayUs;
+    private string? _selectedTitle;
+    private string? _selectedHint;
+    private NodeVm? _selectedNode;
+    private bool _autoRefresh = true;
+    private int _refreshIntervalMs = 100;
+    private double _valueColumnWidth = 120;
+    private bool _isPolling;
+    private readonly DispatcherTimer _poll;
+
+    public MainVm()
+    {
+        _poll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(_refreshIntervalMs) };
+        _poll.Tick += (_, _) => _ = PollAsync();
+        _poll.Start();
+    }
 
     public ObservableCollection<DeviceVm> Devices { get; } = new();
     public ObservableCollection<NodeVm> Nodes { get; } = new();
@@ -94,13 +109,111 @@ public sealed class MainVm : VmBase
     }
 
     /// <summary>
-    /// 패킷 간 지연(장치 틱). 한 포트에 카메라를 여럿 물리면 프레임레이트를 낮춰도 버스트가 겹쳐 유실되므로
-    /// 이 값으로 버스트를 펴 준다. 한 대만 쓰면 0 으로 둔다.
+    /// 트리에서 고른 노드의 설명. 트리 안에 띄우면 그만큼 칸이 벌어져 값 편집이 좁아지므로 영상 아래에 적는다.
     /// </summary>
-    public int PacketDelay
+    public string? SelectedTitle
     {
-        get => _packetDelay;
-        set => Set(ref _packetDelay, value);
+        get => _selectedTitle;
+        private set => Set(ref _selectedTitle, value);
+    }
+
+    public string? SelectedHint
+    {
+        get => _selectedHint;
+        private set => Set(ref _selectedHint, value);
+    }
+
+    /// <summary>
+    /// 고른 노드를 주기적으로 다시 읽을지. 장치가 스스로 바꾸는 값과, 옆 노드를 써서 풀린 잠금을 따라가려면 필요하다.
+    /// </summary>
+    public bool AutoRefresh
+    {
+        get => _autoRefresh;
+        set => Set(ref _autoRefresh, value);
+    }
+
+    public int RefreshIntervalMs
+    {
+        get => _refreshIntervalMs;
+        set
+        {
+            if (!Set(ref _refreshIntervalMs, value) || value <= 0) return;
+            _poll.Interval = TimeSpan.FromMilliseconds(value);
+        }
+    }
+
+    /// <summary>값 편집 칸의 폭. 피처 이름도 값도 장치마다 길이가 달라 사람이 맞추는 편이 낫다.</summary>
+    public double ValueColumnWidth
+    {
+        get => _valueColumnWidth;
+        set => Set(ref _valueColumnWidth, value);
+    }
+
+    /// <summary>노드가 쓰기에 성공하거나 실패한 것을 아래 상태줄로 올린다 — 트리 안 작은 글씨는 눈에 안 띈다.</summary>
+    private void ReportFromNode(string text, bool isError)
+    {
+        if (isError) { Error = text; }
+        else { Error = null; Status = text; }
+    }
+
+    /// <summary>트리 선택이 바뀌면 그 노드를 읽고 설명을 아래에 건다.</summary>
+    public Task SelectNodeAsync(NodeVm node)
+    {
+        _selectedNode = node;
+        SelectedTitle = node.Unit is { Length: > 0 } unit ? $"{node.Label}  ({node.Name}, {unit})" : $"{node.Label}  ({node.Name})";
+        SelectedHint = node.Hint;
+        return LoadAndDescribeAsync(node);
+    }
+
+    private async Task LoadAndDescribeAsync(NodeVm node)
+    {
+        await node.LoadAsync().ConfigureAwait(true);
+        if (!ReferenceEquals(node, _selectedNode) || node.IsCategory) return;
+        SelectedTitle += $"   —   {node.Access}";
+    }
+
+    /// <summary>
+    /// 화면에 보이는 것만 다시 읽는다. 읽기마다 왕복이라 트리 전체를 훑지 않고, 앞선 갱신이 아직 돌고 있으면 이번 차례는 건너뛴다.
+    /// 고른 것이 노드 하나면 같은 칸의 형제까지 본다 — 잠금은 대개 옆 노드가 푼다.
+    /// </summary>
+    private async Task PollAsync()
+    {
+        if (!AutoRefresh || _isPolling || IsBusy || !IsConnected) return;
+        var target = _selectedNode?.IsCategory == true ? _selectedNode : _selectedNode?.Parent ?? _selectedNode;
+        if (target is null) return;
+
+        _isPolling = true;
+        try { await target.PollAsync().ConfigureAwait(true); }
+        catch { /* 읽기 실패는 노드 옆에 이미 적힌다 */ }
+        finally { _isPolling = false; }
+    }
+
+    /// <summary>
+    /// 패킷 간 지연(마이크로초). 한 포트에 카메라를 여럿 물리면 프레임레이트를 낮춰도 버스트가 겹쳐 유실되므로
+    /// 이 값으로 버스트를 펴 준다. 한 대만 쓰면 0 으로 둔다.
+    /// <para>
+    /// 장치는 이 값을 자기 타임스탬프 틱으로 받는다. 틱 주파수는 장치마다 달라(실측 125 MHz 와 66.67 MHz)
+    /// 같은 지연이 다른 숫자가 되므로, 사람에게는 시간으로 받고 환산은 여기서 한다.
+    /// </para>
+    /// </summary>
+    public int PacketDelayUs
+    {
+        get => _packetDelayUs;
+        set => Set(ref _packetDelayUs, value);
+    }
+
+    /// <summary>마이크로초를 이 장치의 틱으로 환산한다. 틱 주파수를 모르면 적용하지 않는다 — 0 은 "지연 없음" 이라 조용한 미적용이 된다.</summary>
+    private int PacketDelayTicks(GevDevice device)
+    {
+        if (PacketDelayUs <= 0) return 0;
+        if (device.TimestampTickFrequency == 0)
+        {
+            Error = "the device does not report a timestamp tick frequency; the inter-packet delay was not applied";
+            return 0;
+        }
+
+        var ticks = (double)PacketDelayUs * device.TimestampTickFrequency / 1_000_000d;
+        return ticks >= int.MaxValue ? int.MaxValue : (int)Math.Round(ticks);
     }
 
     public Task DiscoverAsync() => RunAsync("Discovering", async () =>
@@ -126,7 +239,8 @@ public sealed class MainVm : VmBase
             var map = await _device.GetNodeMapAsync().ConfigureAwait(true);
 
             Nodes.Clear();
-            Nodes.Add(new NodeVm(map.Root) { IsExpanded = true });
+            // 루트는 그리지 않는다 — 이름이 장치마다 제각각이고 한 겹 더 펼치게 만들 뿐이다.
+            foreach (var feature in map.Root.Features) Nodes.Add(new NodeVm(feature, null, ReportFromNode));
             IsConnected = true;
             Status = $"{target.Title} open — {map.Nodes.Count} nodes, heartbeat {_device.HeartbeatPeriodMs} ms.";
         });
@@ -144,11 +258,12 @@ public sealed class MainVm : VmBase
 
         return RunAsync("Starting the stream", async () =>
         {
-            var opt = new GevStreamOpt { InterPacketDelay = PacketDelay };
+            var ticks = PacketDelayTicks(_device);
+            var opt = new GevStreamOpt { InterPacketDelay = ticks };
             _stream = await _device.OpenStreamAsync(opt).ConfigureAwait(true);
             await _stream.StartAsync().ConfigureAwait(true);
             StreamInfo = $"packet size {_stream.PacketSize} bytes, local port {_stream.LocalPort}"
-                       + (PacketDelay > 0 ? $", packet delay {PacketDelay} ticks" : "");
+                       + (ticks > 0 ? $", packet delay {PacketDelayUs} us ({ticks} ticks)" : "");
 
             // 스트림 채널을 다 세운 뒤에 취득을 건다 — 순서가 바뀌면 첫 프레임이 갈 곳이 없다.
             await _device.SetTlParamsLockedAsync(true).ConfigureAwait(true);
@@ -195,23 +310,22 @@ public sealed class MainVm : VmBase
                 using var frame = await stream.ReceiveAsync(ct).ConfigureAwait(false);
                 frames++;
 
-                var bitmap = await Dispatcher.UIThread.InvokeAsync(() => _render.Render(frame));
-
+                // 그림은 매 장 갱신하고 글자만 솎는다. 예전에는 글자와 함께 솎았는데, 그 사이에 버퍼가
+                // 짝수 번 바뀌면 같은 참조가 다시 들어가 바인딩이 갱신을 알아채지 못했다.
                 var elapsed = clock.Elapsed;
-                if (elapsed - lastReport < TimeSpan.FromMilliseconds(250)) continue;
-
+                var showStats = elapsed - lastReport >= TimeSpan.FromMilliseconds(250);
+                if (showStats) lastReport = elapsed;
                 var fps = frames / elapsed.TotalSeconds;
-                var format = Pfnc.PixelFormatInfo.ToPixelFormat(frame.PixelFormatCode);
-                var info = $"frame {frame.FrameId} · {frame.Width}x{frame.Height} · {format} · {fps:F1} fps"
-                         + (frame.IsComplete ? "" : $" · incomplete, {frame.MissingPackets} packets missing");
-                var unsupported = _render.Unsupported;
-                lastReport = elapsed;
 
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
-                    Image = bitmap;
-                    FrameInfo = info;
-                    Error = unsupported;
+                    Image = _render.Render(frame);
+                    if (!showStats) return;
+
+                    var format = Pfnc.PixelFormatInfo.ToPixelFormat(frame.PixelFormatCode);
+                    FrameInfo = $"frame {frame.FrameId} · {frame.Width}x{frame.Height} · {format} · {fps:F1} fps"
+                              + (frame.IsComplete ? "" : $" · incomplete, {frame.MissingPackets} packets missing");
+                    Error = _render.Unsupported;
                 });
             }
         }
@@ -281,6 +395,9 @@ public sealed class MainVm : VmBase
         Nodes.Clear();
         Image = null;
         FrameInfo = "";
+        SelectedTitle = null;
+        SelectedHint = null;
+        _selectedNode = null;
         IsConnected = false;
     }
 

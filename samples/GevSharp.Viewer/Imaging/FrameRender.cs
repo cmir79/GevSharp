@@ -12,7 +12,10 @@ namespace GevSharp.Viewer.Imaging;
 /// </summary>
 public sealed class FrameRender : IDisposable
 {
-    private WriteableBitmap? _bitmap;
+    // 비트맵 두 장을 번갈아 쓴다. 한 장을 계속 고쳐 쓰면 두 가지가 어긋난다 — 참조가 그대로라
+    // 바인딩이 갱신을 알아채지 못하고, 화면이 합성 중인 그림에 그대로 덮어써서 찢어진다.
+    private WriteableBitmap? _front;
+    private WriteableBitmap? _back;
     private int _width;
     private int _height;
     private ushort[] _scratch = Array.Empty<ushort>();
@@ -20,19 +23,22 @@ public sealed class FrameRender : IDisposable
     /// <summary>표시할 수 없는 포맷이면 그 이유. 표시에 성공하면 null.</summary>
     public string? Unsupported { get; private set; }
 
-    /// <summary>프레임을 비트맵에 그린다. 같은 크기면 같은 비트맵을 다시 쓴다 — 프레임마다 새로 만들지 않는다.</summary>
+    /// <summary>프레임을 그리고 그 비트맵을 돌려준다. 크기가 그대로면 두 장을 번갈아 쓸 뿐 새로 만들지 않는다.</summary>
     public WriteableBitmap? Render(GevFrame frame)
     {
         if (frame.Width <= 0 || frame.Height <= 0)
         {
             Unsupported = "frame carries no geometry";
-            return _bitmap;
+            return _front;
         }
 
-        EnsureBitmap(frame.Width, frame.Height);
+        EnsureBitmaps(frame.Width, frame.Height);
+        // 이번 장은 화면에 걸려 있지 않은 쪽에 그린다.
+        (_front, _back) = (_back, _front);
+        var target = _front!;
         var code = frame.PixelFormatCode;
 
-        using var locked = _bitmap!.Lock();
+        using var locked = target.Lock();
         var src = frame.Data.Span.Slice(0, frame.ImageSize);
 
         if (code == (uint)PfncFormat.Mono8)
@@ -61,7 +67,7 @@ public sealed class FrameRender : IDisposable
             Unsupported = $"{name} is not rendered by this viewer yet";
         }
 
-        return _bitmap;
+        return target;
     }
 
     /// <summary>줄 간격. 0 은 "줄 정렬이 없다" 는 뜻이라 폭에서 계산한 길이를 그대로 쓴다.</summary>
@@ -189,19 +195,26 @@ public sealed class FrameRender : IDisposable
         }
     }
 
-    private void EnsureBitmap(int width, int height)
+    private void EnsureBitmaps(int width, int height)
     {
-        if (_bitmap is not null && _width == width && _height == height) return;
-        _bitmap?.Dispose();
-        _bitmap = new WriteableBitmap(new PixelSize(width, height), new Vector(96, 96),
-            Avalonia.Platform.PixelFormat.Bgra8888, AlphaFormat.Opaque);
+        if (_front is not null && _back is not null && _width == width && _height == height) return;
+        _front?.Dispose();
+        _back?.Dispose();
+        _front = Create(width, height);
+        _back = Create(width, height);
         _width = width;
         _height = height;
     }
 
+    private static WriteableBitmap Create(int width, int height)
+        => new(new PixelSize(width, height), new Vector(96, 96),
+            Avalonia.Platform.PixelFormat.Bgra8888, AlphaFormat.Opaque);
+
     public void Dispose()
     {
-        _bitmap?.Dispose();
-        _bitmap = null;
+        _front?.Dispose();
+        _back?.Dispose();
+        _front = null;
+        _back = null;
     }
 }

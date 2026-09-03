@@ -4,7 +4,7 @@
         x:Class="GevSharp.Viewer.Views.MainWindow"
         x:DataType="vm:MainVm"
         Title="GevSharp Viewer"
-        Width="1280" Height="820"
+        Width="1360" Height="860"
         MinWidth="900" MinHeight="600">
 
   <Window.Styles>
@@ -18,6 +18,32 @@
       <Setter Property="CornerRadius" Value="4" />
       <Setter Property="Padding" Value="8" />
     </Style>
+    <Style Selector="GridSplitter">
+      <Setter Property="Background" Value="#22808080" />
+    </Style>
+
+    <!-- 속성 트리는 본문보다 작게. 값 칸이 커지면 라벨이 밀려 무슨 항목인지 안 보인다. -->
+    <Style Selector="TreeView.features">
+      <Setter Property="FontSize" Value="11" />
+    </Style>
+    <Style Selector="TreeView.features TreeViewItem">
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+    <Style Selector="TreeView.features TextBox">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="MinHeight" Value="22" />
+      <Setter Property="Padding" Value="4,1" />
+    </Style>
+    <Style Selector="TreeView.features ComboBox">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="MinHeight" Value="22" />
+      <Setter Property="Padding" Value="6,1" />
+    </Style>
+    <Style Selector="TreeView.features Button">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Padding" Value="8,2" />
+    </Style>
   </Window.Styles>
 
   <DockPanel>
@@ -26,103 +52,148 @@
     <Border DockPanel.Dock="Bottom" Padding="10,6" Background="#22808080">
       <StackPanel Orientation="Horizontal" Spacing="12">
         <TextBlock Text="{Binding Status}" VerticalAlignment="Center" />
-        <TextBlock Text="{Binding Error}" Foreground="#E06C75" VerticalAlignment="Center"
+        <TextBlock Text="{Binding Error}" Foreground="#E06C75" VerticalAlignment="Center" TextWrapping="Wrap"
                    IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
       </StackPanel>
     </Border>
 
-    <!-- 왼쪽: 검색된 장치와 연결·라이브 조작 -->
-    <Border Classes="panel" DockPanel.Dock="Left" Width="330" Margin="8,8,4,8">
-      <DockPanel>
-        <StackPanel DockPanel.Dock="Top" Spacing="6">
-          <Button Content="Discover" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                  Click="OnDiscover" IsEnabled="{Binding IsIdle}" />
-          <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
-            <Button Grid.Column="0" Content="Connect" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                    Click="OnConnect" IsEnabled="{Binding IsIdle}" />
-            <Button Grid.Column="1" Content="Close" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                    Click="OnDisconnect" IsEnabled="{Binding IsConnected}" />
-          </Grid>
-          <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
-            <Button Grid.Column="0" Content="Live" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                    Click="OnStartLive" IsEnabled="{Binding IsConnected}" />
-            <Button Grid.Column="1" Content="Stop" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                    Click="OnStopLive" IsEnabled="{Binding IsLive}" />
-          </Grid>
+    <!-- 폭은 열 정의가 갖는다. 칸 내용에도 폭을 박으면 스플리터와 서로 밀어 겹친다. -->
+    <Grid Margin="8">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="330" MinWidth="240" />
+        <ColumnDefinition Width="6" />
+        <ColumnDefinition Width="*" MinWidth="280" />
+        <ColumnDefinition Width="6" />
+        <ColumnDefinition Width="470" MinWidth="300" />
+      </Grid.ColumnDefinitions>
 
-          <StackPanel Spacing="2" Margin="0,4,0,0">
-            <TextBlock Classes="caption" Text="Inter-packet delay (device ticks)" />
-            <NumericUpDown Value="{Binding PacketDelay}" Minimum="0" Maximum="1000000" Increment="1000"
-                           FormatString="0" IsEnabled="{Binding IsNotLive}" />
-            <TextBlock Classes="caption" TextWrapping="Wrap"
-                       Text="Leave at 0 for a single camera. With several cameras on one port, raise it until frames stop arriving incomplete — capping the frame rate alone does not stop the bursts from colliding." />
+      <!-- 왼쪽: 검색된 장치와 연결·라이브 조작 -->
+      <Border Grid.Column="0" Classes="panel">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Spacing="6">
+            <Button Content="Discover" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                    Click="OnDiscover" IsEnabled="{Binding IsIdle}" />
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+              <Button Grid.Column="0" Content="Connect" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                      Click="OnConnect" IsEnabled="{Binding IsIdle}" />
+              <Button Grid.Column="1" Content="Close" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                      Click="OnDisconnect" IsEnabled="{Binding IsConnected}" />
+            </Grid>
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+              <Button Grid.Column="0" Content="Live" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                      Click="OnStartLive" IsEnabled="{Binding IsConnected}" />
+              <Button Grid.Column="1" Content="Stop" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                      Click="OnStopLive" IsEnabled="{Binding IsLive}" />
+            </Grid>
+
+            <StackPanel Spacing="2" Margin="0,4,0,0">
+              <TextBlock Classes="caption" Text="Inter-packet delay (microseconds)" />
+              <NumericUpDown Value="{Binding PacketDelayUs}" Minimum="0" Maximum="100000" Increment="25"
+                             FormatString="0" IsEnabled="{Binding IsNotLive}" />
+              <TextBlock Classes="caption" TextWrapping="Wrap"
+                         Text="Leave at 0 for one camera per port. With several cameras sharing a port, raise it until frames stop arriving incomplete — capping the frame rate alone does not stop the bursts from colliding. Two 5 MP cameras on one 1 GbE port needed about 150 us." />
+            </StackPanel>
+
+            <StackPanel Spacing="2" Margin="0,4,0,0">
+              <CheckBox IsChecked="{Binding AutoRefresh}" Content="Re-read the selected features" FontSize="12" />
+              <TextBlock Classes="caption" TextWrapping="Wrap"
+                         Text="Some features change on their own — temperature, auto-exposure results, and whatever a write to a neighbour unlocks. Each re-read is a round trip, so only the selected group is polled, and a field being edited is left alone." />
+              <NumericUpDown Value="{Binding RefreshIntervalMs}" Minimum="100" Maximum="10000" Increment="50"
+                             FormatString="0" IsEnabled="{Binding AutoRefresh}" />
+            </StackPanel>
+
+            <TextBlock Classes="caption" Text="{Binding StreamInfo}" TextWrapping="Wrap" Margin="0,4,0,0" />
+            <Separator Margin="0,6" />
           </StackPanel>
 
-          <TextBlock Classes="caption" Text="{Binding StreamInfo}" TextWrapping="Wrap" Margin="0,4,0,0" />
-          <Separator Margin="0,6" />
-        </StackPanel>
+          <ListBox ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:DeviceVm">
+                <StackPanel Spacing="1" Margin="0,2">
+                  <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <TextBlock Classes="caption" Text="{Binding Detail}" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
+                             IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
 
-        <ListBox ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}">
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="vm:DeviceVm">
-              <StackPanel Spacing="1" Margin="0,2">
-                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
-                <TextBlock Classes="caption" Text="{Binding Detail}" />
-                <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
-                           IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      <GridSplitter Grid.Column="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
+
+      <!-- 가운데: 라이브 영상과, 트리에서 고른 항목의 설명 -->
+      <Border Grid.Column="2" Classes="panel" Background="#11000000">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Bottom" Spacing="4" Margin="0,6,0,0">
+            <TextBlock Classes="caption" Text="{Binding FrameInfo}" />
+            <Border Background="#18808080" CornerRadius="3" Padding="8,5" MinHeight="52"
+                    IsVisible="{Binding SelectedTitle, Converter={x:Static ObjectConverters.IsNotNull}}">
+              <StackPanel Spacing="2">
+                <TextBlock Text="{Binding SelectedTitle}" FontWeight="SemiBold" FontSize="12" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding SelectedHint}" FontSize="11" Opacity="0.75" TextWrapping="Wrap" />
               </StackPanel>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </DockPanel>
-    </Border>
+            </Border>
+          </StackPanel>
+          <Image Source="{Binding Image}" Stretch="Uniform" />
+        </DockPanel>
+      </Border>
 
-    <!-- 오른쪽: 카메라가 XML 로 스스로 설명한 대로 그리는 속성 트리 -->
-    <Border Classes="panel" DockPanel.Dock="Right" Width="440" Margin="4,8,8,8">
-      <DockPanel>
-        <TextBlock DockPanel.Dock="Top" Classes="caption" Margin="0,0,0,6" TextWrapping="Wrap"
-                   Text="Features as the camera declares them. Expand a category to read its values — each read is a round trip to the device." />
-        <TreeView ItemsSource="{Binding Nodes}">
-          <TreeView.ItemTemplate>
-            <TreeDataTemplate x:DataType="vm:NodeVm" ItemsSource="{Binding Children}">
-              <Grid ColumnDefinitions="*,Auto" Margin="0,2" ToolTip.Tip="{Binding Hint}">
-                <StackPanel Grid.Column="0" Spacing="1" VerticalAlignment="Center">
-                  <TextBlock Text="{Binding Label}" />
-                  <TextBlock Classes="caption" Text="{Binding Status}"
-                             IsVisible="{Binding Status, Converter={x:Static ObjectConverters.IsNotNull}}" />
-                </StackPanel>
+      <GridSplitter Grid.Column="3" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                  <TextBox Text="{Binding Text}" Width="130" IsReadOnly="{Binding IsReadOnly}"
-                           IsVisible="{Binding IsTextual}" KeyDown="OnValueKeyDown" />
-                  <TextBlock Classes="caption" Text="{Binding Unit}" VerticalAlignment="Center"
-                             IsVisible="{Binding IsTextual}" />
-                  <CheckBox IsChecked="{Binding BoolValue}" IsEnabled="{Binding !IsReadOnly}"
-                            IsVisible="{Binding IsBoolean}" />
-                  <ComboBox ItemsSource="{Binding EnumOptions}" SelectedItem="{Binding EnumValue}"
-                            Width="150" IsEnabled="{Binding !IsReadOnly}" IsVisible="{Binding IsEnumeration}" />
-                  <Button Content="Execute" Click="OnExecute" IsEnabled="{Binding !IsReadOnly}"
-                          IsVisible="{Binding IsCommand}" />
-                </StackPanel>
-              </Grid>
-            </TreeDataTemplate>
-          </TreeView.ItemTemplate>
-          <TreeView.Styles>
-            <Style Selector="TreeViewItem" x:DataType="vm:NodeVm">
-              <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
-            </Style>
-          </TreeView.Styles>
-        </TreeView>
-      </DockPanel>
-    </Border>
+      <!-- 오른쪽: 카메라가 XML 로 스스로 설명한 대로 그리는 속성 트리 -->
+      <Border Grid.Column="4" Classes="panel">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Classes="caption" Margin="0,0,0,6" TextWrapping="Wrap"
+                     Text="Features as the camera declares them. Click one to read it — each read is a round trip to the device. What it means is shown under the image." />
 
-    <!-- 가운데: 라이브 영상 -->
-    <Border Classes="panel" Margin="4,8" Background="#11000000">
-      <DockPanel>
-        <TextBlock DockPanel.Dock="Bottom" Classes="caption" Text="{Binding FrameInfo}" Margin="0,6,0,0" />
-        <Image Source="{Binding Image}" Stretch="Uniform" />
-      </DockPanel>
-    </Border>
+          <!-- 이름칸과 값칸의 경계. 표의 열 구분선처럼 여기를 끌어 값칸 폭을 바꾼다. -->
+          <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,16,4">
+            <TextBlock Grid.Column="0" Classes="caption" Text="Feature" VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+              <Thumb Name="ValueSplitter" Width="7" Cursor="SizeWestEast" Background="#22808080"
+                     DragDelta="OnValueColumnDrag" />
+              <TextBlock Classes="caption" Text="Value" VerticalAlignment="Center" Margin="6,0,0,0"
+                         Width="{Binding ValueColumnWidth}" />
+            </StackPanel>
+          </Grid>
 
+          <TreeView Classes="features" ItemsSource="{Binding Nodes}" SelectionChanged="OnNodeSelected">
+            <TreeView.ItemTemplate>
+              <TreeDataTemplate x:DataType="vm:NodeVm" ItemsSource="{Binding Children}">
+                <!-- 오른쪽 여백은 스크롤바 자리 — 없으면 값 칸이 스크롤바에 가린다. -->
+                <Grid ColumnDefinitions="*,Auto" Margin="0,1,16,1" MinHeight="24">
+                  <StackPanel Grid.Column="0" Spacing="0" VerticalAlignment="Center" Margin="0,0,8,0">
+                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Classes="caption" Text="{Binding Status}" TextTrimming="CharacterEllipsis"
+                               IsVisible="{Binding Status, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                  </StackPanel>
+
+                  <Panel Grid.Column="1" Width="{Binding $parent[TreeView].((vm:MainVm)DataContext).ValueColumnWidth}">
+                    <TextBox Text="{Binding Text}" IsReadOnly="{Binding IsReadOnly}" IsVisible="{Binding IsTextual}"
+                             KeyDown="OnValueKeyDown" GotFocus="OnValueGotFocus" LostFocus="OnValueLostFocus"
+                             HorizontalAlignment="Stretch" />
+                    <CheckBox IsChecked="{Binding BoolValue}" IsEnabled="{Binding !IsReadOnly}"
+                              IsVisible="{Binding IsBoolean}" VerticalAlignment="Center" />
+                    <ComboBox ItemsSource="{Binding EnumOptions}" SelectedItem="{Binding EnumValue}"
+                              IsEnabled="{Binding !IsReadOnly}" IsVisible="{Binding IsEnumeration}"
+                              HorizontalAlignment="Stretch" />
+                    <Button Content="Execute" Click="OnExecute" IsEnabled="{Binding !IsReadOnly}"
+                            IsVisible="{Binding IsCommand}" HorizontalAlignment="Left" />
+                  </Panel>
+                </Grid>
+              </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+            <TreeView.Styles>
+              <Style Selector="TreeViewItem" x:DataType="vm:NodeVm">
+                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+              </Style>
+            </TreeView.Styles>
+          </TreeView>
+        </DockPanel>
+      </Border>
+
+    </Grid>
   </DockPanel>
 </Window>

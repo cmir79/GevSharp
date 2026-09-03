@@ -14,24 +14,32 @@ namespace GevSharp.Viewer.ViewModels;
 public sealed class NodeVm : VmBase
 {
     private readonly INode _node;
+    private readonly Action<string, bool>? _report;
     private bool _isExpanded;
     private bool _hasLoadedChildren;
     private string _text = "";
     private bool? _boolValue;
     private string? _enumValue;
     private bool _isReadOnly = true;
+    private bool _isDirty;
+    private AccessMode _access = AccessMode.ReadWrite;
     private bool _isAvailable = true;
     private string? _status;
     private bool _isBusy;
 
-    public NodeVm(INode node)
+    public NodeVm(INode node, NodeVm? parent = null, Action<string, bool>? report = null)
     {
         _node = node;
+        Parent = parent;
+        _report = report;
         if (node is ICategory category)
         {
-            foreach (var feature in category.Features) Children.Add(new NodeVm(feature));
+            foreach (var feature in category.Features) Children.Add(new NodeVm(feature, this, report));
         }
     }
+
+    /// <summary>담고 있는 카테고리. 한 노드를 쓰면 같은 칸의 다른 노드가 풀리거나 잠기므로 그때 형제를 다시 읽는다.</summary>
+    public NodeVm? Parent { get; }
 
     public string Name => _node.Name;
     public string Label => string.IsNullOrWhiteSpace(_node.DisplayName) ? _node.Name : _node.DisplayName!;
@@ -60,15 +68,45 @@ public sealed class NodeVm : VmBase
         set
         {
             if (!Set(ref _isExpanded, value) || !value || _hasLoadedChildren) return;
-            _hasLoadedChildren = true;
-            _ = LoadChildrenAsync();
+            _ = LoadAsync();
         }
     }
 
+    /// <summary>
+    /// 편집 중인 글. 사용자가 고치면 <see cref="IsDirty"/> 가 서고, 그동안은 주기 갱신이 이 칸을 덮지 않는다 —
+    /// 타이핑하는 도중에 장치 값이 들어와 글자가 사라지면 못 쓴다.
+    /// </summary>
     public string Text
     {
         get => _text;
-        set => Set(ref _text, value);
+        set { if (Set(ref _text, value)) SetDirty(true); }
+    }
+
+    /// <summary>
+    /// 지금 이 칸에 커서가 있는지. 주기 갱신은 여기가 참인 칸만 건너뛴다 —
+    /// 고쳐 놓고 나간 칸까지 영영 건너뛰면 그 칸만 옛 값으로 남는다.
+    /// </summary>
+    public bool IsEditing { get; private set; }
+
+    public void BeginEdit() => IsEditing = true;
+
+    public void EndEdit() => IsEditing = false;
+
+    /// <summary>사용자가 고쳐 놓고 아직 쓰지 않은 상태.</summary>
+    public bool IsDirty
+    {
+        get => _isDirty;
+        private set => Set(ref _isDirty, value);
+    }
+
+    private void SetDirty(bool value) => IsDirty = value;
+
+    /// <summary>장치에서 읽은 값을 넣는다 — 이것은 사용자의 편집이 아니므로 편집 표시를 세우지 않는다.</summary>
+    private void SetTextFromDevice(string value)
+    {
+        _text = value;
+        Raise(nameof(Text));
+        SetDirty(false);
     }
 
     public bool? BoolValue
@@ -103,6 +141,13 @@ public sealed class NodeVm : VmBase
         private set => Set(ref _isAvailable, value);
     }
 
+    /// <summary>마지막으로 읽은 접근 권한. 왜 못 쓰는지를 화면에 적기 위해 남긴다.</summary>
+    public AccessMode Access
+    {
+        get => _access;
+        private set => Set(ref _access, value);
+    }
+
     /// <summary>읽기·쓰기가 거부되면 그 이유를 그대로 적는다 — 조용히 빈칸으로 두지 않는다.</summary>
     public string? Status
     {
@@ -129,12 +174,13 @@ public sealed class NodeVm : VmBase
         try
         {
             var access = await _node.GetAccessModeAsync().ConfigureAwait(true);
+            Access = access;
             IsAvailable = access is AccessMode.ReadOnly or AccessMode.ReadWrite or AccessMode.WriteOnly;
             IsReadOnly = access is not (AccessMode.ReadWrite or AccessMode.WriteOnly);
             if (!IsAvailable)
             {
                 Status = access == AccessMode.NotImplemented ? "not implemented" : "not available";
-                Text = "";
+                SetTextFromDevice("");
                 return;
             }
 
@@ -148,13 +194,13 @@ public sealed class NodeVm : VmBase
             switch (_node)
             {
                 case IInteger i:
-                    Text = (await i.GetAsync().ConfigureAwait(true)).ToString(CultureInfo.InvariantCulture);
+                    SetTextFromDevice((await i.GetAsync().ConfigureAwait(true)).ToString(CultureInfo.InvariantCulture));
                     break;
                 case IFloat f:
-                    Text = (await f.GetAsync().ConfigureAwait(true)).ToString("G6", CultureInfo.InvariantCulture);
+                    SetTextFromDevice((await f.GetAsync().ConfigureAwait(true)).ToString("G6", CultureInfo.InvariantCulture));
                     break;
                 case IString s:
-                    Text = await s.GetAsync().ConfigureAwait(true);
+                    SetTextFromDevice(await s.GetAsync().ConfigureAwait(true));
                     break;
                 case IBoolean b:
                     _boolValue = await b.GetAsync().ConfigureAwait(true);
@@ -179,8 +225,39 @@ public sealed class NodeVm : VmBase
         }
     }
 
-    private async Task LoadChildrenAsync()
+    /// <summary>
+    /// 주기 갱신. 장치가 스스로 바꾸는 값(온도·자동 노출 결과 등)을 따라가려면 다시 읽어야 한다.
+    /// 카테고리는 바로 아래 자식까지만 훑는다 — 트리를 깊이 따라가면 읽기 왕복이 걷잡을 수 없이 는다.
+    /// </summary>
+    public async Task PollAsync()
     {
+        if (IsCategory)
+        {
+            foreach (var child in Children)
+            {
+                if (!child.IsCategory) await child.PollAsync().ConfigureAwait(true);
+            }
+
+            return;
+        }
+
+        if (_isBusy || IsEditing) return;
+        await RefreshAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// 이 노드를 화면에 채운다. 카테고리면 그 안의 노드들을, 아니면 자기 값을 읽는다.
+    /// 펼치는 것과 고르는 것 양쪽에서 불린다 — 어느 쪽으로 들어와도 값이 뜨게 하려는 것이다.
+    /// </summary>
+    public async Task LoadAsync()
+    {
+        if (!IsCategory)
+        {
+            await RefreshAsync().ConfigureAwait(true);
+            return;
+        }
+
+        _hasLoadedChildren = true;
         foreach (var child in Children)
         {
             await child.RefreshAsync().ConfigureAwait(true);
@@ -194,18 +271,26 @@ public sealed class NodeVm : VmBase
         {
             Status = null;
             await write().ConfigureAwait(true);
+            _report?.Invoke($"{Label} written.", false);
         }
         catch (Exception ex)
         {
             Status = Describe(ex);
+            _report?.Invoke($"{Label}: {Describe(ex)}", true);
         }
         finally
         {
             _isBusy = false;
         }
 
-        // 쓰기 하나가 다른 노드의 범위·가용성을 바꿀 수 있다. 적어도 자기 자신은 다시 읽는다.
+        // 쓰기 하나가 다른 노드의 잠금·범위·가용성을 바꾼다. 자기만 다시 읽으면 옆 노드가 잠긴 채로 남는다 —
+        // 자동 노출을 껐는데 노출 시간이 계속 읽기 전용으로 보이는 것이 그 증상이다. 같은 칸을 통째로 다시 읽는다.
         await RefreshAsync().ConfigureAwait(true);
+        if (Parent is null) return;
+        foreach (var sibling in Parent.Children)
+        {
+            if (!ReferenceEquals(sibling, this)) await sibling.PollAsync().ConfigureAwait(true);
+        }
     }
 
     private static long ParseInteger(string text)
