@@ -27,6 +27,12 @@ public class PacketSizeNegotiationTests
             _maxPassingSize = maxPassingSize;
             _shortAnswerBytes = shortAnswerBytes;
             _socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            // 점보 후보(최대 16000)를 실제로 내보내려면 송신 버퍼를 그만큼 키워야 한다.
+            // macOS/BSD 는 한 데이터그램의 최대 크기를 송신 버퍼로 묶어서(기본 9216) 그보다 크면
+            // SendTo 가 곧바로 "Message too long" 으로 거절한다 — 리눅스·윈도우에는 그 제한이 없어 드러나지 않는다.
+            // 장치 역이 후보 크기를 못 보내면 파이어테스트가 시험하려는 것 자체가 성립하지 않으므로 여기서 올린다.
+            try { _socket.SendBufferSize = GevStream.MaxPacketSize * 4; }
+            catch (SocketException) { /* 올리지 못하면 아래 SendTo 가 사유를 실어 알린다 */ }
             regs.OnWrite = OnWrite;
         }
 
@@ -48,7 +54,17 @@ public class PacketSizeNegotiationTests
             Assert.True(port > 0, "SCP must be written before the fire test.");
             var length = isPassing ? size - GvspConst.IpUdpOverhead : _shortAnswerBytes;
             if (!isPassing) Interlocked.Increment(ref _shortAnswers);
-            _socket.SendTo(_payload, 0, length, SocketFlags.None, new IPEndPoint(IPAddress.Loopback, port));
+            try
+            {
+                _socket.SendTo(_payload, 0, length, SocketFlags.None, new IPEndPoint(IPAddress.Loopback, port));
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
+            {
+                // 여기까지 왔다면 송신 버퍼를 키우고도 OS 가 이 크기를 거절한 것이다. 조용히 넘어가면
+                // "장치가 답하지 않았다" 로 보여 협상 결과만 이상해지므로, 무엇이 막았는지 말하고 끝낸다.
+                Assert.Fail($"the test device could not send a {length}-byte datagram on loopback (send buffer {_socket.SendBufferSize}): {ex.Message}. "
+                    + "This platform caps datagram size below the probe sizes this test uses.");
+            }
         }
 
         public void Dispose() => _socket.Close();

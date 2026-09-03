@@ -21,11 +21,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # macOS(arm64) 러너에서만 테스트 실행이 시작 직후 통째로 선다 — 탐색은 정상이고, 부분 집합
-    # (순수 계산·루프백 소켓·git 하위 프로세스)은 각각 통과하는데 전체를 한꺼번에 돌리면 진행이 없다.
-    # 로컬에서 3코어로 흉내 내도 재현되지 않는다. 원인이 잡히지 않은 채로 두되, 지원 대상이 Windows·Linux 이므로
-    # 이 갈래가 전체를 막지는 않게 한다. 결과는 계속 수집된다.
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -37,55 +32,22 @@ jobs:
         run: dotnet restore
       - name: Build (all TFMs)
         run: dotnet build --no-restore -c Release
-      # ── macOS 이분(임시) ── 어느 묶음이 붙드는지 찾는다. 각 단계는 실패해도 다음으로 넘어간다.
-      # xunit 기본 리포터는 테스트마다 이름을 찍지 않으므로 "출력 없음" 만으로는 멈춘 위치를 알 수 없다 — 묶음을 갈라 본다.
-      - name: "bisect Gvcp"
-        if: matrix.os == 'macos-latest'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: dotnet test --no-build -c Release --filter-namespace GevSharp.Tests.Gvcp --timeout 90s
-      - name: "bisect Gvsp"
-        if: matrix.os == 'macos-latest'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: dotnet test --no-build -c Release --filter-namespace GevSharp.Tests.Gvsp --timeout 90s
-      - name: "bisect GenApi"
-        if: matrix.os == 'macos-latest'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: dotnet test --no-build -c Release --filter-namespace GevSharp.Tests.GenApi --timeout 90s
-      - name: "bisect Xml"
-        if: matrix.os == 'macos-latest'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: dotnet test --no-build -c Release --filter-namespace GevSharp.Tests.Xml --timeout 90s
-      - name: "bisect Integration"
-        if: matrix.os == 'macos-latest'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: dotnet test --no-build -c Release --filter-namespace GevSharp.Tests.Integration --timeout 90s
-      - name: "bisect Sim + Cli"
-        if: matrix.os == 'macos-latest'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: dotnet test --no-build -c Release --filter-namespace GevSharp.Tests.Sim --filter-namespace GevSharp.Tests.Cli --timeout 90s
-
       # 시한과 멈춘-테스트 탐지를 함께 건다. 잡이 밖에서 취소되면 로그가 통째로 사라지지만,
       # 여기서 시한을 넘겨 실패하면 그때까지의 출력이 남고 --long-running 이 어느 테스트가 붙들고 있었는지 이름을 찍는다.
       - name: Test (in-process simulator)
-        timeout-minutes: 2
+        timeout-minutes: 5
         # 진단 로그를 디스크에 동기로 쓴다 — 프로세스가 시한으로 강제 종료돼도 어디까지 갔는지 파일에 남는다.
         # (stdout 은 버퍼에 있다가 종료와 함께 사라져, 12분을 돌고도 한 줄도 건지지 못한 적이 있다.)
         run: >-
           dotnet test --no-build -c Release --report-trx --results-directory TestResults
-          --long-running 20 --timeout 90s
+          --long-running 30 --timeout 4m
           --diagnostic --diagnostic-output-directory TestResults/diag
           --diagnostic-synchronous-write --diagnostic-verbosity Debug
       # netstandard2.0 자산을 실제로 실행하는 다리 — net48 은 Windows 에서만 복원된다.
       - name: Test (netstandard2.0 asset on .NET Framework)
         if: matrix.os == 'windows-latest'
-        timeout-minutes: 2
-        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 20 --timeout 90s
+        timeout-minutes: 5
+        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 30 --timeout 4m
       - uses: actions/upload-artifact@v5
         if: always()
         with:
