@@ -35,13 +35,13 @@ jobs:
       # 시한과 멈춘-테스트 탐지를 함께 건다. 잡이 밖에서 취소되면 로그가 통째로 사라지지만,
       # 여기서 시한을 넘겨 실패하면 그때까지의 출력이 남고 --long-running 이 어느 테스트가 붙들고 있었는지 이름을 찍는다.
       - name: Test (in-process simulator)
-        timeout-minutes: 25
-        run: dotnet test --no-build -c Release --report-trx --results-directory TestResults --long-running 60 --timeout 20m
+        timeout-minutes: 12
+        run: dotnet test --no-build -c Release --report-trx --results-directory TestResults --long-running 45 --timeout 8m
       # netstandard2.0 자산을 실제로 실행하는 다리 — net48 은 Windows 에서만 복원된다.
       - name: Test (netstandard2.0 asset on .NET Framework)
         if: matrix.os == 'windows-latest'
-        timeout-minutes: 25
-        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 60 --timeout 20m
+        timeout-minutes: 12
+        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 45 --timeout 8m
       - uses: actions/upload-artifact@v4
         if: always()
         with:
