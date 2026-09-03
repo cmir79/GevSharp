@@ -41,8 +41,13 @@
       <!-- 왼쪽: 답한 장치들. 서브넷이 어긋난 것은 눈에 띄게. -->
       <Border Grid.Column="0" Classes="panel">
         <DockPanel>
-          <Button DockPanel.Dock="Top" Content="Scan" Click="OnScan" IsEnabled="{Binding IsIdle}"
-                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,0,0,8" />
+          <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,0,0,8">
+            <Button Grid.Column="0" Content="Scan" Click="OnScan" IsEnabled="{Binding IsIdle}"
+                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+            <ToggleSwitch Grid.Column="1" IsChecked="{Binding AutoScan}" OnContent="Auto" OffContent="Auto"
+                          MinWidth="0" VerticalAlignment="Center"
+                          ToolTip.Tip="Keep looking once a second, so an address change shows up on its own" />
+          </Grid>
           <ListBox ItemsSource="{Binding Devices}" SelectedItem="{Binding Selected}">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="vm:DeviceRowVm">
@@ -71,6 +76,15 @@
             <ComboBox ItemsSource="{Binding Nics}" SelectedItem="{Binding SelectedNic}" HorizontalAlignment="Stretch" />
             <Button Content="Propose a free address on it" Click="OnSuggest" IsEnabled="{Binding CanSuggest}"
                     HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,4,0,0" />
+
+            <!-- 고쳐야 할 쪽이 호스트인 경우도 카메라만큼 흔하다. 그 창들을 여기서 바로 연다. -->
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="6" Margin="0,4,0,0"
+                  IsVisible="{Binding CanOpenSystemSettings}">
+              <Button Grid.Column="0" Content="Adapter settings" Click="OnOpenAdapter"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+              <Button Grid.Column="1" Content="Firewall" Click="OnOpenFirewall"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+            </Grid>
           </StackPanel>
 
           <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6"
@@ -84,15 +98,28 @@
           </Grid>
 
           <StackPanel Spacing="6" IsVisible="{Binding HasSelection}">
-            <Button Content="Apply now (until power-cycle)" Click="OnForce" IsEnabled="{Binding IsIdle}"
+            <Button Content="Apply now, until power off" Click="OnForce" IsEnabled="{Binding IsIdle}"
                     HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
             <TextBlock Classes="caption" TextWrapping="Wrap"
-                       Text="Goes out as a broadcast, so it reaches a camera that is on the wrong subnet and cannot be opened at all. The camera keeps this address until it loses power." />
+                       Text="Changes the address immediately. Goes out as a broadcast, so it reaches a camera that is on the wrong subnet and cannot be opened at all. The camera keeps this address until it loses power, then falls back to whatever it is configured to use." />
 
-            <Button Content="Store in the camera (survives power-cycle)" Click="OnPersist" IsEnabled="{Binding IsIdle}"
+            <Button Content="Store for the next power-up" Click="OnPersist" IsEnabled="{Binding SupportsPersistent}"
                     HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,6,0,0" />
             <TextBlock Classes="caption" TextWrapping="Wrap"
-                       Text="Needs to open the camera, so it must be reachable first — bring a stranded camera back with the button above, then store the address. It takes effect at the next power-up." />
+                       Text="Writes the address into the camera and leaves it running as it is — nothing changes right now. The camera comes up on this address the next time it is powered on. It has to be reachable to write, so bring a stranded camera back with the button above first." />
+          </StackPanel>
+
+          <!-- 주소값이 아니라 주소를 얻는 방식. DHCP 로 돌리면 저장해 둔 주소는 남아 있어도 쓰이지 않는다. -->
+          <StackPanel Spacing="6" IsVisible="{Binding HasSelection}">
+            <TextBlock Classes="caption" Text="How the camera gets its address" />
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+              <Button Grid.Column="0" Content="Use DHCP" Click="OnUseDhcp" IsEnabled="{Binding SupportsDhcp}"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+              <Button Grid.Column="1" Content="Use stored" Click="OnUseStored" IsEnabled="{Binding SupportsPersistent}"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+            </Grid>
+            <TextBlock Classes="caption" TextWrapping="Wrap"
+                       Text="Also takes effect at the next power-up. Link-local is left alone — it is the fallback that keeps a camera findable when everything else fails." />
           </StackPanel>
 
         </StackPanel>

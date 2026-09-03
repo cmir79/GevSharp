@@ -389,3 +389,36 @@ no frame was ever short.
 
 The practical rule for more than one camera on one port: cap the frame rates so the average fits,
 then set SCPD so the bursts do too. The first alone is not enough.
+
+### Eight hours, two vendors, one port, 2026-09-03 to 2026-09-04
+
+The point of a long run is not the total; it is whether anything drifts. Both cameras were capped at
+5 fps with SCPD spreading each frame's packets about 150 us apart, sharing one 1 GbE port, and left
+alone for eight hours with interval statistics every five minutes.
+
+| | Basler acA2500-14gm | Crevis MG-A500M-22 |
+|---|---|---|
+| Frames delivered / completed | 143,998 / 143,998 | 144,002 / 144,002 |
+| Rate | 5.00 fps | 5.00 fps |
+| Incomplete frames | 0 | 0 |
+| Packets received | 81,358,870 | 81,793,136 |
+| Packets missing | 0 | 0 |
+| Bytes | 726 GB | 730 GB |
+| Buffer starvation (no-buffer drops) | 0 | 0 |
+
+163 million packets and 1.46 TB between them, with nothing missing and no frame ever short. Every
+one of the 95 five-minute intervals reported the same 5.0 fps and the same throughput to two
+decimals, first interval and last alike, so nothing degraded over the run.
+
+Two smaller facts are worth keeping.
+
+**The 16-bit block id wrapped twice and the frame counter followed it.** The Basler ended at block id
+12,928 after 143,998 frames, which is exactly two full turns of a 65,535-wide counter plus 12,928.
+Wraparound is the kind of thing that only shows up in a run long enough to reach it, and it is
+handled.
+
+**Resend requests are not a fault signal on their own.** The Crevis asked for 6,392 resends across
+eight hours and none were needed — no packet was ever actually lost. The 20 ms packet timeout fires
+on a packet that is merely spaced out by the inter-packet delay rather than dropped, and the
+original arrives before a resend could. When SCPD is large, raise `--packet-timeout` with it; the
+requests cost a little control traffic and nothing else.

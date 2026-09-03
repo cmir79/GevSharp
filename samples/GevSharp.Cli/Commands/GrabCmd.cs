@@ -88,7 +88,7 @@ public sealed class GrabCmd : ICliCommand
         await stream.StartAsync(ct);
         Console.WriteLine(
             $"Stream: local port {stream.LocalPort}, packet size {stream.PacketSize} bytes ({packetSizeMode}), {streamOpt.BufferCount} buffers, " +
-            $"socket buffer {streamOpt.SocketBufferBytes} bytes, resend {(streamOpt.ResendEnabled ? "on" : "off")}" +
+            $"socket buffer {Granted(stream, streamOpt)}, resend {(streamOpt.ResendEnabled ? "on" : "off")}" +
             (streamOpt.InterPacketDelay > 0 ? $", packet delay {streamOpt.InterPacketDelay} ticks" : string.Empty) +
             (streamOpt.PayloadSize is { } ps ? $", payload size {ps} bytes" : string.Empty));
         await acq.StartAsync(ct);
@@ -199,4 +199,12 @@ public sealed class GrabCmd : ICliCommand
             Console.Error.WriteLine($"warning: stream stop failed: {ex.Message}");
         }
     }
+    /// <summary>
+    /// 실제로 받은 수신 버퍼 크기. 요청값만 적으면 덜 받은 것을 알 수 없고, 그것은 부하가 걸릴 때
+    /// 유실로만 나타나 원인을 찾기 어렵다. 덜 받았으면 요청값도 함께 적는다.
+    /// </summary>
+    private static string Granted(GevStream stream, GevStreamOpt opt)
+        => stream.SocketReceiveBufferBytes >= opt.SocketBufferBytes
+            ? $"{stream.SocketReceiveBufferBytes} bytes"
+            : $"{stream.SocketReceiveBufferBytes} bytes granted of {opt.SocketBufferBytes} requested";
 }

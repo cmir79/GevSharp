@@ -415,7 +415,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// OS 가 실제로 내준 수신 버퍼 크기(바이트) — <see cref="StartAsync"/> 뒤에 유효하며 요청값(<see cref="GevStreamOpt.SocketBufferBytes"/>)보다 작을 수 있다.
     /// 버퍼가 요청대로 잡혔는지는 부하 상황의 유실률을 가르므로 로그와 함께 수치로 남긴다.
     /// </summary>
-    internal int SocketReceiveBufferBytes { get; private set; }
+    /// <summary>
+    /// 운영체제가 실제로 내준 수신 소켓 버퍼 크기(바이트). 요청한 <see cref="GevStreamOpt.SocketBufferBytes"/> 보다 작을 수 있다 —
+    /// 커널이 이 버퍼를 페이지 아웃되지 않는 메모리에서 떼어 주므로, 소켓을 여럿 여는 구성에서는 뒤쪽 소켓이 덜 받기 쉽다.
+    /// 덜 받으면 부하가 걸릴 때 유실로 나타나고 그 원인이 화면 어디에도 보이지 않으므로, 값으로 읽을 수 있어야 한다.
+    /// </summary>
+    public int SocketReceiveBufferBytes { get; private set; }
 
     /// <summary>풀 버퍼 한 장의 크기(바이트). 리더가 알린 크기에 따라 자란다.</summary>
     internal int PoolBufferBytes => _pool.BufferBytes;

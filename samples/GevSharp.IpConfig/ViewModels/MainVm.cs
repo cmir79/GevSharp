@@ -2,7 +2,10 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using Avalonia.Threading;
 using System.Runtime.CompilerServices;
 using GevSharp.Gvcp;
 
@@ -74,6 +77,9 @@ public sealed class MainVm : VmBase
     private string _ip = "";
     private string _mask = "";
     private string _gateway = "";
+    private readonly DispatcherTimer _scan;
+    private bool _autoScan = true;
+    private bool _isScanning;
 
     public ObservableCollection<DeviceRowVm> Devices { get; } = new();
     public ObservableCollection<HostNic> Nics { get; } = new();
@@ -86,6 +92,8 @@ public sealed class MainVm : VmBase
             if (!Set(ref _selected, value)) return;
             Raise(nameof(HasSelection));
             Raise(nameof(SelectedSummary));
+            Raise(nameof(SupportsDhcp));
+            Raise(nameof(SupportsPersistent));
             if (value is not null) LoadFields(value);
         }
     }
@@ -155,6 +163,90 @@ public sealed class MainVm : VmBase
     public MainVm()
     {
         LoadNics();
+        _scan = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _scan.Tick += (_, _) => _ = AutoScanAsync();
+        _scan.Start();
+        _ = AutoScanAsync();
+    }
+
+    /// <summary>
+    /// 계속 다시 찾을지. 기본은 켬 — 주소를 바꾸면 장치가 새 주소로 다시 나타나는 것을 눈으로 봐야 한다.
+    /// </summary>
+    public bool AutoScan
+    {
+        get => _autoScan;
+        set => Set(ref _autoScan, value);
+    }
+
+    /// <summary>이 도구가 무엇을 열어 줄 수 있는지는 운영체제마다 다르다. 없는 곳에서는 단추를 감춘다.</summary>
+    public bool CanOpenSystemSettings => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+    /// <summary>고른 장치가 DHCP 를 지원하는지. 지원하지 않는 장치에 그 단추를 살려 둘 이유가 없다.</summary>
+    public bool SupportsDhcp => (_selected?.Info.SupportedIpCfg & GvbsAddr.IpCfgDhcp) != 0;
+
+    public bool SupportsPersistent => (_selected?.Info.SupportedIpCfg & GvbsAddr.IpCfgPersistent) != 0;
+
+    private async Task AutoScanAsync()
+    {
+        if (!AutoScan || _isScanning || IsBusy) return;
+        _isScanning = true;
+        try { await ScanCoreAsync().ConfigureAwait(true); }
+        catch { /* 다음 차례에 다시 시도하면 된다 */ }
+        finally { _isScanning = false; }
+    }
+
+    /// <summary>
+    /// 주소를 어떻게 얻을지 바꾼다. 주소값이 아니라 방식을 바꾸는 것이라, DHCP 로 돌리면 저장해 둔 주소는 남아 있어도 쓰이지 않는다.
+    /// 링크로컬 비트는 건드리지 않는다 — 다른 방식이 모두 실패했을 때의 마지막 수단이라 꺼 두면 장치를 잃을 수 있다.
+    /// </summary>
+    public Task UseDhcpAsync() => SetAddressingAsync(dhcp: true);
+
+    public Task UseStoredAsync() => SetAddressingAsync(dhcp: false);
+
+    private Task SetAddressingAsync(bool dhcp)
+    {
+        if (Selected is not { } target) return Task.CompletedTask;
+
+        return RunAsync(dhcp ? "Switching to DHCP" : "Switching to the stored address", async () =>
+        {
+            var want = dhcp ? GvbsAddr.IpCfgDhcp : GvbsAddr.IpCfgPersistent;
+            if ((target.Info.SupportedIpCfg & want) == 0)
+            {
+                Error = dhcp
+                    ? "this camera does not support DHCP"
+                    : "this camera does not support a stored address";
+                return;
+            }
+
+            await using var device = await GevDevice.OpenAsync(target.Info).ConfigureAwait(true);
+            var cfg = await device.ReadRegAsync(GvbsAddr.CurrentIpCfg).ConfigureAwait(true);
+            cfg = dhcp
+                ? (cfg & ~GvbsAddr.IpCfgPersistent) | GvbsAddr.IpCfgDhcp
+                : (cfg & ~GvbsAddr.IpCfgDhcp) | GvbsAddr.IpCfgPersistent;
+            await device.WriteRegAsync(GvbsAddr.CurrentIpCfg, cfg).ConfigureAwait(true);
+
+            Status = dhcp
+                ? "Set to ask a DHCP server. It takes effect the next time the camera powers up."
+                : "Set to use the stored address. It takes effect the next time the camera powers up.";
+        });
+    }
+
+    /// <summary>어댑터 설정 창을 연다. 호스트 쪽 주소를 바꿔야 하는 경우가 카메라 쪽만큼이나 흔하다.</summary>
+    public void OpenAdapterSettings() => Launch("ncpa.cpl");
+
+    /// <summary>방화벽 설정을 연다. 제어는 오가는데 스트림만 오지 않으면 대개 이쪽이다.</summary>
+    public void OpenFirewallSettings() => Launch("wf.msc");
+
+    private void Launch(string what)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(what) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Error = $"could not open {what}: {ex.Message}";
+        }
     }
 
     public Task ScanAsync() => RunAsync("Scanning", async () =>
