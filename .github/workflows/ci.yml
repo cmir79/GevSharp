@@ -40,19 +40,19 @@ jobs:
       # 시한과 멈춘-테스트 탐지를 함께 건다. 잡이 밖에서 취소되면 로그가 통째로 사라지지만,
       # 여기서 시한을 넘겨 실패하면 그때까지의 출력이 남고 --long-running 이 어느 테스트가 붙들고 있었는지 이름을 찍는다.
       - name: Test (in-process simulator)
-        timeout-minutes: 3
+        timeout-minutes: 2
         # 진단 로그를 디스크에 동기로 쓴다 — 프로세스가 시한으로 강제 종료돼도 어디까지 갔는지 파일에 남는다.
         # (stdout 은 버퍼에 있다가 종료와 함께 사라져, 12분을 돌고도 한 줄도 건지지 못한 적이 있다.)
         run: >-
           dotnet test --no-build -c Release --report-trx --results-directory TestResults
-          --long-running 20 --timeout 2m
+          --long-running 20 --timeout 90s
           --diagnostic --diagnostic-output-directory TestResults/diag
           --diagnostic-synchronous-write --diagnostic-verbosity Debug
       # netstandard2.0 자산을 실제로 실행하는 다리 — net48 은 Windows 에서만 복원된다.
       - name: Test (netstandard2.0 asset on .NET Framework)
         if: matrix.os == 'windows-latest'
-        timeout-minutes: 4
-        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 20 --timeout 2m
+        timeout-minutes: 2
+        run: dotnet test tests/GevSharp.Net48/GevSharp.Net48.csproj -c Release --report-trx --results-directory TestResults --long-running 20 --timeout 90s
       - uses: actions/upload-artifact@v5
         if: always()
         with:
