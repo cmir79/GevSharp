@@ -1,0 +1,103 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:GevSharp.IpConfig.ViewModels"
+        x:Class="GevSharp.IpConfig.Views.MainWindow"
+        x:DataType="vm:MainVm"
+        Title="GevSharp IP Config"
+        Width="900" Height="640"
+        MinWidth="760" MinHeight="520"
+        Background="#33383F">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.caption">
+      <Setter Property="Opacity" Value="0.6" />
+      <Setter Property="FontSize" Value="11" />
+    </Style>
+    <Style Selector="Border.panel">
+      <Setter Property="Background" Value="#2E333A" />
+      <Setter Property="BorderBrush" Value="#4A515A" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="10" />
+    </Style>
+    <Style Selector="TextBox.addr">
+      <Setter Property="FontFamily" Value="Consolas, Menlo, monospace" />
+      <Setter Property="MinWidth" Value="150" />
+    </Style>
+  </Window.Styles>
+
+  <DockPanel Margin="10">
+
+    <Border DockPanel.Dock="Bottom" Classes="panel" Margin="0,10,0,0">
+      <StackPanel Spacing="3">
+        <TextBlock Text="{Binding Status}" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding Error}" Foreground="#E06C75" TextWrapping="Wrap"
+                   IsVisible="{Binding Error, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      </StackPanel>
+    </Border>
+
+    <Grid ColumnDefinitions="*,10,380">
+
+      <!-- 왼쪽: 답한 장치들. 서브넷이 어긋난 것은 눈에 띄게. -->
+      <Border Grid.Column="0" Classes="panel">
+        <DockPanel>
+          <Button DockPanel.Dock="Top" Content="Scan" Click="OnScan" IsEnabled="{Binding IsIdle}"
+                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,0,0,8" />
+          <ListBox ItemsSource="{Binding Devices}" SelectedItem="{Binding Selected}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:DeviceRowVm">
+                <StackPanel Spacing="1" Margin="0,3">
+                  <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
+                             IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <!-- 오른쪽: 무엇이 설정돼 있고 무엇으로 바꿀지 -->
+      <Border Grid.Column="2" Classes="panel">
+        <StackPanel Spacing="10">
+
+          <TextBlock Text="{Binding SelectedSummary}" TextWrapping="Wrap" FontSize="12" LineHeight="18"
+                     IsVisible="{Binding HasSelection}" />
+          <TextBlock Classes="caption" Text="Pick a camera on the left." IsVisible="{Binding !HasSelection}" />
+
+          <StackPanel Spacing="4" IsVisible="{Binding HasSelection}">
+            <TextBlock Classes="caption" Text="Host adapter to match" />
+            <ComboBox ItemsSource="{Binding Nics}" SelectedItem="{Binding SelectedNic}" HorizontalAlignment="Stretch" />
+            <Button Content="Propose a free address on it" Click="OnSuggest" IsEnabled="{Binding CanSuggest}"
+                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,4,0,0" />
+          </StackPanel>
+
+          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6"
+                IsVisible="{Binding HasSelection}">
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Address" VerticalAlignment="Center" />
+            <TextBox Grid.Row="0" Grid.Column="1" Classes="addr" Text="{Binding Ip}" />
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Subnet" VerticalAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="1" Classes="addr" Text="{Binding Mask}" />
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Gateway" VerticalAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="1" Classes="addr" Text="{Binding Gateway}" />
+          </Grid>
+
+          <StackPanel Spacing="6" IsVisible="{Binding HasSelection}">
+            <Button Content="Apply now (until power-cycle)" Click="OnForce" IsEnabled="{Binding IsIdle}"
+                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+            <TextBlock Classes="caption" TextWrapping="Wrap"
+                       Text="Goes out as a broadcast, so it reaches a camera that is on the wrong subnet and cannot be opened at all. The camera keeps this address until it loses power." />
+
+            <Button Content="Store in the camera (survives power-cycle)" Click="OnPersist" IsEnabled="{Binding IsIdle}"
+                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,6,0,0" />
+            <TextBlock Classes="caption" TextWrapping="Wrap"
+                       Text="Needs to open the camera, so it must be reachable first — bring a stranded camera back with the button above, then store the address. It takes effect at the next power-up." />
+          </StackPanel>
+
+        </StackPanel>
+      </Border>
+
+    </Grid>
+  </DockPanel>
+</Window>

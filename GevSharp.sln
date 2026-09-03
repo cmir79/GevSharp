@@ -28,6 +28,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GevSharp.Viewer", "samples\
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GevSharp.IpConfig", "samples\GevSharp.IpConfig\GevSharp.IpConfig.csproj", "{44208C20-0843-40F8-9172-4E2D4F91DA28}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -98,11 +100,24 @@ Global
 		{AD8501D5-87BF-4FB9-B634-E4E0BEF444DB}.Release|x64.Build.0 = Release|Any CPU
 		{AD8501D5-87BF-4FB9-B634-E4E0BEF444DB}.Release|x86.ActiveCfg = Release|Any CPU
 		{AD8501D5-87BF-4FB9-B634-E4E0BEF444DB}.Release|x86.Build.0 = Release|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Debug|x64.Build.0 = Debug|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Debug|x86.Build.0 = Debug|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Release|Any CPU.Build.0 = Release|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Release|x64.ActiveCfg = Release|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Release|x64.Build.0 = Release|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Release|x86.ActiveCfg = Release|Any CPU
+		{44208C20-0843-40F8-9172-4E2D4F91DA28}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{AD8501D5-87BF-4FB9-B634-E4E0BEF444DB} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
+		{44208C20-0843-40F8-9172-4E2D4F91DA28} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 	EndGlobalSection
 EndGlobal

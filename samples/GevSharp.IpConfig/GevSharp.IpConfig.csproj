@@ -5,12 +5,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>gevsharp-viewer</AssemblyName>
-    <RootNamespace>GevSharp.Viewer</RootNamespace>
+    <AssemblyName>gevsharp-ipconfig</AssemblyName>
+    <RootNamespace>GevSharp.IpConfig</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <IsPackable>false</IsPackable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
