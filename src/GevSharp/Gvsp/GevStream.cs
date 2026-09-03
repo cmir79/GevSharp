@@ -295,7 +295,8 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 상태 기반 호스트 방화벽에 이 소켓과 장치 스트림 송신 포트 사이의 매핑을 만든다.
     /// 그런 방화벽은 우리가 먼저 보낸 적 없는 UDP 를 버리므로, 이 한 바이트가 없으면 GVSP 가 한 패킷도 도착하지 않는다
     /// (관리자 권한으로 인바운드 규칙을 등록하는 것이 유일한 대안이 된다).
-    /// SCSP 는 채널을 연 뒤(SCP 를 쓴 뒤)에야 값이 선다. 못 읽거나 0 이면 건너뛴다 — 그런 장치는 이 우회가 필요 없거나 도움이 안 된다.
+    /// SCSP 는 채널을 연 뒤(SCP 를 쓴 뒤)에야 값이 서지만, 끝까지 0 으로 두는 장치도 있다. 그때는 호스트 포트 번호로 뚫는다 —
+    /// 실측한 그런 장치는 우리가 준 포트 번호를 그대로 자기 송신 포트로 썼다.
     /// </summary>
     private async Task PunchFirewallAsync(Socket socket, CancellationToken ct)
     {
@@ -320,8 +321,12 @@ public sealed partial class GevStream : IAsyncDisposable
 
         if (port == 0)
         {
-            port = GvcpConst.Port;
-            GevLog.Debug(LogSrc, $"Device reports no stream source port (SCSP = 0); punching the control port {port} so the return path for {LocalPort} is still opened.");
+            // SCSP 를 끝까지 0 으로 두는 장치는 실측에서 호스트 포트 번호를 그대로 자기 송신 포트로 썼다
+            // (SCP 에 54629 를 쓰자 장치가 54629 에서 보냈다). 포트까지 따지는 방화벽은 우리가 그 포트로
+            // 먼저 보낸 적이 있어야만 되돌려 보내므로, 모를 때는 제어 포트가 아니라 이 번호로 뚫는다 —
+            // 제어 포트로 뚫으면 매핑이 어긋나 한 패킷도 오지 않는다(그 상태로 파이어테스트도 전부 실패했다).
+            port = LocalPort;
+            GevLog.Debug(LogSrc, $"Device reports no stream source port (SCSP = 0); punching {port} instead, since such a device mirrors the host port it was given.");
         }
 
         // 유지용 재송신이 레지스터를 다시 읽지 않도록 목적지를 기억해 둔다 — 수신 스레드에서 불리는 경로다.

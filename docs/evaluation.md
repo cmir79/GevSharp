@@ -288,13 +288,12 @@ Mono8` puts it back. Before the fix the same command failed on every value, the 
 Simulator counterparts of scenarios 2–7 run in CI against `GevSharp.Sim` (loopback) and, on Linux,
 against a third-party virtual camera.
 
-### Crevis MG-A500M-22 (mono, 2592x1944), 2026-09-03 — a second vendor, and a host that eats the stream
+### Crevis MG-A500M-22 (mono, 2464x2056), 2026-09-03 — a second vendor, and two defects it exposed
 
-Bringing up a second vendor on the same host found one real defect in this library and one
-host condition that no library change can work around. They are recorded together because the
-first hid behind the second for a while.
+Bringing up a second vendor on the same host found two real defects in this library. Both were
+fatal to that camera and invisible on the first one, which is the point of testing a second vendor.
 
-**The defect: mutual limit references were mistaken for a value cycle.** The node map declares
+**First: mutual limit references were mistaken for a value cycle.** The node map declares
 
     AutoGainLowerLimit.pMax -> AutoGainUpperLimit
     AutoGainUpperLimit.pMin -> AutoGainLowerLimit
@@ -310,37 +309,50 @@ Limits narrow a range without defining a value, so a cycle among them never recu
 now `RefKind.Limit` — excluded from cycle adjacency, still included in invalidation. With the
 fix the map binds 517 nodes and every feature reads and writes.
 
-**The host condition: a kernel filter driver takes the stream before the socket stack.** With the
-node map bound, the device accepts the full stream-channel configuration and starts acquisition,
-yet not one GVSP packet reaches the socket — at 9000, 1500 and 576 bytes alike, and the fire-test
-packet never arrives either. The measurement that settles it, taken across one acquisition:
+**Second: firewall traversal aimed at the wrong port when the device hides its source port.**
+With the map bound, the device accepted the full stream-channel configuration and started
+acquisition, yet not one GVSP packet reached the socket — at 9000, 1500 and 576 bytes alike, and
+the fire-test packet never arrived either. The measurement that located the loss, taken across one
+acquisition:
 
 | Counter | Value |
 |---|---|
 | NIC received bytes during acquisition | 261,885,179 (about 420 Mbps) |
 | Datagrams on the bound UDP socket | 0 |
 
-The camera is streaming at full rate. The bytes arrive at the adapter and are consumed above it.
-`Get-NetAdapterBinding` on that adapter lists three vendor GigE filter drivers bound and enabled,
-one of them this camera's. A filter driver sits between the adapter and TCP/IP and hands GVSP to
-its own SDK; a socket-based receiver is below nothing and above nothing that can see those bytes.
+The camera was streaming at full rate and the bytes were being consumed somewhere above the
+adapter. Two suspects sit there: a stateful host firewall, and the vendor GigE filter drivers that
+`Get-NetAdapterBinding` showed bound to that adapter (three of them, one per vendor whose SDK had
+been installed). Unbinding all three changed nothing — still zero packets — which cleared the
+filter drivers and left the firewall. A temporary inbound rule scoped to the camera subnet made
+the stream appear immediately, at jumbo 9000 with no missing packets, which settled it.
 
-There is no library-side remedy, and that is not a gap in this library: intercepting at that layer
-is exactly what a kernel driver is for, and this library is defined by having none. The remedy is
-host configuration — unbind that vendor's filter driver from the adapter (or leave it bound and
-accept that only that vendor's SDK can stream on it). The register writes are worth recording as
-correct in their own right, since they rule out this library as the cause:
+The reason only this camera was affected is the port. Traversal works by sending one byte from the
+stream socket to the port the device will stream *from*, so that a port-restricted firewall has a
+mapping to match the returning packets against. That port is normally read from SCSP, but this
+device reports SCSP as 0 throughout, including during acquisition. The previous fallback punched
+the GVCP control port, which creates a mapping for the wrong port and helps nothing. Reading the
+source endpoint of the datagrams directly showed what the device actually does:
 
-| Register | Written | Read back |
-|---|---|---|
-| SCDA (destination) | 192.168.200.90 | `0xC0A8C85A` |
-| SCP (host port) | 62472 | `0xF408` |
-| SCPS (packet size) | 1500, do-not-fragment | `0x400005DC` |
-| SCSP (source port) | read-only | `0` throughout |
-| SCC / SCCFG | read-only | `INVALID_ADDRESS` — not implemented |
+| Written to SCP (host port) | Device's actual GVSP source port |
+|---|---|
+| 54629 | 54629 |
 
-Two smaller facts fell out of the same session. This device never populates SCSP, so firewall
-traversal had nothing to aim at and skipped the punch entirely; it now punches the control port
-instead, which at least opens a return path. And the device stops answering GVCP within about a
-second of `AcquisitionStart` while it is saturating the link — control recovers once acquisition
-stops, so the heartbeat loss that follows is a symptom of the flood, not of lost control.
+It mirrors the host port it was given. Traversal now falls back to that number instead of the
+control port, and both cameras then stream with the firewall enabled, no inbound rule, and every
+vendor filter driver unbound:
+
+| Camera | Result |
+|---|---|
+| Crevis MG-A500M-22 | 2464x2056 Mono8, packet size 9000 negotiated, 3275 packets, 0 missing |
+| Basler acA2500-14gm | 2592x1944 Mono8, packet size 9000 negotiated, 3390 packets, 0 missing |
+
+That is the condition worth recording: no vendor SDK, no kernel filter driver, no firewall
+exception, and both vendors stream. A filter driver would have hidden both defects rather than
+fixed anything, since it bypasses the socket stack that the traversal exists to satisfy.
+
+Three smaller facts fell out of the same session. This device never implements SCC or SCCFG —
+both answer `INVALID_ADDRESS`. Its stream-channel writes are otherwise exact (SCDA, SCP and SCPS
+all read back what was written). And while it saturates the link it stops answering GVCP within
+about a second of `AcquisitionStart`, so a short heartbeat timeout can misread a healthy stream as
+lost control; control recovers as soon as acquisition stops.

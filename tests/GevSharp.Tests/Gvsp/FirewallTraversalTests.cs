@@ -147,12 +147,46 @@ public class FirewallTraversalTests
     }
 
     [Fact]
-    public async Task NoDatagramWhenTheDeviceReportsNoStreamSourcePort()
+    public async Task DeviceThatReportsNoStreamSourcePortIsPunchedAtTheHostPortInstead()
     {
-        // SCSP = 0 은 "이 장치는 송신 포트를 알려 주지 않는다" 는 뜻이라 뚫을 대상이 없다.
-        var (datagram, _, _) = await StartAndListenAsync(scspOverride: 0);
+        // SCSP = 0 이어도 뚫기를 건너뛰면 안 된다 — 포트까지 따지는 방화벽 뒤에서는 한 패킷도 오지 않는다.
+        // 실측한 그런 장치는 우리가 준 호스트 포트 번호를 그대로 자기 송신 포트로 썼으므로 그 번호로 뚫는다.
+        // 같은 주소에서는 한 포트를 둘이 쓸 수 없으니 장치 역은 다른 루프백 주소에 같은 번호로 세운다.
+        var deviceAddress = IPAddress.Parse("127.0.0.2");
+        for (var attempt = 0; ; attempt++)
+        {
+            using var deviceSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            deviceSocket.Bind(new IPEndPoint(deviceAddress, 0));
+            deviceSocket.ReceiveTimeout = 2000;
+            var port = ((IPEndPoint)deviceSocket.LocalEndPoint!).Port;
 
-        Assert.Null(datagram);
+            var regs = new FakeRegPort();
+            regs.Set(Scp(GvbsAddr.ScspOffset), 0);
+
+            var opt = StreamRig.DefaultOpt();
+            opt.LocalPort = port;
+
+            await using var stream = new GevStream(regs, new TestResendPort(new GvspTestSender()), IPAddress.Loopback, opt,
+                streamChannel: 0, deviceAddress: deviceAddress);
+            try
+            {
+                await stream.StartAsync();
+            }
+            catch (SocketException) when (attempt < 4)
+            {
+                // 그 번호를 이 주소에서 이미 누가 쓰고 있었다 — 다른 번호로 다시 잡는다.
+                continue;
+            }
+
+            var buffer = new byte[64];
+            var from = (EndPoint)new IPEndPoint(IPAddress.Any, 0);
+            var n = deviceSocket.ReceiveFrom(buffer, ref from);
+            await stream.StopAsync();
+
+            Assert.Equal(1, n);
+            Assert.Equal(port, ((IPEndPoint)from).Port);
+            return;
+        }
     }
 
     [Fact]
