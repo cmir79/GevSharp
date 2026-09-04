@@ -14,6 +14,47 @@ public class GevStreamTests
     private const uint Rgb8 = 0x02180014;
 
     [Fact]
+    public async Task DiscardQueuedFramesDropsWhatIsWaitingAndKeepsTheStreamRunning()
+    {
+        // 트리거마다 그 트리거의 프레임이어야 하는 자리에서는 큐의 머리를 받으면 지난 장으로 판정하게 된다.
+        // 비운 뒤 받으면 그 다음에 온 것이 나와야 하고, 비우는 것으로 스트림이 끝나서는 안 된다.
+        var opt = StreamRig.DefaultOpt();
+        opt.BufferCount = 8;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        for (var i = 0; i < 3; i++) rig.Sender.SendFrame(1UL + (ulong)i, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 3);
+
+        Assert.Equal(3, rig.Stream.DiscardQueuedFrames());
+        Assert.Equal(0, rig.Stream.QueuedFrames);
+
+        // 버린 버퍼는 풀로 돌아가야 한다 — 안 돌아가면 비우려던 것이 오히려 취득을 굶긴다.
+        var next = rig.Sender.SendFrame(9UL, 64, 48, Mono8);
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(next.BlockId, frame.FrameId);
+        Assert.Equal(0, rig.Stream.Stats.Snapshot().FramesDroppedNoBuffer);
+    }
+
+    [Fact]
+    public async Task StopAsyncDrainsTheQueueSoNoFrameSurvivesTheStop()
+    {
+        // 정지가 큐를 남긴다면 다음에 여는 쪽이 지난 판의 프레임을 받게 된다. 여기서 못 박아 둔다.
+        var opt = StreamRig.DefaultOpt();
+        opt.BufferCount = 8;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        for (var i = 0; i < 3; i++) rig.Sender.SendFrame(1UL + (ulong)i, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 3);
+
+        await rig.Stream.StopAsync();
+
+        Assert.Equal(0, rig.Stream.QueuedFrames);
+        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync());
+    }
+
+    [Fact]
     public async Task QueuedFramesCountsWhatTheConsumerHasNotTakenYet()
     {
         // 받아 가지 않은 완성 프레임이 몇 장 쌓여 있는지가 이 값이다. 프레임이 늦게 보이는데 유실은 0 인

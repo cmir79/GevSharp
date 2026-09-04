@@ -259,7 +259,20 @@ public sealed partial class GevStream : IAsyncDisposable
         }
     }
 
-    /// <summary>다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/>. 받은 프레임은 반드시 Dispose 한다.</summary>
+    /// <summary>
+    /// 다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/>.
+    /// 받은 프레임은 반드시 Dispose 한다.
+    /// <para>
+    /// <b>돌려주는 것은 큐의 머리이지 방금 찍힌 장이 아니다.</b> 완성된 프레임은 받아 갈 때까지 큐에 남으므로,
+    /// 받는 쪽이 잠시 쉬었다면 다시 부르는 순간 그 사이에 쌓인 것부터 나온다. 장치 쪽 취득만 멈춘 경우도
+    /// 마찬가지다 — 취득을 멈춰도 이 스트림은 살아 있고 큐도 그대로다. <see cref="StopAsync"/> 는 큐를 비우지만
+    /// 그것은 스트림을 접는 일이고, 취득만 껐다 켜는 자리에서는 불리지 않는다.
+    /// </para>
+    /// <para>
+    /// 트리거마다 그 트리거의 프레임이어야 하는 자리에서는 이것이 조용한 오판이 된다. 지난 장으로 판정하고도
+    /// 예외도 경고도 나지 않는다. 그런 자리에서는 기다리기 전에 <see cref="DiscardQueuedFrames"/> 로 비운다.
+    /// </para>
+    /// </summary>
     public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default)
     {
         var queue = _queue ?? throw new GevStreamClosedException("Stream is not started.");
@@ -277,6 +290,29 @@ public sealed partial class GevStream : IAsyncDisposable
         var frame = await pending.ConfigureAwait(false);
         _stats.IncFramesDelivered();
         return frame;
+    }
+
+    /// <summary>
+    /// 큐에 쌓인 완성 프레임을 모두 버리고 그 수를 돌려준다. 스트림은 계속 돈다 — 다음에 오는 것부터 받겠다는 뜻이다.
+    /// <para>
+    /// 버릴 때 각 프레임을 Dispose 해야 풀 버퍼가 돌아온다. 손으로 비우다 그것을 빠뜨리면 버퍼가 영영 돌아오지
+    /// 않아, 비우려던 것이 오히려 취득을 굶긴다. 이름을 붙여 두는 이유가 그것이다.
+    /// </para>
+    /// <para>정지된 스트림에서는 0 을 돌려준다 — <see cref="StopAsync"/> 가 이미 비웠다.</para>
+    /// </summary>
+    public int DiscardQueuedFrames()
+    {
+        var queue = _queue;
+        if (queue is null) return 0;
+
+        var dropped = 0;
+        while (queue.TryDrain(out var frame))
+        {
+            frame.Dispose();
+            dropped++;
+        }
+
+        return dropped;
     }
 
     /// <summary>기다리지 않고 큐에서 프레임을 꺼낸다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/>.</summary>
