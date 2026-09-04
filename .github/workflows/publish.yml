@@ -1,0 +1,73 @@
+name: publish
+
+# 태그를 밀면 NuGet 에 올린다. 손으로 다시 돌릴 수도 있게 둔다 —
+# 올리기가 실패했을 때 태그를 다시 만들지 않고 같은 판을 재시도하려는 것이다.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # OIDC 토큰을 받으려면 이것이 필요하다. NuGet 은 그 토큰을 확인하고 한 시간짜리 열쇠를 내준다 —
+      # 그래서 저장해 둘 열쇠가 없다.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      # 태그와 판 번호가 어긋난 채로 올라가는 것을 막는다. NuGet 은 한 번 올린 번호를 지울 수도, 덮어쓸
+      # 수도 없으므로 여기서 걸러야 한다.
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props)
+          echo "tag=$tag  Directory.Build.props=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match <Version>$version</Version>"
+            exit 1
+          fi
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      # 빨간 판을 올리지 않는다. 올린 뒤에는 되돌릴 방법이 없다.
+      - name: Test
+        timeout-minutes: 5
+        run: dotnet test --no-build -c Release --timeout 4m
+
+      - name: Pack
+        run: dotnet pack src/GevSharp/GevSharp.csproj -c Release --no-build -o out
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nupkg
+          path: out/*.nupkg
+
+      # 열쇠는 쓰기 직전에 받는다. 한 시간이면 만료되므로 미리 받아 두면 밀 때 이미 죽어 있을 수 있다.
+      # user 는 nuget.org 프로필 이름이다 — 메일 주소가 아니다.
+      - name: NuGet login
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: cmir79
+
+      # 같은 번호를 다시 밀어도 실패로 끝내지 않는다. 판 번호가 틀린 경우는 위에서 이미 걸렀으므로,
+      # 여기서 걸리는 것은 같은 판을 다시 돌린 경우뿐이다.
+      - name: Push
+        run: >
+          dotnet nuget push out/*.nupkg
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
