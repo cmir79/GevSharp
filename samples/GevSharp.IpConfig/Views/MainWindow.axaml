@@ -4,8 +4,8 @@
         x:Class="GevSharp.IpConfig.Views.MainWindow"
         x:DataType="vm:MainVm"
         Title="GevSharp IP Config"
-        Width="900" Height="640"
-        MinWidth="760" MinHeight="520"
+        Width="940" Height="700"
+        MinWidth="800" MinHeight="540"
         Background="#33383F">
 
   <Window.Styles>
@@ -22,7 +22,19 @@
     </Style>
     <Style Selector="TextBox.addr">
       <Setter Property="FontFamily" Value="Consolas, Menlo, monospace" />
-      <Setter Property="MinWidth" Value="150" />
+    </Style>
+    <!-- 장치 줄은 촘촘하게 — 목록이 화면을 잡아먹으면 정작 설정할 자리가 좁아진다. -->
+    <Style Selector="ListBox.devices">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox.devices ListBoxItem">
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="6,2" />
+    </Style>
+    <Style Selector="TextBlock.section">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="FontSize" Value="12" />
     </Style>
   </Window.Styles>
 
@@ -36,9 +48,9 @@
       </StackPanel>
     </Border>
 
-    <Grid ColumnDefinitions="*,10,380">
+    <Grid ColumnDefinitions="340,10,*">
 
-      <!-- 왼쪽: 답한 장치들. 서브넷이 어긋난 것은 눈에 띄게. -->
+      <!-- 왼쪽: 호스트 어댑터 전부와, 그 어댑터로 들어온 카메라. 비어 있는 포트도 보여야 한다. -->
       <Border Grid.Column="0" Classes="panel">
         <DockPanel>
           <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,0,0,8">
@@ -48,81 +60,165 @@
                           MinWidth="0" VerticalAlignment="Center"
                           ToolTip.Tip="Keep looking once a second, so an address change shows up on its own" />
           </Grid>
-          <ListBox ItemsSource="{Binding Devices}" SelectedItem="{Binding Selected}">
-            <ListBox.ItemTemplate>
-              <DataTemplate x:DataType="vm:DeviceRowVm">
-                <StackPanel Spacing="1" Margin="0,3">
-                  <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
-                             IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
-                </StackPanel>
-              </DataTemplate>
-            </ListBox.ItemTemplate>
-          </ListBox>
+
+          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding Groups}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:NicGroupVm">
+                  <StackPanel Spacing="1" Margin="0,0,6,10">
+                    <!-- 어댑터 머리를 누르면 오른쪽이 그 어댑터 이야기로 바뀐다. -->
+                    <Border Background="Transparent" Cursor="Hand" Padding="0,2" PointerPressed="OnAdapterPressed">
+                      <StackPanel Spacing="1">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12"
+                                   TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                        <TextBlock Classes="caption" Text="{Binding Header}" TextTrimming="CharacterEllipsis"
+                                   ToolTip.Tip="{Binding Header}" />
+                        <TextBlock Classes="caption" Text="{Binding Count}" />
+                      </StackPanel>
+                    </Border>
+                    <TextBlock Text="{Binding Note}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
+                               IsVisible="{Binding Note, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                    <ListBox Classes="devices" ItemsSource="{Binding Devices}" Margin="0,3,0,0"
+                             SelectedItem="{Binding $parent[ItemsControl].((vm:MainVm)DataContext).Selected}">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:DeviceRowVm">
+                          <StackPanel Spacing="0">
+                            <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                                       ToolTip.Tip="{Binding Title}" />
+                            <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis"
+                                       ToolTip.Tip="{Binding Detail}" />
+                            <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
+                                       IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                          </StackPanel>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
         </DockPanel>
       </Border>
 
-      <!-- 오른쪽: 무엇이 설정돼 있고 무엇으로 바꿀지 -->
+      <!-- 오른쪽: 고른 장치의 상태와 설정. 내용이 창보다 길어지므로 통째로 스크롤한다. -->
       <Border Grid.Column="2" Classes="panel">
-        <StackPanel Spacing="10">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="12" Margin="0,0,10,0">
 
-          <TextBlock Text="{Binding SelectedSummary}" TextWrapping="Wrap" FontSize="12" LineHeight="18"
-                     IsVisible="{Binding HasSelection}" />
-          <TextBlock Classes="caption" Text="Pick a camera on the left." IsVisible="{Binding !HasSelection}" />
-
-          <StackPanel Spacing="4" IsVisible="{Binding HasSelection}">
-            <TextBlock Classes="caption" Text="Host adapter to match" />
-            <ComboBox ItemsSource="{Binding Nics}" SelectedItem="{Binding SelectedNic}" HorizontalAlignment="Stretch" />
-            <Button Content="Propose a free address on it" Click="OnSuggest" IsEnabled="{Binding CanSuggest}"
-                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,4,0,0" />
-
-            <!-- 고쳐야 할 쪽이 호스트인 경우도 카메라만큼 흔하다. 그 창들을 여기서 바로 연다. -->
-            <Grid ColumnDefinitions="*,*" ColumnSpacing="6" Margin="0,4,0,0"
-                  IsVisible="{Binding CanOpenSystemSettings}">
-              <Button Grid.Column="0" Content="Adapter settings" Click="OnOpenAdapter"
-                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-              <Button Grid.Column="1" Content="Firewall" Click="OnOpenFirewall"
-                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-            </Grid>
-          </StackPanel>
-
-          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6"
-                IsVisible="{Binding HasSelection}">
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="Address" VerticalAlignment="Center" />
-            <TextBox Grid.Row="0" Grid.Column="1" Classes="addr" Text="{Binding Ip}" />
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="Subnet" VerticalAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="1" Classes="addr" Text="{Binding Mask}" />
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="Gateway" VerticalAlignment="Center" />
-            <TextBox Grid.Row="2" Grid.Column="1" Classes="addr" Text="{Binding Gateway}" />
-          </Grid>
-
-          <StackPanel Spacing="6" IsVisible="{Binding HasSelection}">
-            <Button Content="Apply now, until power off" Click="OnForce" IsEnabled="{Binding IsIdle}"
-                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
             <TextBlock Classes="caption" TextWrapping="Wrap"
-                       Text="Changes the address immediately. Goes out as a broadcast, so it reaches a camera that is on the wrong subnet and cannot be opened at all. The camera keeps this address until it loses power, then falls back to whatever it is configured to use." />
+                       Text="Pick an adapter or a camera on the left. An adapter shows what the host side looks like; a camera shows what can be changed on the device."
+                       IsVisible="{Binding !HasAnySelection}" />
 
-            <Button Content="Store for the next power-up" Click="OnPersist" IsEnabled="{Binding SupportsPersistent}"
-                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,6,0,0" />
-            <TextBlock Classes="caption" TextWrapping="Wrap"
-                       Text="Writes the address into the camera and leaves it running as it is — nothing changes right now. The camera comes up on this address the next time it is powered on. It has to be reachable to write, so bring a stranded camera back with the button above first." />
+            <!-- 어댑터를 골랐을 때 — 호스트 쪽 이야기만 -->
+            <StackPanel Spacing="12" IsVisible="{Binding HasGroupSelection}">
+              <StackPanel Spacing="2">
+                <TextBlock Classes="section" Text="{Binding SelectedGroup.Name}" />
+                <TextBlock Classes="caption" Text="{Binding SelectedGroup.Header}" TextWrapping="Wrap" />
+                <TextBlock Classes="caption" Text="{Binding SelectedGroup.Kind}" />
+                <TextBlock Classes="caption" Text="{Binding SelectedGroup.Count}" />
+                <TextBlock Text="{Binding SelectedGroup.Note}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
+                           IsVisible="{Binding SelectedGroup.Note, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              </StackPanel>
+
+              <StackPanel Spacing="4">
+                <TextBlock Classes="section" Text="Name" />
+                <TextBlock Classes="caption" TextWrapping="Wrap"
+                           Text="The name Windows shows for this connection. Set it to what the line calls this port and it reads the same here and in Windows." />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                  <TextBox Grid.Column="0" Text="{Binding AdapterName}" />
+                  <Button Grid.Column="1" Content="Set" Click="OnRenameAdapter" IsEnabled="{Binding IsIdle}" />
+                </Grid>
+              </StackPanel>
+
+              <StackPanel Spacing="3">
+                <TextBlock Classes="section" Text="Firewall" />
+                <TextBlock Text="{Binding Firewall}" FontSize="11" TextWrapping="Wrap" Foreground="#E5C07B"
+                           IsVisible="{Binding Firewall, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              </StackPanel>
+
+              <StackPanel Spacing="6" IsVisible="{Binding CanOpenSystemSettings}">
+                <Grid ColumnDefinitions="*,*,*" ColumnSpacing="6">
+                  <Button Grid.Column="0" Content="Properties" Click="OnOpenAdapter"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                          ToolTip.Tip="Open this adapter's properties directly" />
+                  <Button Grid.Column="1" Content="Connections" Click="OnOpenConnections"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                          ToolTip.Tip="Open the Network Connections list — enable, disable or rename an adapter" />
+                  <Button Grid.Column="2" Content="Firewall" Click="OnOpenFirewall"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                </Grid>
+                <TextBlock Classes="caption" TextWrapping="Wrap"
+                           Text="Change the host address here when a camera cannot be moved — some are fixed by the line's own addressing plan." />
+              </StackPanel>
+            </StackPanel>
+
+            <StackPanel Spacing="12" IsVisible="{Binding HasSelection}">
+
+              <TextBlock Text="{Binding SelectedSummary}" TextWrapping="Wrap" FontSize="12" LineHeight="18" />
+
+              <!-- 어댑터는 고르는 것이 아니라 따라오는 것이다 — 포트에 직결한 카메라는 들어오는 길이 정해져 있다. -->
+              <StackPanel Spacing="3">
+                <TextBlock Classes="section" Text="Host adapter" />
+                <TextBlock Classes="caption" Text="{Binding MatchingNic}" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding Firewall}" FontSize="11" TextWrapping="Wrap" Foreground="#E5C07B"
+                           IsVisible="{Binding Firewall, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              </StackPanel>
+
+              <StackPanel Spacing="4">
+                <TextBlock Classes="section" Text="Name" />
+                <TextBlock Classes="caption" TextWrapping="Wrap"
+                           Text="Up to 16 ASCII characters, stored in the camera. Several identical models look the same in a list; this is what tells them apart." />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                  <TextBox Grid.Column="0" Text="{Binding UserName}" MaxLength="16" />
+                  <Button Grid.Column="1" Content="Set" Click="OnSetName" IsEnabled="{Binding IsIdle}" />
+                </Grid>
+              </StackPanel>
+
+              <StackPanel Spacing="4">
+                <TextBlock Classes="section" Text="Address" />
+                <Button Content="Propose a free address on this adapter" Click="OnSuggest"
+                        IsEnabled="{Binding CanSuggest}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6"
+                      Margin="0,4,0,0">
+                  <TextBlock Grid.Row="0" Grid.Column="0" Text="Address" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="0" Grid.Column="1" Classes="addr" Text="{Binding Ip}" />
+                  <TextBlock Grid.Row="1" Grid.Column="0" Text="Subnet" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Classes="addr" Text="{Binding Mask}" />
+                  <TextBlock Grid.Row="2" Grid.Column="0" Text="Gateway" VerticalAlignment="Center" />
+                  <TextBox Grid.Row="2" Grid.Column="1" Classes="addr" Text="{Binding Gateway}" />
+                </Grid>
+              </StackPanel>
+
+              <StackPanel Spacing="6">
+                <Button Content="Apply now, until power off" Click="OnForce" IsEnabled="{Binding IsIdle}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                <TextBlock Classes="caption" TextWrapping="Wrap"
+                           Text="Changes the address immediately. Goes out as a broadcast, so it reaches a camera that is on the wrong subnet and cannot be opened at all. The camera keeps this address until it loses power." />
+
+                <Button Content="Store for the next power-up" Click="OnPersist" IsEnabled="{Binding SupportsPersistent}"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,6,0,0" />
+                <TextBlock Classes="caption" TextWrapping="Wrap"
+                           Text="Writes the address into the camera and leaves it running as it is — nothing changes right now. It has to be reachable to write, so bring a stranded camera back with the button above first." />
+              </StackPanel>
+
+              <StackPanel Spacing="6">
+                <TextBlock Classes="section" Text="How the camera gets its address" />
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
+                  <Button Grid.Column="0" Content="Use DHCP" Click="OnUseDhcp" IsEnabled="{Binding SupportsDhcp}"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                  <Button Grid.Column="1" Content="Use stored" Click="OnUseStored" IsEnabled="{Binding SupportsPersistent}"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                </Grid>
+                <TextBlock Classes="caption" TextWrapping="Wrap"
+                           Text="Also takes effect at the next power-up. Link-local is left alone — it is the fallback that keeps a camera findable when everything else fails." />
+              </StackPanel>
+
+            </StackPanel>
+
           </StackPanel>
-
-          <!-- 주소값이 아니라 주소를 얻는 방식. DHCP 로 돌리면 저장해 둔 주소는 남아 있어도 쓰이지 않는다. -->
-          <StackPanel Spacing="6" IsVisible="{Binding HasSelection}">
-            <TextBlock Classes="caption" Text="How the camera gets its address" />
-            <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
-              <Button Grid.Column="0" Content="Use DHCP" Click="OnUseDhcp" IsEnabled="{Binding SupportsDhcp}"
-                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-              <Button Grid.Column="1" Content="Use stored" Click="OnUseStored" IsEnabled="{Binding SupportsPersistent}"
-                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-            </Grid>
-            <TextBlock Classes="caption" TextWrapping="Wrap"
-                       Text="Also takes effect at the next power-up. Link-local is left alone — it is the fallback that keeps a camera findable when everything else fails." />
-          </StackPanel>
-
-        </StackPanel>
+        </ScrollViewer>
       </Border>
 
     </Grid>
