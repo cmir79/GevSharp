@@ -357,6 +357,41 @@ all read back what was written). And while it saturates the link it stops answer
 about a second of `AcquisitionStart`, so a short heartbeat timeout can misread a healthy stream as
 lost control; control recovers as soon as acquisition stops.
 
+### Crevis at full rate, 2026-09-04 — the fastest single camera measured here
+
+The eight-hour run below deliberately caps both cameras at 5 fps, so it says nothing about the
+ceiling. Alone on the port, with nothing capping it, this camera is the closest any of them gets to
+line rate.
+
+| | |
+|---|---|
+| Frames delivered / completed | 326 / 327 in 15 s (21.76 fps) |
+| Sensor ceiling it reports | `ResultingFrameRate` 21 Hz |
+| Throughput | 110.32 MB/s (1.66 GB) |
+| Device's own stated limit | `DeviceMaxThroughput` 110.4 MB/s |
+| Packets | 185,736 received, 0 missing, 0 duplicated |
+| Incomplete frames / no-buffer drops | 0 / 0 |
+| Packet size | 9000 negotiated |
+
+110.32 against a stated 110.4 MB/s means the bottleneck is the device, not the receiver: 5.07 MB
+per frame at 21.8 fps leaves the host reassembling roughly 12,400 packets a second with nothing
+missed. That is 88% of 1 GbE line rate, and the second-by-second figures never moved off 110.4.
+
+Resend requests appear (158 over the run) and none of them recover anything, which matches what the
+eight-hour run found: on this device they signal reordering, not loss.
+
+**What made this measurement necessary is worth recording, because it looked like a receive fault.**
+A grab returned exactly one frame in 20 seconds with 0 missing packets and 0 incomplete frames — the
+shape of a device that is not sending rather than a host that is not receiving. The device was in
+`AcquisitionMode = SingleFrame`, which delivers one frame per `AcquisitionStart` and ignores
+`AcquisitionFrameCount` entirely. Measured on this camera: `MultiFrame` with a count of 3 delivers
+exactly 3, `SingleFrame` with the same count of 3 delivers 1.
+
+The trap is that this camera's XML puts no availability rule on `AcquisitionFrameCount`, so it stays
+readable and writable in `SingleFrame`, where it does nothing. A feature tree that shows the value as
+live invites the reading that it is in use. Nothing in the library can fix that — but when frames
+stop arriving and the packet counters are clean, the acquisition mode is the first thing to read.
+
 ### Two cameras at once, 10 minutes, 2026-09-03 — and why inter-packet delay is not optional
 
 Both cameras on one 1 GbE port, free-running, is not a test of this library — it is a test of the
