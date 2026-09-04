@@ -68,6 +68,20 @@ await dev.SetTlParamsLockedAsync(false);
 dotnet add package GevSharp
 ```
 
+## Tools
+
+Two desktop tools and a command line live in `samples/`. They are built on the library itself, so they
+also serve as worked examples of the API.
+
+| | What it does | Download |
+|---|---|---|
+| **Viewer** | Finds cameras, opens several at once, and shows them live — an even grid or one large view with the rest in a strip, tiles you can reorder by dragging. Zoom, pan, save a frame, read a pixel, and edit the full GenApi feature tree while the camera streams. | [gevsharp-viewer.exe](https://github.com/cmir79/GevSharp/releases/latest/download/gevsharp-viewer.exe) |
+| **IP configurator** | Puts a camera on the address you want, including one stranded on a subnet you cannot reach, which no ordinary tool can open at all. Fixed or DHCP, in effect at once rather than at the next power-up. It also shows the host adapters, which cameras came in on which one, and whether that adapter's firewall is what keeps the images out. | [gevsharp-ipconfig.exe](https://github.com/cmir79/GevSharp/releases/latest/download/gevsharp-ipconfig.exe) |
+| **CLI** | `discover`, `info`, `features`, `get`, `set`, `grab`, `regtest`, and `sim` — an in-process device simulator to develop against with no hardware. Run it from the source tree: `dotnet run --project samples/GevSharp.Cli -- discover` | — |
+
+The two downloads are self-contained Windows x64 builds: one file, nothing to install, no .NET runtime
+needed. Both are Avalonia applications and build for Linux and macOS from the same source.
+
 ## Logging
 
 The library never writes logs itself. Attach a sink once at startup:
