@@ -3,7 +3,7 @@
   <PropertyGroup>
     <!-- 락스텝 버전 — 전 패키지가 이 한 값을 공유한다. 릴리즈마다 여기 한 곳만 올린다.
          규칙: 내용이 한 바이트라도 바뀌면(메타데이터 포함) 반드시 상향 — NuGet 캐시는 id+version 으로만 식별한다. -->
-    <Version>0.1.3</Version>
+    <Version>0.1.4</Version>
 
     <Authors>cmir79ss</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -15,6 +15,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <Deterministic>true</Deterministic>
+    <!-- 디버그 정보를 어셈블리 안에 넣는다. 따로 두면 배포에서 떨어져 나가 스택 추적에 줄 번호가 사라지고,
+         파일 하나로 배포하는 도구에서는 아예 딸려 갈 자리가 없다. 값은 0.17% 크기 — 재현 못 하는 현장 예외
+         하나를 읽을 수 있게 하는 대가로는 싸다. -->
+    <DebugType>embedded</DebugType>
+    <!-- 소스는 넣지 않는다. 저장소가 공개라 디버거가 커밋으로 찾아갈 수 있고,
+         통째로 넣으면 어셈블리가 절반 넘게 커진다(실측 503 KB → 781 KB). -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
     <!-- 경고는 빌드에서 보이게 두되 실패로 올리지 않는다. 릴리즈 전에 0 으로 정리한다. -->
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
