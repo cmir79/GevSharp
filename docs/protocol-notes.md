@@ -78,6 +78,43 @@ user-defined name are optional registers (GVCP capability bits 30/31); a refused
 → WRITEREG heartbeat timeout → heartbeat: READREG CCP every `timeout/3`; any GVCP command from the
 controlling socket resets the device-side timer. On close: WRITEREG CCP=0.
 
+**Changing the addressing.** Write the mode to `CurrentIpCfg` (0x0014) and, for a fixed address, the
+persistent registers (0x064C/0x065C/0x066C); read them back before doing anything else, because a device
+may acknowledge a write it did not take. Then release control (CCP = 0) and close.
+
+Write what the operator chose, not what the device currently holds: `Persistent | LLA` for a fixed
+address, `DHCP | LLA` for DHCP, masked by the supported-configuration register (0x0010, a capability, not
+a state). Deriving the value by clearing and setting bits in the register just read lets whatever the
+device did in between leak into the write. Keep LLA on — it is the last resort when everything else
+fails, and both vendor tools were captured writing exactly 0x05 and 0x06.
+
+The written mode only decides what the device does *the next time it configures its interface*, so
+something has to make it do that. That something is **FORCEIP**, sent after the control channel is
+released (a device ignores it while an application holds control) and after a short pause:
+
+- a **fixed address** → FORCEIP with that address. Moving the interface is itself the restart, and it
+  says where to go, so a device that refused the persistent registers still lands where it was asked
+  instead of drifting to link-local.
+- **DHCP** → FORCEIP with IP `0.0.0.0`. There is no address to move to, and losing the current one is
+  what makes the device bring its interface up again — this time from DHCP. The mask and gateway fields
+  are ignored; only the zero IP is the signal.
+
+No device reset is involved, and that is not a workaround. Two vendors' own configuration tools were
+captured, on two cameras, in both directions, and **neither used a device reset — including on the camera
+that does expose a `DeviceReset` command**. It is also far cheaper: measured 0.5 s and 2.3 s from the
+FORCEIP to the first DISCOVERY_ACK on the new address, against a full boot.
+
+Hold one control session at a time. Two sessions of the same application on one camera — an apply
+holding it exclusively while a background read opens it again — end with the second one writing CCP = 0
+as it closes, which takes control away from the first; its remaining writes are refused and the whole
+apply completes having written nothing. The symptom is misleading: a FORCEIP sent earlier in the same
+operation already moved the address, so the camera looks half-configured (address taken, mode not) as
+if the device had rejected the mode. It had not been asked.
+
+(One vendor tool writes the configuration through a proprietary GVCP command, `0x8004`/`0x8005` with a
+76-byte payload, and never opens a control channel at all. The standard registers work on the same
+camera, so there is no reason to imitate that.)
+
 **Stream setup.** Bind UDP `(hostIp, port)`; set `SO_RCVBUF`; negotiate SCPS: for candidate size S write
 `SCPS = 0x80000000 | S`; the device sends one test packet of that size to SCDA:SCP (so SCDA/SCP must be
 written first for the test, or the device uses the GVCP source); wait ≤ 100 ms; success → keep S. Then
