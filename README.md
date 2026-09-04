@@ -26,12 +26,19 @@ GVCP device control, GVSP streaming with packet resend, and GenICam GenApi XML f
 
 ## Status
 
-Early development — see `docs/` for the design and the milestone plan. The library is exercised
-against an in-process device simulator (`tests/GevSharp.Sim`) and a third-party virtual camera in CI,
-on Linux and Windows, plus a .NET Framework 4.8 run of the same tests against the `netstandard2.0` asset.
-macOS is compiled in CI for all three target frameworks but the suite is not run there yet — see
-`docs/architecture.md` for what that does and does not mean. Real-camera validation is tracked in `docs/evaluation.md`, which records what
-the hardware settled that no public source did.
+Early development. The version stays at `0.x` because the public API may still move as more cameras
+are met — see `docs/` for the design and the milestone plan.
+
+The library is exercised against an in-process device simulator (`tests/GevSharp.Sim`) and a
+third-party virtual camera in CI, on Linux and Windows, plus a .NET Framework 4.8 run of the same
+tests against the `netstandard2.0` asset. macOS is compiled in CI for all three target frameworks but
+the suite is not run there yet — see `docs/architecture.md` for what that does and does not mean.
+
+It is also run against real hardware. Two cameras from different vendors (Basler acA2500-14gm and
+Crevis MG-A500M-22) sharing one 1 GbE port for eight hours delivered 288,000 frames and 163 million
+packets — 1.46 TB — with no packet missing, no frame short, and the same rate in the first and last
+five-minute interval. That is two vendors, not the whole field, which is the reason this is not 1.0.
+`docs/evaluation.md` records what the hardware settled that no public source did.
 
 ## Quick look
 
