@@ -94,25 +94,39 @@ public sealed class NicGroupVm
     {
         Nic = nic;
         Devices = devices;
+        // 목록을 다시 그리면 이 객체가 통째로 바뀌므로, 고른 것을 되찾을 열쇠가 따로 있어야 한다.
+        // 어댑터는 이름이 바뀌어도 GUID 는 그대로다 — 이름으로 잡으면 이름을 바꾸는 순간 놓친다.
+        Key = nic?.Id ?? $"@{heardOn}";
         // 제목은 사용자가 붙일 수 있는 이름이다 — 윈도우 네트워크 연결 창에서 바꾸는 그 이름으로, 설비에서
         // 부르는 대로("카메라1" 같이) 고쳐 두면 그것이 그대로 보인다. 기본값이면 "이더넷" 처럼 밋밋하므로
         // 어느 장치인지는 바로 아래에 함께 적는다. 찾는 것은 어느 이름도 아니고 인터페이스 GUID 다.
-        Name = nic?.Shown ?? "unknown adapter";
-        Header = nic is null
-            ? $"heard on {heardOn}, which is not one of this host's addresses"
-            : $"{nic.Hardware}  ·  {nic.State}";
-        Count = devices.Count switch
+        var shown = nic?.Shown ?? "unknown adapter";
+        var count = devices.Count switch
         {
             0 => "no camera",
             1 => "1 camera",
             _ => $"{devices.Count} cameras",
         };
+
+        // 대수는 이름 옆 괄호에 — 한 줄로 붙어 있어야 어느 포트에 몇 대인지 훑어보기 좋다.
+        Name = $"{shown} ({count})";
+        // 장치 이름과 링크 상태는 줄을 나눈다. 한 줄에 몰면 좁은 폭에서 상태가 먼저 잘린다.
+        Header = nic?.Hardware ?? "";
+        State = nic is null
+            ? $"heard on {heardOn}, which is not one of this host's addresses"
+            : nic.State;
+        Count = count;
     }
 
     public HostNic? Nic { get; }
+
+    /// <summary>목록을 새로 만들어도 같은 어댑터를 가리키는 값.</summary>
+    public string Key { get; }
+
     public string Kind => Nic is null ? "" : $"connection name: {Nic.Interface}";
     public string Name { get; }
     public string Header { get; }
+    public string State { get; }
     public string Count { get; }
     public IReadOnlyList<DeviceRowVm> Devices { get; }
 
@@ -139,10 +153,18 @@ public sealed class MainVm : VmBase
     private string _userName = "";
     private string? _firewall;
     private string _adapterName = "";
+    private string? _stored;
+    private bool _isDhcpSelected;
     private readonly Dictionary<string, string> _connectionNames = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _scan;
     private bool _autoScan = true;
     private bool _isScanning;
+
+    /// <summary>
+    /// 주소 설정을 쓸 때 쓰는 접근 방식. 제어 접근으로는 같은 값을 써도 반영하지 않는 카메라가 있다 —
+    /// 벤더 도구를 잡아 견줘 보니 쓰는 값은 같고 이것만 달랐다.
+    /// </summary>
+    private static GevDeviceOpt Exclusive => new() { AccessMode = GevAccessMode.Exclusive };
 
     public ObservableCollection<DeviceRowVm> Devices { get; } = new();
     public ObservableCollection<HostNic> Nics { get; } = new();
@@ -153,9 +175,18 @@ public sealed class MainVm : VmBase
     public DeviceRowVm? Selected
     {
         get => _selected;
-        set
+        set => Select(value, loadFields: true);
+    }
+
+    /// <summary>
+    /// 고른 카메라를 바꾼다. <paramref name="loadFields"/> 가 거짓이면 화면에 적힌 것을 그대로 둔다 —
+    /// 검색이 목록을 새로 만들면서 같은 카메라를 다시 고르게 될 때, 사람이 방금 고른 주소 방식과 타이핑한
+    /// 주소를 장치 값으로 되돌리지 않기 위한 것이다. 되돌리면 적용을 누르기도 전에 고른 것이 사라진다.
+    /// </summary>
+    private void Select(DeviceRowVm? value, bool loadFields)
+    {
         {
-            if (!Set(ref _selected, value)) return;
+            if (!Set(ref _selected, value, nameof(Selected))) return;
             Raise(nameof(HasSelection));
             Raise(nameof(HasAnySelection));
             Raise(nameof(SelectedSummary));
@@ -168,8 +199,14 @@ public sealed class MainVm : VmBase
             Raise(nameof(SelectedGroup));
             Raise(nameof(HasGroupSelection));
             Raise(nameof(HasAnySelection));
-            LoadFields(value);
-            _ = RefreshFirewallAsync(MatchingNic);
+            if (loadFields) LoadFields(value);
+            // 방화벽은 어댑터 쪽 설정이라 어댑터를 골랐을 때만 읽는다 — 카메라마다 다시 물을 이유가 없다.
+            Firewall = null;
+
+            // 저장 주소는 사람이 카메라를 고를 때만 읽는다. 검색이 목록을 새로 만들며 같은 카메라를 다시
+            // 고르는 자리에서까지 열면, 적용 중에 그 검색이 돌 때 우리 세션 둘이 같은 카메라를 동시에 열게 된다 —
+            // 뒤에 닫히는 쪽이 CCP 를 0 으로 쓰면서 앞 세션의 제어권을 걷어 가고, 적용은 아무것도 못 쓴 채 끝난다.
+            if (loadFields) _ = RefreshStoredAsync(value);
         }
     }
 
@@ -339,9 +376,155 @@ public sealed class MainVm : VmBase
     /// 주소를 어떻게 얻을지 바꾼다. 주소값이 아니라 방식을 바꾸는 것이라, DHCP 로 돌리면 저장해 둔 주소는 남아 있어도 쓰이지 않는다.
     /// 링크로컬 비트는 건드리지 않는다 — 다른 방식이 모두 실패했을 때의 마지막 수단이라 꺼 두면 장치를 잃을 수 있다.
     /// </summary>
-    public Task UseDhcpAsync() => SetAddressingAsync(dhcp: true);
+    /// <summary>
+    /// 화면에서 고른 주소 방식. 장치에 바로 쓰이지 않는다 — 고르고 나서 적용을 눌러야 장치가 바뀐다.
+    /// 고른 방식이 DHCP 면 주소 칸은 잠긴다. 그 칸들이 정하는 것은 고정 주소이고, DHCP 를 쓸 때는
+    /// 주소를 서버가 정하므로 사람이 적을 자리가 없다.
+    /// </summary>
+    public bool IsDhcpSelected
+    {
+        get => _isDhcpSelected;
+        set
+        {
+            if (!Set(ref _isDhcpSelected, value)) return;
+            Raise(nameof(IsStaticSelected));
+            if (value)
+            {
+                // DHCP 를 고르면 주소 칸을 비운다. 서버가 정할 값이라 남겨 두면 무엇을 쓰는지 착각하게 된다.
+                Ip = "";
+                Mask = "";
+                Gateway = "";
+                return;
+            }
 
-    public Task UseStoredAsync() => SetAddressingAsync(dhcp: false);
+            // 고정으로 돌아와도 칸은 채우지 않는다. 어떤 주소를 쓸지는 사람이 정할 일이고, 비어 있으면
+            // 어댑터에 맞춰 빈 주소를 제안하는 단추로 한 번에 채운다. 여기서 장치 값을 되읽으면 방금 고른
+            // 모드까지 되돌려 놓아 고정이 곧바로 DHCP 로 튕겨 돌아갔다.
+        }
+    }
+
+    public bool IsStaticSelected
+    {
+        get => !_isDhcpSelected;
+        set => IsDhcpSelected = !value;
+    }
+
+    /// <summary>
+    /// 화면에 적힌 대로 카메라를 맞춘다. 단추를 하나로 둔 이유는, 쓰는 사람이 정하고 싶은 것은
+    /// "이 카메라를 이렇게 쓰겠다" 하나이지 그것을 이루는 절차가 아니기 때문이다.
+    /// <para>
+    /// 고정 주소면 지금 바로 그 주소로 바꾸고(브로드캐스트라 못 여는 장치에도 닿는다) 같은 주소를 저장한 뒤
+    /// 고정 방식으로 표시해, 지금도 다음 기동에도 같은 자리에 있게 한다. DHCP 면 방식만 바꾸고 저장된
+    /// 주소를 지운다 — 남겨 두면 그 주소로 올라오는 카메라가 있어 DHCP 로 바꿨다는 말이 거짓이 된다.
+    /// </para>
+    /// </summary>
+    public Task ApplyAsync()
+    {
+        // 되돌아가는 자리마다 이유를 남긴다. 단추가 조용히 아무 일도 하지 않으면 왜 그런지 알 방법이 없고,
+        // 실제로 그 상태를 한참 들여다본 적이 있다.
+        if (Selected is not { } target)
+        {
+            Error = "no camera is selected — pick one on the left";
+            return Task.CompletedTask;
+        }
+
+        if (IsBusy)
+        {
+            Error = "another operation is still running";
+            return Task.CompletedTask;
+        }
+
+        if (IsDhcpSelected) return SetAddressingAsync(dhcp: true);
+        if (!TryReadFields(out var ip, out var mask, out var gateway)) return Task.CompletedTask;
+
+        return RunAsync($"Applying {ip}", async () =>
+        {
+            // 강제 주소는 열 수 없는 장치를 데려올 때만 쓴다. 열 수 있으면 쓸 이유가 없다 —
+            // 레지스터에 적고 다시 시작시키면 그 주소로 올라오고, 임시 상태를 거치지 않아 지금 보이는 것이
+            // 다음 기동에 보일 것과 같아진다.
+            Status = $"Applying {ip} / {mask} to {DeviceRowVm.Format(target.Info.Mac)}...";
+            GevLog.Info("IpConfig", $"apply fixed {ip}/{mask} gw {gateway} to {DeviceRowVm.Format(target.Info.Mac)} at {target.Info.Address}, stranded={target.IsStranded}");
+            var info = target.Info;
+            if (target.IsStranded)
+            {
+                // 여기서만 훑는다. 레지스터를 쓰려면 장치를 열어야 하고, 열려면 강제 주소로 옮겨 간 뒤의
+                // 주소를 알아야 한다 — 확인하려는 검색이 아니라 다음 단계에 필요한 검색이다.
+                await GevDiscovery.ForceIpAsync(info.Mac, ip, mask, gateway).ConfigureAwait(true);
+                GevDeviceInfo? moved = null;
+                for (var i = 0; i < 6; i++)
+                {
+                    await ScanCoreAsync().ConfigureAwait(true);
+                    moved = Devices.FirstOrDefault(d => d.Info.Mac.Equals(info.Mac))?.Info;
+                    if (moved is not null && moved.IsReachableDirectly) break;
+                    await Task.Delay(300).ConfigureAwait(true);
+                }
+
+                if (moved is null)
+                {
+                    Status = $"{ip} was sent to bring the camera back in range; it has not answered yet.";
+                    return;
+                }
+
+                info = moved;
+            }
+
+            if ((info.SupportedIpCfg & GvbsAddr.IpCfgPersistent) == 0)
+            {
+                Error = "this camera cannot store a fixed address";
+                return;
+            }
+
+            bool stuck, persistent, confirmed;
+
+            // 장치를 여는 구간을 따로 묶는다. 강제 주소는 이 구간이 끝나고 장치를 놓은 뒤에 보내야 한다 —
+            // 제 세션이 장치를 쥐고 있는 동안에는 그 명령이 무시된다. 아무것도 열지 않고 보내면 1초 만에
+            // 먹는 것을 확인했고, 연 채로 보내면 아무 일도 일어나지 않았다.
+            await using (var device = await GevDevice.OpenAsync(info, Exclusive).ConfigureAwait(true))
+            {
+                // 모드를 먼저 켠다. 영구 모드가 꺼져 있으면 주소 레지스터가 잠겨 있어 쓰기가 거부된다 —
+                // 순서를 반대로 하면 주소는 안 들어가고 모드만 바뀌어, 저장한 적 없는 주소로 올라오게 된다.
+                await device.WriteRegAsync(GvbsAddr.CurrentIpCfg, WantedCfg(info, dhcp: false)).ConfigureAwait(true);
+
+                await device.WriteRegAsync(GvbsAddr.PersistentIp0, ToUInt32(ip)).ConfigureAwait(true);
+                await device.WriteRegAsync(GvbsAddr.PersistentSubnet0, ToUInt32(mask)).ConfigureAwait(true);
+                await device.WriteRegAsync(GvbsAddr.PersistentGateway0, ToUInt32(gateway)).ConfigureAwait(true);
+
+                // 되읽어 확인한다. 쓰기가 성공해도 장치가 그 비트를 그대로 받아들이지 않을 수 있고, 그러면
+                // 고정 주소로 바꿨다고 말해 놓고 다음 기동에 DHCP 로 올라온다.
+                var after = await device.ReadRegAsync(GvbsAddr.CurrentIpCfg).ConfigureAwait(true);
+                stuck = (after & GvbsAddr.IpCfgDhcp) != 0;
+                persistent = (after & GvbsAddr.IpCfgPersistent) != 0;
+                GevLog.Info("IpConfig", $"current ip configuration reads 0x{after:X} after the write");
+
+                // 주소가 실제로 남았는지 보고 나서 리셋을 건다. 쓰자마자 걸면 장치가 앞의 쓰기를 붙들고 있어
+                // 리셋을 받지 않는다 — 확인하는 시간이 그 틈을 겸한다.
+                confirmed = await ConfirmAsync(device, ip, mask, gateway).ConfigureAwait(true);
+            }
+
+            GevLog.Info("IpConfig", $"registers written; persistent={persistent}, dhcp still set={stuck}, stored confirmed={confirmed}");
+
+            // 제어권을 놓은 뒤에 쓸 주소를 그대로 앉힌다. 여기서 0.0.0.0 을 먼저 보낼 이유가 없다 —
+            // 주소가 있는 쪽으로 옮기는 것이 곧 인터페이스를 다시 세우는 일이고, 갈 곳까지 함께 알려 준다.
+            await RestartAddressingAsync(info.Mac, ip, mask, gateway).ConfigureAwait(true);
+
+            var note = !persistent
+                ? $"{ip} was written but the camera did not accept the fixed-address mode."
+                : stuck
+                    ? $"{ip} is stored, but this camera keeps DHCP enabled as well — it may still take a "
+                      + "server's address if one answers first."
+                    : $"{ip} is stored and set as the fixed address.";
+
+            // 돌아오기를 기다리며 훑지 않는다. 카메라는 잠깐 사라졌다가 새 주소로 올라오는데, 그동안 붙들고
+            // 있어 봐야 화면만 멈춘다 — 목록에서 내리고 검색에 맡긴다. 검색이 켜져 있으면 알아서 다시 잡히고,
+            // 꺼져 있으면 사람이 누른다.
+            Devices.Remove(Devices.FirstOrDefault(d => d.Info.Mac.Equals(info.Mac)) ?? target);
+            Regroup();
+            Selected = null;
+            Stored = null;
+            Error = null;
+            Status = $"{note} Its addressing was restarted; it will reappear on {ip} at the next scan.";
+        });
+    }
 
     private Task SetAddressingAsync(bool dhcp)
     {
@@ -358,16 +541,45 @@ public sealed class MainVm : VmBase
                 return;
             }
 
-            await using var device = await GevDevice.OpenAsync(target.Info).ConfigureAwait(true);
-            var cfg = await device.ReadRegAsync(GvbsAddr.CurrentIpCfg).ConfigureAwait(true);
-            cfg = dhcp
-                ? (cfg & ~GvbsAddr.IpCfgPersistent) | GvbsAddr.IpCfgDhcp
-                : (cfg & ~GvbsAddr.IpCfgDhcp) | GvbsAddr.IpCfgPersistent;
-            await device.WriteRegAsync(GvbsAddr.CurrentIpCfg, cfg).ConfigureAwait(true);
+            var info = target.Info;
+            bool took;
 
-            Status = dhcp
-                ? "Set to ask a DHCP server. It takes effect the next time the camera powers up."
-                : "Set to use the stored address. It takes effect the next time the camera powers up.";
+            // 장치를 여는 구간을 따로 묶는다 — 제어 접근을 놓았다 다시 잡는 것이 리셋을 대신하는 장치가 있어,
+            // 그 일은 이 구간이 끝난 뒤라야 할 수 있다.
+            await using (var device = await GevDevice.OpenAsync(info, Exclusive).ConfigureAwait(true))
+            {
+                // 배타 접근으로 연다. 제어 접근으로 같은 값을 써도 이 카메라는 반영하지 않는다 — 벤더 도구가
+                // 보내는 것을 그대로 잡아 견줘 보니 쓰는 값은 같고 접근 방식만 달랐다(CCP 1 대 2).
+                // 재부팅을 동반하는 설정이라 소유자가 하나임을 요구하는 것으로 보인다.
+                await device.WriteRegAsync(GvbsAddr.CurrentIpCfg, WantedCfg(info, dhcp)).ConfigureAwait(true);
+
+                if (dhcp)
+                {
+                    // 저장된 주소도 비운다. 남겨 두면 그 주소로 올라오는 장치가 있어, DHCP 로 바꿨다는 말이
+                    // 거짓이 된다. 이 자리는 32비트 주소값이라 "빈 값" 은 0.0.0.0 이다.
+                    await device.WriteRegAsync(GvbsAddr.PersistentIp0, 0).ConfigureAwait(true);
+                    await device.WriteRegAsync(GvbsAddr.PersistentSubnet0, 0).ConfigureAwait(true);
+                    await device.WriteRegAsync(GvbsAddr.PersistentGateway0, 0).ConfigureAwait(true);
+                }
+
+                // 바뀐 것을 확인하고 나서 리셋을 건다. 쓰자마자 걸면 장치가 앞의 쓰기를 아직 붙들고 있어 받지 않는다.
+                var after = await device.ReadRegAsync(GvbsAddr.CurrentIpCfg).ConfigureAwait(true);
+                took = (after & want) != 0;
+            }
+
+            // 앉힐 주소가 없다. DHCP 는 카메라가 스스로 서버에 물어야 하는 일이라, 우리가 할 수 있는 것은
+            // 주소를 거둬 인터페이스를 다시 세우게 하고 어디로 올라오는지 지켜보는 것뿐이다.
+            await RestartAddressingAsync(info.Mac, IPAddress.Any, IPAddress.Any, IPAddress.Any).ConfigureAwait(true);
+            GevLog.Info("IpConfig", $"addressing set to {(dhcp ? "dhcp" : "persistent")}; took={took}");
+
+            Devices.Remove(target);
+            Regroup();
+            Selected = null;
+            Stored = null;
+            Error = took ? null : "the camera did not accept that addressing mode";
+
+            var what = dhcp ? "Set to DHCP." : "Set to the stored address.";
+            Status = $"{what} Its addressing was restarted; the camera will come back on whatever address that gives it.";
         });
     }
 
@@ -432,6 +644,66 @@ public sealed class MainVm : VmBase
         {
             Firewall = $"could not be read ({ex.Message})";
         }
+    }
+
+    /// <summary>
+    /// 화면에서 고른 방식을 그대로 레지스터 값으로 만든다. <b>장치가 지금 무엇으로 설정돼 있는지는 보지 않는다</b> —
+    /// 사람이 고른 것이 곧 의도인데, 장치 값에서 비트를 빼고 더하는 식으로 만들면 그 사이에 장치가 바뀐 것에
+    /// 끌려가 고른 적 없는 조합이 나간다.
+    /// <para>
+    /// 링크로컬은 늘 켠다. 다른 방식이 모두 실패했을 때의 마지막 수단이라 꺼 두면 장치를 잃을 수 있다.
+    /// 장치가 지원한다고 알린 것만 남긴다 — 지원 여부는 상태가 아니라 능력이라 되읽을 필요가 없다.
+    /// </para>
+    /// </summary>
+    private static uint WantedCfg(GevDeviceInfo info, bool dhcp)
+    {
+        var wanted = (dhcp ? GvbsAddr.IpCfgDhcp : GvbsAddr.IpCfgPersistent) | GvbsAddr.IpCfgLla;
+        return wanted & info.SupportedIpCfg;
+    }
+
+    /// <summary>쓰기와 재시작 사이에 두는 틈. 장치가 방금 받은 값을 자기 것으로 삼기 전에 걸면 받지 않는다.</summary>
+    private const int RestartSettleMs = 800;
+
+    /// <summary>
+    /// 레지스터에 써 둔 설정을 지금 적용시킨다. 주소 설정은 인터페이스를 세울 때만 읽히므로, 이것이 없으면
+    /// 써 놓고도 전원을 뽑았다 꽂기 전까지 아무것도 달라지지 않는다.
+    /// <para>
+    /// 고정 주소면 쓸 주소를 그대로 보낸다. DHCP 면 앉힐 주소가 없으므로 0.0.0.0 을 보낸다 — 주소를 잃는
+    /// 것 자체가 인터페이스를 다시 세우라는 신호가 되고, 그러면 방금 켜 둔 DHCP 로 올라온다.
+    /// </para>
+    /// <para>
+    /// 장치 리셋 명령을 쓰지 않는다. 그 명령이 있는 카메라도 이 방법으로 반영되고, 이쪽이 훨씬 빠르며
+    /// (측정: 0.5~2.3초), 다른 설정을 건드리지 않는다. 무엇보다 명령이 없는 카메라와 같은 길로 갈 수 있어
+    /// 장치마다 다르게 동작할 여지가 사라진다.
+    /// </para>
+    /// <para>
+    /// 제어권을 놓은 뒤에 보내야 한다 — 우리가 쥐고 있는 동안에는 이 명령이 무시된다. 놓자마자 보내지 않고
+    /// 잠깐 두는 것도 필요하다. 브로드캐스트라 열 수 없는 장치에도 닿는다.
+    /// </para>
+    /// </summary>
+    private static async Task RestartAddressingAsync(PhysicalAddress mac, IPAddress ip, IPAddress mask, IPAddress gateway)
+    {
+        await Task.Delay(RestartSettleMs).ConfigureAwait(true);
+        await GevDiscovery.ForceIpAsync(mac, ip, mask, gateway).ConfigureAwait(true);
+        GevLog.Info("IpConfig", $"force-ip {ip} sent to {DeviceRowVm.Format(mac)} to apply what was written");
+    }
+
+    /// <summary>
+    /// 쓴 주소가 장치에 남았는지 되읽어 확인한다. 리셋은 이것이 끝난 뒤에 건다 — 쓰자마자 리셋을 걸면
+    /// 장치가 앞의 쓰기를 아직 붙들고 있어 리셋을 받지 않고, 무엇이 저장됐는지 모르는 채로 재우게 된다.
+    /// </summary>
+    private static async Task<bool> ConfirmAsync(GevDevice device, IPAddress ip, IPAddress mask, IPAddress gateway)
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            var a = await device.ReadRegAsync(GvbsAddr.PersistentIp0).ConfigureAwait(true);
+            var m = await device.ReadRegAsync(GvbsAddr.PersistentSubnet0).ConfigureAwait(true);
+            var g = await device.ReadRegAsync(GvbsAddr.PersistentGateway0).ConfigureAwait(true);
+            if (a == ToUInt32(ip) && m == ToUInt32(mask) && g == ToUInt32(gateway)) return true;
+            await Task.Delay(200).ConfigureAwait(true);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -591,6 +863,49 @@ public sealed class MainVm : VmBase
     }
 
     /// <summary>네트워크 연결 목록을 연다 — 어댑터를 켜고 끄거나 이름을 바꾸는 자리다.</summary>
+    /// <summary>
+    /// 카메라에 저장돼 있는 영구 주소. 지금 쓰는 주소와 다를 수 있다 — DHCP 로 올라온 카메라는 현재 주소가
+    /// 서버가 준 것이고 저장된 주소는 그대로 남아 있다. 무엇이 남아 있는지 보이지 않으면 다음 기동에 어디로
+    /// 올라올지 알 수 없으므로 따로 읽어 적는다.
+    /// </summary>
+    public string? Stored
+    {
+        get => _stored;
+        private set => Set(ref _stored, value);
+    }
+
+    private async Task RefreshStoredAsync(DeviceRowVm row)
+    {
+        // 무언가 진행 중이면 열지 않는다. 이 읽기는 화면을 채우자는 것뿐이라 미뤄도 잃을 것이 없고,
+        // 겹쳐 열면 진행 중인 작업이 제어권을 잃는다.
+        if (IsBusy) return;
+
+        if ((row.Info.SupportedIpCfg & GvbsAddr.IpCfgPersistent) == 0)
+        {
+            Stored = "this camera has no stored address";
+            return;
+        }
+
+        Stored = "reading...";
+        try
+        {
+            await using var device = await GevDevice.OpenAsync(row.Info).ConfigureAwait(true);
+            var ip = await device.ReadRegAsync(GvbsAddr.PersistentIp0).ConfigureAwait(true);
+            var mask = await device.ReadRegAsync(GvbsAddr.PersistentSubnet0).ConfigureAwait(true);
+            var gw = await device.ReadRegAsync(GvbsAddr.PersistentGateway0).ConfigureAwait(true);
+
+            var uses = (row.Info.CurrentIpCfg & GvbsAddr.IpCfgPersistent) != 0;
+            Stored = ip == 0
+                ? "nothing stored — this camera will not come up on a fixed address"
+                : $"stored: {ToAddress(ip)} / {ToAddress(mask)}   gateway {ToAddress(gw)}"
+                  + (uses ? "   (this is what it comes up on)" : "   (kept, but not used while another mode is selected)");
+        }
+        catch (Exception ex)
+        {
+            Stored = $"the stored address could not be read ({ex.Message})";
+        }
+    }
+
     public void OpenNetworkConnections() => Launch("ncpa.cpl");
 
     /// <summary>방화벽 설정을 연다. 제어는 오가는데 스트림만 오지 않으면 대개 이쪽이다.</summary>
@@ -628,74 +943,23 @@ public sealed class MainVm : VmBase
     /// </summary>
     public void Suggest()
     {
-        if (MatchingNic is not { } nic || Selected is null) return;
+        if (MatchingNic is not { } nic || nic.Address is null || nic.Mask is null || Selected is null) return;
 
-        var host = ToUInt32(nic.Address);
-        var mask = ToUInt32(nic.Mask);
-        var network = host & mask;
-        var broadcast = network | ~mask;
-        var taken = Devices.Select(d => ToUInt32(d.Info.Address)).Append(host).ToHashSet();
+        var address = nic.Address.GetAddressBytes();
+        var mask = nic.Mask.GetAddressBytes();
 
-        for (var candidate = network + 1; candidate < broadcast; candidate++)
-        {
-            if (taken.Contains(candidate)) continue;
-            Ip = ToAddress(candidate).ToString();
-            Mask = nic.Mask.ToString();
-            Gateway = "0.0.0.0";
-            Status = $"Proposed {Ip} — free in {ToAddress(network)}/{nic.Mask}.";
-            Error = null;
-            return;
-        }
+        // 어댑터가 정하는 것은 대역까지다. 마스크가 통째로 덮는 옥텟만 적고 나머지는 비워 둔다 —
+        // 그 뒤는 사람이 정할 자리이고, 우리가 아무 숫자나 채우면 뜻이 있는 값처럼 보인 채로 그대로 나간다.
+        var fixedOctets = 0;
+        while (fixedOctets < 4 && mask[fixedOctets] == 255) fixedOctets++;
 
-        Error = "no free address in that subnet";
-    }
+        // 온전히 한 자리만 남는 마스크(/32)면 적을 것이 없다. 마지막 칸은 언제나 사람 몫으로 남긴다.
+        if (fixedOctets == 4) fixedOctets = 3;
 
-    /// <summary>
-    /// 지금 당장 주소를 바꾼다. 브로드캐스트로 나가므로 서브넷이 어긋나 열 수 없는 장치에도 닿는다.
-    /// 전원을 껐다 켜면 사라지는 임시 설정이다 — 되살려 놓고 영구 주소를 쓰는 순서로 쓴다.
-    /// </summary>
-    public Task ForceAsync()
-    {
-        if (Selected is not { } target) return Task.CompletedTask;
-        if (!TryReadFields(out var ip, out var mask, out var gateway)) return Task.CompletedTask;
-
-        return RunAsync($"Forcing {ip}", async () =>
-        {
-            await GevDiscovery.ForceIpAsync(target.Info.Mac, ip, mask, gateway).ConfigureAwait(true);
-            Status = $"{ip} applied to {DeviceRowVm.Format(target.Info.Mac)}. This lasts until the camera is power-cycled.";
-            await Task.Delay(700).ConfigureAwait(true);
-            await ScanCoreAsync().ConfigureAwait(true);
-        });
-    }
-
-    /// <summary>
-    /// 전원을 껐다 켜도 남는 주소를 쓴다. 장치를 열어야 하므로 지금 닿는 주소여야 한다 —
-    /// 닿지 않는 장치는 먼저 임시로 되살린 뒤에 이것을 쓴다.
-    /// </summary>
-    public Task PersistAsync()
-    {
-        if (Selected is not { } target) return Task.CompletedTask;
-        if (!TryReadFields(out var ip, out var mask, out var gateway)) return Task.CompletedTask;
-
-        return RunAsync($"Writing {ip} persistently", async () =>
-        {
-            if ((target.Info.SupportedIpCfg & GvbsAddr.IpCfgPersistent) == 0)
-            {
-                Error = "this camera does not support a persistent address; use Force IP or DHCP instead";
-                return;
-            }
-
-            await using var device = await GevDevice.OpenAsync(target.Info).ConfigureAwait(true);
-            await device.WriteRegAsync(GvbsAddr.PersistentIp0, ToUInt32(ip)).ConfigureAwait(true);
-            await device.WriteRegAsync(GvbsAddr.PersistentSubnet0, ToUInt32(mask)).ConfigureAwait(true);
-            await device.WriteRegAsync(GvbsAddr.PersistentGateway0, ToUInt32(gateway)).ConfigureAwait(true);
-
-            // 주소만 써 두면 장치는 여전히 DHCP 나 LLA 로 뜬다. 쓰겠다는 표시까지 켜야 다음 기동에 그 주소로 온다.
-            var cfg = await device.ReadRegAsync(GvbsAddr.CurrentIpCfg).ConfigureAwait(true);
-            await device.WriteRegAsync(GvbsAddr.CurrentIpCfg, cfg | GvbsAddr.IpCfgPersistent).ConfigureAwait(true);
-
-            Status = $"{ip} stored. It takes effect the next time the camera powers up.";
-        });
+        Ip = string.Join(".", address.Take(fixedOctets)) + ".";
+        Mask = nic.Mask.ToString();
+        Status = $"Filled in what this adapter fixes ({Ip}); type the rest.";
+        Error = null;
     }
 
     private async Task ScanCoreAsync()
@@ -717,7 +981,12 @@ public sealed class MainVm : VmBase
         Devices.Clear();
         foreach (var info in ordered) Devices.Add(new DeviceRowVm(info));
         Regroup();
-        Selected = Devices.FirstOrDefault(d => keep is not null && d.Info.Mac.Equals(keep)) ?? Devices.FirstOrDefault();
+
+        // 고르고 있던 카메라가 그대로 있으면 화면은 손대지 않고 객체만 갈아 끼운다. 여기서 장치 값을 다시
+        // 읽어 넣으면, 방식을 DHCP 에서 고정으로 막 바꿔 놓은 사람의 선택이 다음 검색 한 번에 지워진다.
+        var again = keep is null ? null : Devices.FirstOrDefault(d => d.Info.Mac.Equals(keep));
+        if (again is not null) Select(again, loadFields: false);
+        else Selected = Devices.FirstOrDefault();
     }
 
     /// <summary>지금 그려 둔 것과 같은지. 장치를 가리는 것은 MAC 이고, 화면에 보이는 것은 주소와 이름이다.</summary>
@@ -749,6 +1018,11 @@ public sealed class MainVm : VmBase
     /// </summary>
     private void Regroup()
     {
+        // 고른 어댑터와, 이름 칸에 치고 있던 것을 기억해 둔다. 목록이 새로 만들어지면 고른 객체가 사라져
+        // 오른쪽 패널이 통째로 비는데, 이름을 바꾼 직후에 그렇게 되면 방금 무엇을 했는지 확인할 자리가 없어진다.
+        var keepGroup = _selectedGroup?.Key;
+        var typed = _adapterName;
+
         Groups.Clear();
         var byInterface = Devices.ToLookup(d => d.Info.InterfaceAddress.ToString());
 
@@ -764,11 +1038,25 @@ public sealed class MainVm : VmBase
         {
             Groups.Add(new NicGroupVm(null, g.First().Info.InterfaceAddress, g.ToList()));
         }
+
+        if (keepGroup is null) return;
+
+        var again = Groups.FirstOrDefault(g => string.Equals(g.Key, keepGroup, StringComparison.Ordinal));
+        if (again is null) return;
+
+        SelectedGroup = again;
+
+        // 이름 칸은 고른 어댑터의 지금 이름으로 채워지는데, 사람이 치던 중이었다면 그것을 되돌려 준다 —
+        // 목록이 새로 그려졌다는 이유로 입력을 뺏지 않는다. 방금 이름을 바꾼 경우에는 친 것과 지금 이름이
+        // 같으므로 아무 일도 일어나지 않는다.
+        if (!string.Equals(typed, again.Nic?.Shown, StringComparison.Ordinal)) AdapterName = typed;
     }
 
     private void LoadFields(DeviceRowVm row)
     {
         UserName = row.Info.UserDefinedName;
+        IsDhcpSelected = (row.Info.CurrentIpCfg & GvbsAddr.IpCfgDhcp) != 0
+                         && (row.Info.CurrentIpCfg & GvbsAddr.IpCfgPersistent) == 0;
         Ip = row.Info.Address.ToString();
         Mask = row.Info.Subnet.ToString();
         Gateway = row.Info.Gateway.ToString();
@@ -966,7 +1254,12 @@ public sealed class MainVm : VmBase
 
     private async Task RunAsync(string what, Func<Task> body)
     {
-        if (IsBusy) return;
+        if (IsBusy)
+        {
+            Error = $"{what} was not started — another operation is still running";
+            return;
+        }
+
         IsBusy = true;
         Error = null;
         Status = what + "...";

@@ -27,15 +27,9 @@ public partial class MainWindow : Window
 
     private void OnSuggest(object? sender, RoutedEventArgs e) => Vm?.Suggest();
 
-    private void OnForce(object? sender, RoutedEventArgs e) => _ = Vm?.ForceAsync();
-
-    private void OnPersist(object? sender, RoutedEventArgs e) => _ = Vm?.PersistAsync();
-
     private void OnSetName(object? sender, RoutedEventArgs e) => _ = Vm?.ApplyUserNameAsync();
 
-    private void OnUseDhcp(object? sender, RoutedEventArgs e) => _ = Vm?.UseDhcpAsync();
-
-    private void OnUseStored(object? sender, RoutedEventArgs e) => _ = Vm?.UseStoredAsync();
+    private void OnApply(object? sender, RoutedEventArgs e) => _ = Vm?.ApplyAsync();
 
     private void OnOpenAdapter(object? sender, RoutedEventArgs e) => Vm?.OpenAdapterSettings();
 

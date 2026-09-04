@@ -73,7 +73,8 @@
                                    TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
                         <TextBlock Classes="caption" Text="{Binding Header}" TextTrimming="CharacterEllipsis"
                                    ToolTip.Tip="{Binding Header}" />
-                        <TextBlock Classes="caption" Text="{Binding Count}" />
+                        <TextBlock Classes="caption" Text="{Binding State}" TextTrimming="CharacterEllipsis"
+                                   ToolTip.Tip="{Binding State}" />
                       </StackPanel>
                     </Border>
                     <TextBlock Text="{Binding Note}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
@@ -115,8 +116,8 @@
               <StackPanel Spacing="2">
                 <TextBlock Classes="section" Text="{Binding SelectedGroup.Name}" />
                 <TextBlock Classes="caption" Text="{Binding SelectedGroup.Header}" TextWrapping="Wrap" />
+                <TextBlock Classes="caption" Text="{Binding SelectedGroup.State}" TextWrapping="Wrap" />
                 <TextBlock Classes="caption" Text="{Binding SelectedGroup.Kind}" />
-                <TextBlock Classes="caption" Text="{Binding SelectedGroup.Count}" />
                 <TextBlock Text="{Binding SelectedGroup.Note}" Foreground="#E5C07B" FontSize="11" TextWrapping="Wrap"
                            IsVisible="{Binding SelectedGroup.Note, Converter={x:Static ObjectConverters.IsNotNull}}" />
               </StackPanel>
@@ -157,14 +158,6 @@
 
               <TextBlock Text="{Binding SelectedSummary}" TextWrapping="Wrap" FontSize="12" LineHeight="18" />
 
-              <!-- 어댑터는 고르는 것이 아니라 따라오는 것이다 — 포트에 직결한 카메라는 들어오는 길이 정해져 있다. -->
-              <StackPanel Spacing="3">
-                <TextBlock Classes="section" Text="Host adapter" />
-                <TextBlock Classes="caption" Text="{Binding MatchingNic}" TextWrapping="Wrap" />
-                <TextBlock Text="{Binding Firewall}" FontSize="11" TextWrapping="Wrap" Foreground="#E5C07B"
-                           IsVisible="{Binding Firewall, Converter={x:Static ObjectConverters.IsNotNull}}" />
-              </StackPanel>
-
               <StackPanel Spacing="4">
                 <TextBlock Classes="section" Text="Name" />
                 <TextBlock Classes="caption" TextWrapping="Wrap"
@@ -175,13 +168,29 @@
                 </Grid>
               </StackPanel>
 
-              <StackPanel Spacing="4">
+              <!-- 어댑터는 고르는 것이 아니라 따라오는 것이다 — 포트에 직결한 카메라는 들어오는 길이 정해져 있다. -->
+              <StackPanel Spacing="3">
+                <TextBlock Classes="section" Text="Host adapter" />
+                <TextBlock Classes="caption" Text="{Binding MatchingNic}" TextWrapping="Wrap" />
+              </StackPanel>
+
+              <StackPanel Spacing="6">
                 <TextBlock Classes="section" Text="Address" />
-                <Button Content="Propose a free address on this adapter" Click="OnSuggest"
-                        IsEnabled="{Binding CanSuggest}"
+                <TextBlock Text="{Binding Stored}" FontSize="11" TextWrapping="Wrap" Opacity="0.8"
+                           IsVisible="{Binding Stored, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                  <RadioButton GroupName="addr" Content="Fixed address" IsChecked="{Binding IsStaticSelected}"
+                               IsEnabled="{Binding SupportsPersistent}" />
+                  <RadioButton GroupName="addr" Content="DHCP" IsChecked="{Binding IsDhcpSelected}"
+                               IsEnabled="{Binding SupportsDhcp}" />
+                </StackPanel>
+
+                <Button Content="Fill in this adapter's network part" Click="OnSuggest"
+                        ToolTip.Tip="Writes the octets the adapter's subnet mask fixes and leaves the rest for you"
+                        IsEnabled="{Binding IsStaticSelected}"
                         HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6"
-                      Margin="0,4,0,0">
+                      IsEnabled="{Binding IsStaticSelected}">
                   <TextBlock Grid.Row="0" Grid.Column="0" Text="Address" VerticalAlignment="Center" />
                   <TextBox Grid.Row="0" Grid.Column="1" Classes="addr" Text="{Binding Ip}" />
                   <TextBlock Grid.Row="1" Grid.Column="0" Text="Subnet" VerticalAlignment="Center" />
@@ -192,27 +201,10 @@
               </StackPanel>
 
               <StackPanel Spacing="6">
-                <Button Content="Apply now, until power off" Click="OnForce" IsEnabled="{Binding IsIdle}"
+                <Button Content="Apply now" Click="OnApply" IsEnabled="{Binding IsIdle}"
                         HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 <TextBlock Classes="caption" TextWrapping="Wrap"
-                           Text="Changes the address immediately. Goes out as a broadcast, so it reaches a camera that is on the wrong subnet and cannot be opened at all. The camera keeps this address until it loses power." />
-
-                <Button Content="Store for the next power-up" Click="OnPersist" IsEnabled="{Binding SupportsPersistent}"
-                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,6,0,0" />
-                <TextBlock Classes="caption" TextWrapping="Wrap"
-                           Text="Writes the address into the camera and leaves it running as it is — nothing changes right now. It has to be reachable to write, so bring a stranded camera back with the button above first." />
-              </StackPanel>
-
-              <StackPanel Spacing="6">
-                <TextBlock Classes="section" Text="How the camera gets its address" />
-                <Grid ColumnDefinitions="*,*" ColumnSpacing="6">
-                  <Button Grid.Column="0" Content="Use DHCP" Click="OnUseDhcp" IsEnabled="{Binding SupportsDhcp}"
-                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                  <Button Grid.Column="1" Content="Use stored" Click="OnUseStored" IsEnabled="{Binding SupportsPersistent}"
-                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                </Grid>
-                <TextBlock Classes="caption" TextWrapping="Wrap"
-                           Text="Also takes effect at the next power-up. Link-local is left alone — it is the fallback that keeps a camera findable when everything else fails." />
+                           Text="Makes the camera use what is above, now — not at the next power-up. The setting is written into the camera so it holds after a power cycle, and the camera is then told to bring its interface up again, which is what puts it in effect immediately. DHCP also clears the stored address, so the camera cannot come back on it. The camera drops off the list while it restarts and reappears at the next scan." />
               </StackPanel>
 
             </StackPanel>
