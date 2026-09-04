@@ -75,7 +75,7 @@ public sealed partial class GevStream : IAsyncDisposable
         _opt = opt ?? new GevStreamOpt();
         _opt.Validate();
         _channel = streamChannel;
-        _pool = new GevFramePool(_opt.BufferCount, _opt.PayloadSize ?? 0);
+        _pool = new GevFramePool(_opt.BufferCount, _opt.PayloadSize ?? 0, deviceAddress?.ToString());
         PacketSize = _opt.PacketSize;
     }
 

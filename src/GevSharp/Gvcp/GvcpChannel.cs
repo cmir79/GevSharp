@@ -34,6 +34,12 @@ public sealed class GvcpChannelOpt
 public sealed class GvcpChannel : IDisposable, IGvcpResendPort
 {
     private const string LogSrc = "GvcpChannel";
+
+    /// <summary>
+    /// 이 채널이 로그에 쓰는 이름. 제어 채널은 장치마다 하나이므로 장치 주소를 붙여 두면 모든 줄이
+    /// 어느 장치의 것인지 스스로 밝힌다. 실패 줄일수록 그것이 필요한데, 그런 줄이 오히려 익명이었다.
+    /// </summary>
+    private readonly string _logSrc;
     private const int RxBufferSize = 2048;
     private const int NoAckScratchSize = 64;
     private const int RxThreadJoinMs = 2000;
@@ -73,6 +79,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     public GvcpChannel(IPEndPoint device, IPAddress? localAddress = null, GvcpChannelOpt? opt = null)
     {
         DeviceEndPoint = device ?? throw new ArgumentNullException(nameof(device));
+        _logSrc = $"{LogSrc} {DeviceEndPoint.Address}";
         if (device.AddressFamily != AddressFamily.InterNetwork)
             throw new GevException($"{device} is not an IPv4 endpoint; GVCP runs over IPv4 only");
         // 호출자가 준 인스턴스를 그대로 쥐지 않고 값만 옮겨 온다 — 채널이 세션에 맞춰 상한을 다시 정할 때(SetMaxPendingAckWaitMs)
@@ -108,7 +115,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
             Name = $"GevSharp GVCP rx {device}",
         };
         _rxThread.Start();
-        GevLog.Debug(LogSrc, $"channel {LocalEndPoint} -> {DeviceEndPoint} opened");
+        GevLog.Debug(_logSrc, $"channel opened from {LocalEndPoint}");
     }
 
     public IPEndPoint LocalEndPoint { get; }
@@ -180,7 +187,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                         + "the command is not resent because the device has already taken it");
 
                 if (GevLog.IsEnabled(GevLogLevel.Debug))
-                    GevLog.Debug(LogSrc, $"{cmd.Name} req_id {reqId} to {DeviceEndPoint}: no reply within {_opt.TimeoutMs} ms (attempt {attempt}/{attempts})");
+                    GevLog.Debug(_logSrc, $"{cmd.Name} req_id {reqId}: no reply within {_opt.TimeoutMs} ms (attempt {attempt}/{attempts})");
             }
 
             throw new GevTimeoutException($"{cmd.Name} to {DeviceEndPoint} timed out after {attempts} attempt(s) of {_opt.TimeoutMs} ms");
@@ -215,7 +222,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         if (hasIndex)
         {
             ex.Data[FailedIndexKey] = (int)index;
-            GevLog.Warn(LogSrc, $"{cmd.Name} req_id {ack.ReqId} to {DeviceEndPoint} rejected at entry {index} ({GvcpConst.StatusName(ack.Status)})");
+            GevLog.Warn(_logSrc, $"{cmd.Name} req_id {ack.ReqId} rejected at entry {index} ({GvcpConst.StatusName(ack.Status)})");
         }
         return ex;
     }
@@ -258,7 +265,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 if (next > deadlineMs)
                 {
                     if (GevLog.IsEnabled(GevLogLevel.Debug))
-                        GevLog.Debug(LogSrc, $"req_id {pending.ReqId}: PENDING_ACK extends the wait by {next - now} ms");
+                        GevLog.Debug(_logSrc, $"req_id {pending.ReqId}: PENDING_ACK extends the wait by {next - now} ms");
                     deadlineMs = next;
                     continue;
                 }
@@ -278,7 +285,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         if (ms < 0) throw new ArgumentOutOfRangeException(nameof(ms), "must not be negative");
         if (_opt.MaxPendingAckWaitMs == ms) return;
         if (GevLog.IsEnabled(GevLogLevel.Debug))
-            GevLog.Debug(LogSrc, $"PENDING_ACK wait cap {_opt.MaxPendingAckWaitMs} -> {ms} ms");
+            GevLog.Debug(_logSrc, $"PENDING_ACK wait cap {_opt.MaxPendingAckWaitMs} -> {ms} ms");
         _opt.MaxPendingAckWaitMs = ms;
     }
 
@@ -380,7 +387,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
             {
                 Interlocked.Increment(ref _malformedPacketCount);
-                GevLog.Warn(LogSrc, $"dropped a datagram larger than {RxBufferSize} bytes from {from}");
+                GevLog.Warn(_logSrc, $"dropped a datagram larger than {RxBufferSize} bytes from {from}");
                 continue;
             }
             catch (SocketException ex)
@@ -388,13 +395,13 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 if (_isDisposed) break;
                 consecutiveFailures++;
                 if (consecutiveFailures == 1)
-                    GevLog.Warn(LogSrc, $"receive failed: {ex.SocketErrorCode}", ex);
+                    GevLog.Warn(_logSrc, $"receive failed: {ex.SocketErrorCode}", ex);
                 else if (GevLog.IsEnabled(GevLogLevel.Trace))
                     GevLog.Trace(LogSrc, $"receive failed again ({consecutiveFailures} in a row): {ex.SocketErrorCode}");
                 if (consecutiveFailures >= RxMaxConsecutiveFailures)
                 {
                     // 스스로 회복하지 않는 소켓 — 경고를 무한히 찍는 대신 채널을 닫아 요청 쪽이 즉시 실패하게 한다.
-                    GevLog.Error(LogSrc, $"receive failed {consecutiveFailures} times in a row ({ex.SocketErrorCode}); closing channel {LocalEndPoint} -> {DeviceEndPoint}", ex);
+                    GevLog.Error(_logSrc, $"receive failed {consecutiveFailures} times in a row ({ex.SocketErrorCode}); closing the channel", ex);
                     _pending?.Tcs.TrySetException(new GevException($"GVCP receive on {LocalEndPoint} kept failing ({ex.SocketErrorCode}); channel closed", ex));
                     Dispose();
                     break;
@@ -414,7 +421,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
             catch (Exception ex)
             {
                 // 수신 스레드는 어떤 패킷에도 죽지 않는다.
-                GevLog.Error(LogSrc, "unexpected failure while handling a GVCP packet", ex);
+                GevLog.Error(_logSrc, "unexpected failure while handling a GVCP packet", ex);
             }
         }
     }
@@ -443,7 +450,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         if (!GvcpAckHeader.TryParse(packet, out var header))
         {
             Interlocked.Increment(ref _malformedPacketCount);
-            GevLog.Warn(LogSrc, $"malformed GVCP reply from {from}: {n} bytes");
+            GevLog.Warn(_logSrc, $"malformed GVCP reply from {from}: {n} bytes");
             return;
         }
 
@@ -452,7 +459,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         {
             Interlocked.Increment(ref _staleAckCount);
             if (GevLog.IsEnabled(GevLogLevel.Debug))
-                GevLog.Debug(LogSrc, $"stale {GvcpPacket.CommandName(header.Command)} ack req_id {header.ReqId} dropped (waiting for {(pending is null ? "nothing" : pending.ReqId.ToString())})");
+                GevLog.Debug(_logSrc, $"stale {GvcpPacket.CommandName(header.Command)} ack req_id {header.ReqId} dropped (waiting for {(pending is null ? "nothing" : pending.ReqId.ToString())})");
             return;
         }
 
@@ -464,7 +471,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
             Interlocked.Increment(ref _pendingAckCount);
             Interlocked.Exchange(ref pending.PendingDeadlineMs, GevClock.NowMs() + ttcMs);
             if (GevLog.IsEnabled(GevLogLevel.Debug))
-                GevLog.Debug(LogSrc, $"req_id {header.ReqId}: PENDING_ACK, device asks for {ttcMs} ms");
+                GevLog.Debug(_logSrc, $"req_id {header.ReqId}: PENDING_ACK, device asks for {ttcMs} ms");
             return;
         }
 
@@ -472,7 +479,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         {
             // 오류 응답은 req_id 만 맞으면 받아들인다(장치마다 ack command 를 채우는 방식이 다르다). 정상 응답은 종류까지 맞아야 한다.
             Interlocked.Increment(ref _staleAckCount);
-            GevLog.Warn(LogSrc, $"req_id {header.ReqId}: expected {GvcpPacket.CommandName(pending.ExpectedAck)} ack but got 0x{header.Command:X4}; dropped");
+            GevLog.Warn(_logSrc, $"req_id {header.ReqId}: expected {GvcpPacket.CommandName(pending.ExpectedAck)} ack but got 0x{header.Command:X4}; dropped");
             return;
         }
 
@@ -498,15 +505,15 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
         catch (Exception ex)
         {
-            GevLog.Debug(LogSrc, $"socket close: {ex.Message}");
+            GevLog.Debug(_logSrc, $"socket close: {ex.Message}");
         }
 
         _pending?.Tcs.TrySetException(new ObjectDisposedException(nameof(GvcpChannel)));
 
         if (Thread.CurrentThread != _rxThread && _rxThread.IsAlive && !_rxThread.Join(RxThreadJoinMs))
-            GevLog.Warn(LogSrc, "receive thread did not stop within the join timeout");
+            GevLog.Warn(_logSrc, "receive thread did not stop within the join timeout");
 
-        GevLog.Debug(LogSrc, $"channel {LocalEndPoint} -> {DeviceEndPoint} closed");
+        GevLog.Debug(_logSrc, $"channel closed (was {LocalEndPoint})");
     }
 
     /// <summary>

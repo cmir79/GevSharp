@@ -10,7 +10,15 @@ namespace GevSharp;
 /// </summary>
 public sealed partial class GevDevice : IGevPort, IAsyncDisposable
 {
+    /// <summary>장치를 가리지 않는 자리(설정 검증 같은 정적 도우미)에서 쓰는 이름.</summary>
     private const string LogSrc = "GevDevice";
+
+    /// <summary>
+    /// 이 장치가 로그에 쓰는 이름. 주소를 함께 넣는다 — 카메라 여러 대가 한 로그에 섞이면
+    /// "하트비트 실패" 같은 줄이 어느 장치의 것인지 알 수 없다. 하필 그런 줄이 무언가 잘못되고 있다는
+    /// 가장 이른 신호라, 정상 경로만 이름을 달고 실패 경로가 익명이면 가장 필요한 자리에서 못 쓴다.
+    /// </summary>
+    private readonly string _logSrc;
     /// <summary>연속 하트비트 실패 이 횟수 = 제어권 상실.</summary>
     internal const int HeartbeatMaxFailures = 3;
     /// <summary>닫을 때 CCP = 0 쓰기에 주는 최대 시간 — 채널 재시도 예산 전부를 닫기에 쓰지 않는다.</summary>
@@ -43,6 +51,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             // 장치가 열리지 못한다. 채널 기본값으로 열고, 하트비트를 시작하기 직전에 InitAsync 가 실제 값으로 좁힌다.
             MaxPendingAckWaitMs = opt.MaxPendingAckWaitMs ?? GvcpChannelOpt.DefaultMaxPendingAckWaitMs,
         });
+
+        _logSrc = $"{LogSrc} {Address}";
     }
 
     /// <summary>열 때 부트스트랩 블록에서 다시 읽은 식별 정보.</summary>
@@ -140,7 +150,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         GvcpCapability = await ReadRegCoreAsync(GvbsAddr.GvcpCapability, ct).ConfigureAwait(false);
         DeviceHeartbeatTimeoutMs = (int)await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
         TimestampTickFrequency = await ReadTickFrequencyAsync(ct).ConfigureAwait(false);
-        GevLog.Info(LogSrc, $"opened {_info.Manufacturer} {_info.Model} [{_info.SerialNumber}] at {Address} via {LocalAddress} (spec {_info.SpecMajor}.{_info.SpecMinor}, cap 0x{GvcpCapability:X8}, tick {TimestampTickFrequency} Hz)");
+        GevLog.Info(_logSrc, $"opened {_info.Manufacturer} {_info.Model} [{_info.SerialNumber}] via {LocalAddress} (spec {_info.SpecMajor}.{_info.SpecMinor}, cap 0x{GvcpCapability:X8}, tick {TimestampTickFrequency} Hz)");
 
         if (_opt.AccessMode == GevAccessMode.ReadOnly)
         {
@@ -172,20 +182,20 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         }
         catch (GevStatusException ex)
         {
-            GevLog.Warn(LogSrc, $"device rejected heartbeat timeout {_opt.HeartbeatTimeoutMs} ms ({GvcpConst.StatusName(ex.Status)}); keeping the device value");
+            GevLog.Warn(_logSrc, $"device rejected heartbeat timeout {_opt.HeartbeatTimeoutMs} ms ({GvcpConst.StatusName(ex.Status)}); keeping the device value");
         }
         DeviceHeartbeatTimeoutMs = (int)await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
 
         var effectiveTimeout = DeviceHeartbeatTimeoutMs > 0 ? DeviceHeartbeatTimeoutMs : _opt.HeartbeatTimeoutMs;
         HeartbeatPeriodMs = _opt.HeartbeatPeriodMs ?? Math.Max(1, effectiveTimeout / 3);
         if (HeartbeatPeriodMs >= effectiveTimeout)
-            GevLog.Warn(LogSrc, $"heartbeat period {HeartbeatPeriodMs} ms is not shorter than the device timeout {effectiveTimeout} ms; control may drop");
+            GevLog.Warn(_logSrc, $"heartbeat period {HeartbeatPeriodMs} ms is not shorter than the device timeout {effectiveTimeout} ms; control may drop");
         if (_opt.MaxPendingAckWaitMs is null)
             Gvcp.SetMaxPendingAckWaitMs(AutoPendingAckWaitMs(effectiveTimeout, HeartbeatPeriodMs, _opt.GvcpTimeoutMs));
 
         Volatile.Write(ref _state, StateOpen);
         _heartbeatTask = Task.Run(() => HeartbeatLoopAsync(HeartbeatPeriodMs, _heartbeatCts.Token));
-        GevLog.Debug(LogSrc, $"control acquired (CCP 0x{ccp:X}), heartbeat every {HeartbeatPeriodMs} ms, device timeout {DeviceHeartbeatTimeoutMs} ms");
+        GevLog.Debug(_logSrc, $"control acquired (CCP 0x{ccp:X}), heartbeat every {HeartbeatPeriodMs} ms, device timeout {DeviceHeartbeatTimeoutMs} ms");
     }
 
     private async Task<ulong> ReadTickFrequencyAsync(CancellationToken ct)
@@ -198,7 +208,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         }
         catch (GevStatusException ex)
         {
-            GevLog.Debug(LogSrc, $"timestamp tick frequency not readable ({GvcpConst.StatusName(ex.Status)}); reported as 0");
+            GevLog.Debug(_logSrc, $"timestamp tick frequency not readable ({GvcpConst.StatusName(ex.Status)}); reported as 0");
             return 0;
         }
     }
@@ -234,7 +244,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
                     // 예외 종류를 가리지 않는다 — 무엇이든 하트비트가 가지 않은 것이고, 연속되면 제어권 상실이다.
                     if (ct.IsCancellationRequested) return;
                     failures++;
-                    GevLog.Warn(LogSrc, $"heartbeat failed ({failures}/{HeartbeatMaxFailures}): {ex.Message}");
+                    GevLog.Warn(_logSrc, $"heartbeat failed ({failures}/{HeartbeatMaxFailures}): {ex.Message}");
                     if (failures >= HeartbeatMaxFailures)
                     {
                         OnControlLost(ex);
@@ -257,7 +267,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            GevLog.Error(LogSrc, "heartbeat loop stopped unexpectedly", ex);
+            GevLog.Error(_logSrc, "heartbeat loop stopped unexpectedly", ex);
             OnControlLost(ex);
         }
     }
@@ -273,7 +283,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         // 다른 애플리케이션이 가져갔다면 남의 제어권을 지우려는 쓰기가 된다.
         _isControlling = false;
         _ccpWriteSent = false;
-        GevLog.Error(LogSrc, $"control of {Address} lost", cause);
+        GevLog.Error(_logSrc, "control lost", cause);
         var handler = ControlLost;
         if (handler is null) return;
         ThreadPool.QueueUserWorkItem(_ =>
@@ -284,7 +294,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                GevLog.Error(LogSrc, "ControlLost handler threw", ex);
+                GevLog.Error(_logSrc, "ControlLost handler threw", ex);
             }
         });
     }
@@ -317,7 +327,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                GevLog.Debug(LogSrc, $"heartbeat task ended with {ex.GetType().Name}: {ex.Message}");
+                GevLog.Debug(_logSrc, $"heartbeat task ended with {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -332,15 +342,15 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             try
             {
                 await Gvcp.RequestAsync(GvcpCmd.WriteReg(GvbsAddr.Ccp, 0), releaseCts.Token).ConfigureAwait(false);
-                GevLog.Debug(LogSrc, $"control of {Address} released");
+                GevLog.Debug(_logSrc, "control released");
             }
             catch (OperationCanceledException)
             {
-                GevLog.Warn(LogSrc, $"releasing control of {Address} timed out after {releaseBudgetMs} ms; the device will drop it on its own heartbeat timeout");
+                GevLog.Warn(_logSrc, $"releasing control timed out after {releaseBudgetMs} ms; the device will drop it on its own heartbeat timeout");
             }
             catch (Exception ex) when (ex is GevException or ObjectDisposedException)
             {
-                GevLog.Warn(LogSrc, $"failed to release control of {Address}: {ex.Message}");
+                GevLog.Warn(_logSrc, $"failed to release control: {ex.Message}");
             }
             _isControlling = false;
             _ccpWriteSent = false;
@@ -348,7 +358,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
 
         Gvcp.Dispose();
         _heartbeatCts.Dispose();
-        GevLog.Info(LogSrc, $"closed {Address}");
+        GevLog.Info(_logSrc, "closed");
     }
 
     // GetXmlAsync (Xml 모듈), GetNodeMapAsync (GenApi 모듈), OpenStreamAsync (Gvsp 모듈) 는 각 모듈의 partial 파티션에 들어간다.

@@ -22,7 +22,7 @@ public sealed partial class GevDevice
             if (_xmlDoc is null)
             {
                 ThrowIfClosed();
-                _xmlDoc = await GevXmlLoader.LoadAsync(this, _opt.XmlCacheDir, ct).ConfigureAwait(false);
+                _xmlDoc = await GevXmlLoader.LoadAsync(this, _opt.XmlCacheDir, Address.ToString(), ct).ConfigureAwait(false);
             }
             return _xmlDoc;
         }

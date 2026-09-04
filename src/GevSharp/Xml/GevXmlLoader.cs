@@ -42,8 +42,17 @@ public static class GevXmlLoader
     /// Second URL 이 First URL 과 같은 문자열이면 같은 실패를 되풀이할 뿐이라(HTTP 시한·긴 메모리 읽기가 두 배가 된다) 다시 시도하지 않는다.
     /// 둘 다 실패하면 두 사유를 모두 실은 <see cref="GevException"/>. 취소는 그대로 전파된다.
     /// </summary>
-    public static async Task<GevXmlDoc> LoadAsync(IGevPort port, string? cacheDir = null, CancellationToken ct = default)
+    public static Task<GevXmlDoc> LoadAsync(IGevPort port, string? cacheDir = null, CancellationToken ct = default)
+        => LoadAsync(port, cacheDir, null, ct);
+
+    /// <summary>
+    /// 적재하는 동안 로그에 쓸 이름을 함께 받는다. 이 클래스는 정적이라 장치를 기억할 자리가 없는데,
+    /// 카메라 여러 대를 같은 로그에 적으면 같은 모델 여덟 대의 줄이 글자까지 똑같아진다. 무엇보다
+    /// XML 적재는 장치를 여는 길이라, 여덟 대 중 몇 대만 실패하는 것이 첫 기동에서 실제로 나는 일이다.
+    /// </summary>
+    internal static async Task<GevXmlDoc> LoadAsync(IGevPort port, string? cacheDir, string? device, CancellationToken ct)
     {
+        var logSrc = device is null ? LogSrc : $"{LogSrc} {device}";
         if (port is null) throw new ArgumentNullException(nameof(port));
 
         var failures = new List<string>(2);
@@ -62,20 +71,20 @@ public static class GevXmlLoader
                 if (raw.Length == 0)
                 {
                     failures.Add($"{regName}: register is empty");
-                    GevLog.Debug(LogSrc, $"{regName} register is empty.");
+                    GevLog.Debug(logSrc ?? LogSrc, $"{regName} register is empty.");
                     continue;
                 }
 
                 if (firstRaw is not null && string.Equals(raw, firstRaw, StringComparison.OrdinalIgnoreCase))
                 {
                     failures.Add($"{regName}: identical to the First URL, not retried");
-                    GevLog.Debug(LogSrc, $"{regName} register repeats the First URL; not retrying it.");
+                    GevLog.Debug(logSrc ?? LogSrc, $"{regName} register repeats the First URL; not retrying it.");
                     continue;
                 }
 
                 firstRaw ??= raw;
                 url = GevXmlUrl.Parse(raw);
-                GevLog.Info(LogSrc, $"{regName}: {url.Raw}");
+                GevLog.Info(logSrc ?? LogSrc, $"{regName}: {url.Raw}");
             }
             catch (OperationCanceledException)
             {
@@ -85,13 +94,13 @@ public static class GevXmlLoader
             {
                 last = ex;
                 failures.Add($"{regName}: {ex.Message}");
-                GevLog.Warn(LogSrc, $"Could not read or parse the {regName} register: {ex.Message}", ex);
+                GevLog.Warn(logSrc ?? LogSrc, $"Could not read or parse the {regName} register: {ex.Message}", ex);
                 continue;
             }
 
             try
             {
-                return await LoadFromUrlAsync(port, url, cacheDir, ct).ConfigureAwait(false);
+                return await LoadFromUrlAsync(port, url, cacheDir, device, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -101,7 +110,7 @@ public static class GevXmlLoader
             {
                 last = ex;
                 failures.Add($"{regName} '{url.Raw}': {ex.Message}");
-                GevLog.Warn(LogSrc, $"Could not load the camera XML from the {regName} '{url.Raw}': {ex.Message}", ex);
+                GevLog.Warn(logSrc ?? LogSrc, $"Could not load the camera XML from the {regName} '{url.Raw}': {ex.Message}", ex);
             }
         }
 
@@ -112,28 +121,33 @@ public static class GevXmlLoader
     /// 해석된 URL 하나로 XML 을 가져온다(First/Second 폴백 없음). cacheDir 가 있으면 장치 식별 문자열로 캐시 파일을 찾고,
     /// 적중하면 XML 본문 전송 없이 캐시 텍스트를 돌려준다. 캐시 읽기·쓰기 실패는 경고 로그로만 남고 결과에는 영향이 없다.
     /// </summary>
-    public static async Task<GevXmlDoc> LoadFromUrlAsync(IGevPort port, GevXmlUrl url, string? cacheDir = null, CancellationToken ct = default)
+    public static Task<GevXmlDoc> LoadFromUrlAsync(IGevPort port, GevXmlUrl url, string? cacheDir = null, CancellationToken ct = default)
+        => LoadFromUrlAsync(port, url, cacheDir, null, ct);
+
+    /// <summary>적재하는 동안 로그에 쓸 이름을 함께 받는 갈래.</summary>
+    internal static async Task<GevXmlDoc> LoadFromUrlAsync(IGevPort port, GevXmlUrl url, string? cacheDir, string? device, CancellationToken ct)
     {
+        var logSrc = device is null ? LogSrc : $"{LogSrc} {device}";
         if (port is null) throw new ArgumentNullException(nameof(port));
         if (url is null) throw new ArgumentNullException(nameof(url));
 
         string? cachePath = null;
         if (!string.IsNullOrEmpty(cacheDir))
         {
-            cachePath = await ResolveCachePathAsync(port, cacheDir!, url.FileName, ct).ConfigureAwait(false);
+            cachePath = await ResolveCachePathAsync(port, cacheDir!, url.FileName, logSrc, ct).ConfigureAwait(false);
             if (cachePath is not null)
             {
-                var cached = TryReadCache(cachePath);
+                var cached = TryReadCache(cachePath, logSrc);
                 if (cached is not null)
                 {
-                    GevLog.Info(LogSrc, $"Camera XML cache hit: '{cachePath}' ({cached.Length} chars).");
+                    GevLog.Info(logSrc ?? LogSrc, $"Camera XML cache hit: '{cachePath}' ({cached.Length} chars).");
                     return new GevXmlDoc(cached, url.Raw, url.FileName, url.SchemaVersion);
                 }
             }
         }
 
-        var bytes = await FetchAsync(port, url, ct).ConfigureAwait(false);
-        var xml = ExtractXml(bytes, url.FileName);
+        var bytes = await FetchAsync(port, url, logSrc, ct).ConfigureAwait(false);
+        var xml = ExtractXml(bytes, url.FileName, MaxXmlBytes, logSrc);
 
         if (cachePath is not null) WriteCache(cachePath, xml);
         return new GevXmlDoc(xml, url.Raw, url.FileName, url.SchemaVersion);
@@ -146,16 +160,16 @@ public static class GevXmlLoader
     public static string ExtractXml(byte[] bytes, string fileName) => ExtractXml(bytes, fileName, MaxXmlBytes);
 
     // 상한을 인자로 받는 판 — 테스트가 작은 상한으로 ZIP 크기 검사를 밟아 볼 수 있게 한다.
-    internal static string ExtractXml(byte[] bytes, string fileName, int maxBytes)
+    internal static string ExtractXml(byte[] bytes, string fileName, int maxBytes, string? logSrc = null)
     {
         if (bytes is null) throw new ArgumentNullException(nameof(bytes));
         if (fileName is null) throw new ArgumentNullException(nameof(fileName));
 
         var isZipName = fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
         var isZip = isZipName || HasZipMagic(bytes);
-        if (isZip && !isZipName) GevLog.Debug(LogSrc, $"'{fileName}' does not end with .zip but starts with a ZIP signature; extracting it as a ZIP archive.");
+        if (isZip && !isZipName) GevLog.Debug(logSrc ?? LogSrc, $"'{fileName}' does not end with .zip but starts with a ZIP signature; extracting it as a ZIP archive.");
 
-        var text = isZip ? ReadZipXml(bytes, fileName, maxBytes) : DecodeText(bytes);
+        var text = isZip ? ReadZipXml(bytes, fileName, maxBytes, logSrc) : DecodeText(bytes);
         text = text.Trim(_trimChars);
         if (text.Length == 0 || text[0] != '<')
             throw new GevException($"Content of '{fileName}' does not look like XML: expected '<' but found \"{Preview(text)}\" ({bytes.Length} bytes).");
@@ -179,15 +193,15 @@ public static class GevXmlLoader
 
     // ---- 출처별 가져오기 ----
 
-    private static Task<byte[]> FetchAsync(IGevPort port, GevXmlUrl url, CancellationToken ct) => url.Kind switch
+    private static Task<byte[]> FetchAsync(IGevPort port, GevXmlUrl url, string? logSrc, CancellationToken ct) => url.Kind switch
     {
-        GevXmlUrlKind.Local => ReadDeviceMemoryAsync(port, url, ct),
-        GevXmlUrlKind.File => ReadHostFileAsync(url, ct),
-        GevXmlUrlKind.Http => DownloadAsync(url, ct),
+        GevXmlUrlKind.Local => ReadDeviceMemoryAsync(port, url, logSrc, ct),
+        GevXmlUrlKind.File => ReadHostFileAsync(url, logSrc, ct),
+        GevXmlUrlKind.Http => DownloadAsync(url, logSrc, ct),
         _ => throw new GevException($"Unsupported camera XML URL kind {url.Kind} ('{url.Raw}')."),
     };
 
-    private static async Task<byte[]> ReadDeviceMemoryAsync(IGevPort port, GevXmlUrl url, CancellationToken ct)
+    private static async Task<byte[]> ReadDeviceMemoryAsync(IGevPort port, GevXmlUrl url, string? logSrc, CancellationToken ct)
     {
         if (url.Length > MaxXmlBytes)
             throw new GevException($"Camera XML '{url.FileName}' declares {url.Length} bytes, above the {MaxXmlBytes} byte limit (URL '{url.Raw}').");
@@ -207,7 +221,7 @@ public static class GevXmlLoader
                 await port.ReadAsync(start + (ulong)offset, new Memory<byte>(buf, offset, n), ct).ConfigureAwait(false);
                 chunks++;
                 if (GevLog.IsEnabled(GevLogLevel.Trace))
-                    GevLog.Trace(LogSrc, $"Read XML chunk {chunks}: 0x{start + (ulong)offset:X8} +{n} ({offset + n}/{total} bytes).");
+                    GevLog.Trace(logSrc ?? LogSrc, $"Read XML chunk {chunks}: 0x{start + (ulong)offset:X8} +{n} ({offset + n}/{total} bytes).");
             }
         }
         catch (OperationCanceledException)
@@ -219,7 +233,7 @@ public static class GevXmlLoader
             throw new GevException($"Failed to read camera XML '{url.FileName}' from device memory at 0x{url.Address:X8} ({url.Length} bytes): {ex.Message}", ex);
         }
 
-        GevLog.Info(LogSrc, $"Read camera XML '{url.FileName}' from device memory at 0x{url.Address:X8}: {url.Length} bytes in {chunks} chunk(s).");
+        GevLog.Info(logSrc ?? LogSrc, $"Read camera XML '{url.FileName}' from device memory at 0x{url.Address:X8}: {url.Length} bytes in {chunks} chunk(s).");
 
         if (lead == 0 && total == url.Length) return buf;
         var data = new byte[url.Length];
@@ -227,10 +241,10 @@ public static class GevXmlLoader
         return data;
     }
 
-    private static async Task<byte[]> ReadHostFileAsync(GevXmlUrl url, CancellationToken ct)
+    private static async Task<byte[]> ReadHostFileAsync(GevXmlUrl url, string? logSrc, CancellationToken ct)
     {
         var path = url.FilePath!;
-        GevLog.Info(LogSrc, $"Reading camera XML from file '{path}'.");
+        GevLog.Info(logSrc ?? LogSrc, $"Reading camera XML from file '{path}'.");
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
@@ -254,10 +268,10 @@ public static class GevXmlLoader
         }
     }
 
-    private static async Task<byte[]> DownloadAsync(GevXmlUrl url, CancellationToken ct)
+    private static async Task<byte[]> DownloadAsync(GevXmlUrl url, string? logSrc, CancellationToken ct)
     {
         var uri = url.HttpUri!;
-        GevLog.Info(LogSrc, $"Downloading camera XML from '{uri}'.");
+        GevLog.Info(logSrc ?? LogSrc, $"Downloading camera XML from '{uri}'.");
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -312,7 +326,7 @@ public static class GevXmlLoader
 
     // ---- 바이트 → 텍스트 ----
 
-    private static string ReadZipXml(byte[] bytes, string fileName, int maxBytes)
+    private static string ReadZipXml(byte[] bytes, string fileName, int maxBytes, string? logSrc)
     {
         try
         {
@@ -340,7 +354,7 @@ public static class GevXmlLoader
                 throw new GevException($"ZIP entry '{entry.FullName}' in '{fileName}' is {entry.Length} bytes, above the {maxBytes} byte limit.");
 
             if (zip.Entries.Count > 1)
-                GevLog.Debug(LogSrc, $"ZIP '{fileName}' has {zip.Entries.Count} entries; using '{entry.FullName}'.");
+                GevLog.Debug(logSrc ?? LogSrc, $"ZIP '{fileName}' has {zip.Entries.Count} entries; using '{entry.FullName}'.");
 
             using var es = new CappedReadStream(entry.Open(), maxBytes, $"ZIP entry '{entry.FullName}' in '{fileName}'");
             using var reader = new StreamReader(es, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true);
@@ -369,7 +383,7 @@ public static class GevXmlLoader
 
     // ---- 캐시 ----
 
-    private static async Task<string?> ResolveCachePathAsync(IGevPort port, string cacheDir, string fileName, CancellationToken ct)
+    private static async Task<string?> ResolveCachePathAsync(IGevPort port, string cacheDir, string fileName, string? logSrc, CancellationToken ct)
     {
         try
         {
@@ -390,13 +404,13 @@ public static class GevXmlLoader
         }
         catch (Exception ex)
         {
-            GevLog.Warn(LogSrc, $"Could not build the XML cache key from the bootstrap registers; continuing without cache: {ex.Message}", ex);
+            GevLog.Warn(logSrc ?? LogSrc, $"Could not build the XML cache key from the bootstrap registers; continuing without cache: {ex.Message}", ex);
             return null;
         }
     }
 
     // 캐시 파일이 없거나 읽을 수 없거나 XML 로 보이지 않으면 null — 미스로 취급해 장치에서 다시 받고 덮어쓴다.
-    private static string? TryReadCache(string path)
+    private static string? TryReadCache(string path, string? logSrc)
     {
         try
         {
@@ -404,7 +418,7 @@ public static class GevXmlLoader
             var text = File.ReadAllText(path, Encoding.UTF8).Trim(_trimChars);
             if (text.Length == 0 || text[0] != '<')
             {
-                GevLog.Warn(LogSrc, $"Ignoring XML cache file '{path}': content does not look like XML.");
+                GevLog.Warn(logSrc ?? LogSrc, $"Ignoring XML cache file '{path}': content does not look like XML.");
                 return null;
             }
 
@@ -412,14 +426,14 @@ public static class GevXmlLoader
         }
         catch (Exception ex)
         {
-            GevLog.Warn(LogSrc, $"Could not read XML cache file '{path}': {ex.Message}", ex);
+            GevLog.Warn(logSrc ?? LogSrc, $"Could not read XML cache file '{path}': {ex.Message}", ex);
             return null;
         }
     }
 
     // 임시 파일에 쓴 뒤 이름을 바꿔 넣는다 — 동시에 읽는 쪽이 반쯤 쓰인 파일도, 사라진 파일도 보지 않게.
     // 테스트가 캐시 교체만 따로 여러 번 밟아 볼 수 있도록 internal 이다.
-    internal static void WriteCache(string path, string xml)
+    internal static void WriteCache(string path, string xml, string? logSrc = null)
     {
         var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
@@ -427,12 +441,12 @@ public static class GevXmlLoader
             var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir!);
             File.WriteAllText(tmp, xml, new UTF8Encoding(false));
-            SwapIntoPlace(tmp, path);
-            GevLog.Info(LogSrc, $"Camera XML cached to '{path}' ({xml.Length} chars).");
+            SwapIntoPlace(tmp, path, logSrc);
+            GevLog.Info(logSrc ?? LogSrc, $"Camera XML cached to '{path}' ({xml.Length} chars).");
         }
         catch (Exception ex)
         {
-            GevLog.Warn(LogSrc, $"Could not write XML cache file '{path}': {ex.Message}", ex);
+            GevLog.Warn(logSrc ?? LogSrc, $"Could not write XML cache file '{path}': {ex.Message}", ex);
             try
             {
                 if (File.Exists(tmp)) File.Delete(tmp);
@@ -469,7 +483,7 @@ public static class GevXmlLoader
     }
 
     // 다 쓴 임시 파일을 캐시 자리에 밀어 넣는다.
-    private static void SwapIntoPlace(string tmp, string path)
+    private static void SwapIntoPlace(string tmp, string path, string? logSrc)
     {
         // 덮어쓰기 Move 는 이름을 한 번에 갈아끼운다 — 대상 이름이 사라지는 구간이 없어, 같은 캐시를 보던 다른
         // 프로세스는 옇 내용 아니면 새 내용을 보고 "없음" 은 보지 않는다. 그래서 쓸 수 있으면 언제나 이쪽을 먼저 쓴다.
@@ -528,7 +542,7 @@ public static class GevXmlLoader
     // 들어간 뒤에야 비켜 둔 것을 지운다 — 중간에 실패하면 도로 돌려놓아 캐시를 잃지 않는다.
     // 지우고 옮기는 것보다 이름이 비는 구간은 오히려 길다(이름 바꾸기가 두 번이라 실측도 그렇게 나왔다).
     // 그래도 이쪽을 택한다: 비는 구간은 캐시 미스 한 번으로 끝나지만, 캐시를 잃으면 다음 쓰기까지 계속 미스다.
-    internal static void SwapByMoveAside(string tmp, string path)
+    internal static void SwapByMoveAside(string tmp, string path, string? logSrc = null)
     {
         var aside = path + "." + Guid.NewGuid().ToString("N") + ".old";
         File.Move(path, aside);
@@ -545,7 +559,7 @@ public static class GevXmlLoader
             catch (Exception restoreEx)
             {
                 // 되돌리기까지 실패하면 옇 내용은 비켜 둔 이름으로 남는다 — 어디 있는지를 남긴다.
-                GevLog.Warn(LogSrc, $"Cache swap failed and the previous content is left at '{aside}': {restoreEx.Message}", restoreEx);
+                GevLog.Warn(logSrc ?? LogSrc, $"Cache swap failed and the previous content is left at '{aside}': {restoreEx.Message}", restoreEx);
             }
 
             throw;

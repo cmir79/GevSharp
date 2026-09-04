@@ -27,6 +27,13 @@ internal sealed class GevFramePool
 {
     private const string LogSrc = "GevFramePool";
 
+    /// <summary>
+    /// 이 풀이 로그에 쓰는 이름. 풀은 스트림마다 하나이므로 어느 장치의 버퍼가 커졌는지 밝혀야 한다 —
+    /// 버퍼가 예상보다 커졌다는 것은 메모리 그림에 바로 걸리는 사실인데, 대수가 늘면 같은 문장이
+    /// 여러 줄 뜨면서 어느 것인지 알 수 없게 된다.
+    /// </summary>
+    private readonly string _logSrc;
+
     private readonly object _lock = new();
     private readonly FrameBuf[] _bufs;
     private readonly FrameBuf[] _free;
@@ -34,10 +41,12 @@ internal sealed class GevFramePool
     private int _bufferBytes;
     private bool _hasLoggedGrowth;
 
-    public GevFramePool(int bufferCount, int initialBytes)
+    public GevFramePool(int bufferCount, int initialBytes, string? device = null)
     {
         if (bufferCount < 1) throw new ArgumentOutOfRangeException(nameof(bufferCount), "Buffer count must be at least 1.");
         if (initialBytes < 0) throw new ArgumentOutOfRangeException(nameof(initialBytes));
+
+        _logSrc = device is null ? LogSrc : $"{LogSrc} {device}";
 
         _bufs = new FrameBuf[bufferCount];
         _free = new FrameBuf[bufferCount];
@@ -93,11 +102,11 @@ internal sealed class GevFramePool
             if (!_hasLoggedGrowth)
             {
                 _hasLoggedGrowth = true;
-                GevLog.Info(LogSrc, $"Frame buffer grown from {old} to {target} bytes (pool of {_bufs.Length}); remaining buffers grow when next rented.");
+                GevLog.Info(_logSrc, $"Frame buffer grown from {old} to {target} bytes (pool of {_bufs.Length}); remaining buffers grow when next rented.");
             }
             else if (GevLog.IsEnabled(GevLogLevel.Debug))
             {
-                GevLog.Debug(LogSrc, $"Frame buffer #{buf.Index} grown from {old} to {target} bytes.");
+                GevLog.Debug(_logSrc, $"Frame buffer #{buf.Index} grown from {old} to {target} bytes.");
             }
         }
 
