@@ -71,3 +71,62 @@ jobs:
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
+
+  # 내려받아 쓰는 두 도구. 설치 없이 한 파일로 도는 윈도우 빌드라 자체 포함으로 낸다.
+  # 패키지가 올라간 뒤에만 붙인다 — 앞 잡이 빌드와 테스트를 겸하므로, 거기서 걸린 판의 실행 파일을
+  # 사람이 내려받게 두지 않으려는 것이다.
+  tools:
+    runs-on: windows-latest
+    needs: publish
+    permissions:
+      # 릴리스에 파일을 붙이려면 쓰기가 필요하다. 앞 잡과 나눠 둔 이유가 이것이다 —
+      # 패키지를 올리는 쪽에는 이 권한을 주지 않는다.
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Publish the tools
+        shell: pwsh
+        run: |
+          foreach ($tool in 'Viewer', 'IpConfig') {
+            dotnet publish "samples/GevSharp.$tool/GevSharp.$tool.csproj" `
+              -c Release -r win-x64 --self-contained true `
+              -p:PublishSingleFile=true `
+              -p:EnableCompressionInSingleFile=true `
+              -p:IncludeNativeLibrariesForSelfExtract=true `
+              -o out/tools
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Get-ChildItem out/tools
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: tools
+          path: out/tools/*.exe
+
+      # 릴리스가 아직 없으면 만들고, 있으면 파일만 갈아 끼운다. 손으로 적어 둔 릴리스 노트를
+      # 덮지 않으려고 만들기와 붙이기를 나눈다.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 러너의 셸은 명령이 0 이 아닌 값으로 끝나면 예외를 던진다. 여기서는 "릴리스가 없다" 를
+          # 답으로 받아야 하므로 그 동작을 끄고 종료 코드를 직접 본다.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --generate-notes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $tag (Get-ChildItem out/tools/*.exe).FullName --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
