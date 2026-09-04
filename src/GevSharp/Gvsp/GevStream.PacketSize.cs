@@ -27,7 +27,7 @@ public sealed partial class GevStream
     {
         var mtu = ResolveMtu();
         var probe = new byte[MaxPacketSize + ScratchSlackBytes];
-        GevLog.Info(LogSrc, $"Negotiating packet size from interface MTU {mtu}.");
+        GevLog.Info(_logSrc, $"Negotiating packet size from interface MTU {mtu}.");
 
         if (await ProbeAsync(socket, probe, mtu, ct).ConfigureAwait(false))
         {
@@ -48,7 +48,7 @@ public sealed partial class GevStream
         }
         else
         {
-            GevLog.Warn(LogSrc, $"No test packet arrived for any probed packet size; assuming {DefaultPacketSize}. Check that the device can reach {_localAddress}:{LocalPort}.");
+            GevLog.Warn(_logSrc, $"No test packet arrived for any probed packet size; assuming {DefaultPacketSize}. Check that the device can reach {_localAddress}:{LocalPort}.");
             return FinishNegotiation(DefaultPacketSize, mtu);
         }
 
@@ -66,23 +66,23 @@ public sealed partial class GevStream
 
     private int FinishNegotiation(int size, int mtu)
     {
-        GevLog.Info(LogSrc, $"Negotiated packet size {size} (interface MTU {mtu}).");
+        GevLog.Info(_logSrc, $"Negotiated packet size {size} (interface MTU {mtu}).");
         return size;
     }
 
     private async Task<bool> ProbeAsync(Socket socket, byte[] probe, int size, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        DrainPending(socket, probe);
+        DrainPending(socket, probe, _logSrc);
         // 단편화 금지가 없으면 경로보다 큰 후보도 쪼개져 도착해 통과로 오인된다. 장치 플래그(빅엔디언 등)는 그대로 둔다.
         var scps = GvbsAddr.ScpsFireTest | GvbsAddr.ScpsDoNotFragment | _scpsFlags | (uint)size;
         await WriteRegAsync(GvbsAddr.ScpsOffset, scps, ct).ConfigureAwait(false);
 
         var expectedBytes = size - GvspConst.IpUdpOverhead;
-        var ok = await Task.Run(() => WaitForTestPacket(socket, probe, expectedBytes, FireTestTimeoutMs), ct).ConfigureAwait(false);
+        var ok = await Task.Run(() => WaitForTestPacket(socket, probe, expectedBytes, FireTestTimeoutMs, _logSrc), ct).ConfigureAwait(false);
         if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
-            GevLog.Debug(LogSrc, $"Packet size probe {size}: {(ok ? "test packet received" : "no test packet")}.");
+            GevLog.Debug(_logSrc, $"Packet size probe {size}: {(ok ? "test packet received" : "no test packet")}.");
         }
         return ok;
     }
@@ -90,7 +90,7 @@ public sealed partial class GevStream
     /// <summary>
     /// 마감까지 테스트 패킷을 기다린다. 후보 크기(IP 헤더 제외)보다 작은 데이터그램은 이전 후보의 늦은 패킷이므로 흘리고 계속 기다린다.
     /// </summary>
-    private static bool WaitForTestPacket(Socket socket, byte[] probe, int expectedBytes, int timeoutMs)
+    private static bool WaitForTestPacket(Socket socket, byte[] probe, int expectedBytes, int timeoutMs, string logSrc)
     {
         var frequency = Stopwatch.Frequency;
         var deadline = Stopwatch.GetTimestamp() + timeoutMs * frequency / 1000;
@@ -107,7 +107,7 @@ public sealed partial class GevStream
             }
             catch (ObjectDisposedException)
             {
-                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: socket closed while waiting for the test packet.");
+                GevLog.Debug(logSrc, $"Fire test expecting {expectedBytes} bytes: socket closed while waiting for the test packet.");
                 return false;
             }
             if (!ready) return false;
@@ -120,17 +120,17 @@ public sealed partial class GevStream
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
             {
                 // 우리 버퍼보다 큰 데이터그램이 왔다 — 크기 검사에는 "적어도 이만큼" 으로 충분하다.
-                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: a datagram larger than the {probe.Length}-byte probe buffer arrived; counted as big enough.");
+                GevLog.Debug(logSrc, $"Fire test expecting {expectedBytes} bytes: a datagram larger than the {probe.Length}-byte probe buffer arrived; counted as big enough.");
                 received = probe.Length + 1;
             }
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
             {
-                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: ICMP port-unreachable echoed back; ignoring and waiting again.");
+                GevLog.Debug(logSrc, $"Fire test expecting {expectedBytes} bytes: ICMP port-unreachable echoed back; ignoring and waiting again.");
                 continue;
             }
             catch (ObjectDisposedException)
             {
-                GevLog.Debug(LogSrc, $"Fire test expecting {expectedBytes} bytes: socket closed while receiving the test packet.");
+                GevLog.Debug(logSrc, $"Fire test expecting {expectedBytes} bytes: socket closed while receiving the test packet.");
                 return false;
             }
 
@@ -139,7 +139,7 @@ public sealed partial class GevStream
     }
 
     /// <summary>소켓에 쌓인 데이터그램을 비운다 — 이전 후보의 테스트 패킷이 다음 후보의 답으로 오인되지 않게.</summary>
-    private static void DrainPending(Socket socket, byte[] probe)
+    private static void DrainPending(Socket socket, byte[] probe, string logSrc)
     {
         for (var i = 0; i < DrainLimit; i++)
         {
@@ -151,7 +151,7 @@ public sealed partial class GevStream
             catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize || ex.SocketErrorCode == SocketError.ConnectionReset)
             {
                 // 크기 초과·ICMP 되돌림은 버리고 계속
-                GevLog.Debug(LogSrc, $"Draining the probe socket: {ex.SocketErrorCode} ignored.");
+                GevLog.Debug(logSrc, $"Draining the probe socket: {ex.SocketErrorCode} ignored.");
             }
             catch (ObjectDisposedException)
             {
@@ -169,13 +169,13 @@ public sealed partial class GevStream
         }
         catch (Exception ex)
         {
-            GevLog.Warn(LogSrc, $"Could not read the MTU of the interface owning {_localAddress}; probing from {UnknownMtuSeed}.", ex);
+            GevLog.Warn(_logSrc, $"Could not read the MTU of the interface owning {_localAddress}; probing from {UnknownMtuSeed}.", ex);
             mtu = UnknownMtuSeed;
         }
 
         if (mtu <= 0)
         {
-            GevLog.Debug(LogSrc, $"Interface MTU for {_localAddress} unknown; probing from {UnknownMtuSeed}.");
+            GevLog.Debug(_logSrc, $"Interface MTU for {_localAddress} unknown; probing from {UnknownMtuSeed}.");
             mtu = UnknownMtuSeed;
         }
         if (mtu > MaxPacketSize) mtu = MaxPacketSize;

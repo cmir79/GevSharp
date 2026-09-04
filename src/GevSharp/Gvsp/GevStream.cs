@@ -17,6 +17,7 @@ public sealed partial class GevStream : IAsyncDisposable
     internal const int MinPacketSize = 576;
     internal const int MaxPacketSize = 16000;
 
+    /// <summary>장치를 가리지 않는 자리(정적 도우미)에서 쓰는 이름.</summary>
     private const string LogSrc = "GevStream";
     private const int StateNew = 0;
     private const int StateStarting = 1;
@@ -31,6 +32,13 @@ public sealed partial class GevStream : IAsyncDisposable
     private readonly IPAddress _localAddress;
     /// <summary>장치 주소 — 방화벽 통과용 한 바이트를 보낼 목적지. null 이면 그 단계를 건너뛴다.</summary>
     private readonly IPAddress? _deviceAddress;
+
+    /// <summary>
+    /// 이 스트림이 로그에 쓰는 이름. 장치 주소를 함께 넣는다 — 카메라 여러 대가 한 로그에 섞이면
+    /// 포트 번호만으로는 어느 장치의 줄인지 알 수 없고, 그 포트마저 열 때마다 바뀐다. 종료 통계처럼
+    /// "어느 카메라가 흘렸나" 를 묻는 줄에서는 이름이 없으면 답이 나오지 않는다.
+    /// </summary>
+    private readonly string _logSrc;
     private readonly GevStreamOpt _opt;
     private readonly int _channel;
     private readonly GevFramePool _pool;
@@ -57,6 +65,7 @@ public sealed partial class GevStream : IAsyncDisposable
         _resend = resend ?? throw new ArgumentNullException(nameof(resend));
         _localAddress = localAddress ?? throw new ArgumentNullException(nameof(localAddress));
         _deviceAddress = deviceAddress;
+        _logSrc = deviceAddress is null ? LogSrc : $"{LogSrc} {deviceAddress}";
         if (localAddress.AddressFamily != AddressFamily.InterNetwork)
         {
             throw new ArgumentException("Local address must be an IPv4 address.", nameof(localAddress));
@@ -112,10 +121,10 @@ public sealed partial class GevStream : IAsyncDisposable
                 var granted = socket.ReceiveBufferSize;
                 SocketReceiveBufferBytes = granted;
                 LocalPort = ((IPEndPoint)socket.LocalEndPoint!).Port;
-                GevLog.Info(LogSrc, $"Stream socket bound to {_localAddress}:{LocalPort}; receive buffer requested {_opt.SocketBufferBytes} bytes, granted {granted} bytes.");
+                GevLog.Info(_logSrc, $"Stream socket bound to {_localAddress}:{LocalPort}; receive buffer requested {_opt.SocketBufferBytes} bytes, granted {granted} bytes.");
                 if (granted < _opt.SocketBufferBytes)
                 {
-                    GevLog.Warn(LogSrc, $"OS granted a smaller receive buffer ({granted} bytes) than requested ({_opt.SocketBufferBytes} bytes); packet loss under load is more likely.");
+                    GevLog.Warn(_logSrc, $"OS granted a smaller receive buffer ({granted} bytes) than requested ({_opt.SocketBufferBytes} bytes); packet loss under load is more likely.");
                 }
                 _socket = socket;
 
@@ -157,7 +166,7 @@ public sealed partial class GevStream : IAsyncDisposable
                 _thread = thread;
                 thread.Start();
                 _state = StateStarted;
-                GevLog.Info(LogSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_opt.ResendEnabled ? "on" : "off")}.");
+                GevLog.Info(_logSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_opt.ResendEnabled ? "on" : "off")}.");
             }
             catch
             {
@@ -168,7 +177,7 @@ public sealed partial class GevStream : IAsyncDisposable
                 {
                     // 장치가 닫힌 포트로 쏘지 않게 최선을 다해 되돌린다 — 여기서의 실패는 원래 예외를 가리지 않는다.
                     try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, CancellationToken.None).ConfigureAwait(false); }
-                    catch (Exception ex) { GevLog.Warn(LogSrc, "Failed to reset SCP after a failed start.", ex); }
+                    catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to reset SCP after a failed start.", ex); }
                 }
                 _queue?.Complete(new GevStreamClosedException("Stream failed to start."));
                 _state = StateStopped;
@@ -207,9 +216,9 @@ public sealed partial class GevStream : IAsyncDisposable
             _isStopRequested = true;
 
             try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, ct).ConfigureAwait(false); }
-            catch (Exception ex) { GevLog.Warn(LogSrc, "Failed to write SCP = 0 while stopping the stream.", ex); }
+            catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCP = 0 while stopping the stream.", ex); }
             try { await WriteRegAsync(GvbsAddr.ScdaOffset, 0, ct).ConfigureAwait(false); }
-            catch (Exception ex) { GevLog.Warn(LogSrc, "Failed to write SCDA = 0 while stopping the stream.", ex); }
+            catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCDA = 0 while stopping the stream.", ex); }
 
             var socket = _socket;
             _socket = null;
@@ -226,7 +235,7 @@ public sealed partial class GevStream : IAsyncDisposable
                 var joined = await Task.Run(() => thread.Join(ReceiverJoinMs)).ConfigureAwait(false);
                 if (!joined)
                 {
-                    GevLog.Warn(LogSrc, $"Receiver thread did not stop within {ReceiverJoinMs} ms; the socket is closed and the buffers are returned regardless.");
+                    GevLog.Warn(_logSrc, $"Receiver thread did not stop within {ReceiverJoinMs} ms; the socket is closed and the buffers are returned regardless.");
                 }
             }
 
@@ -242,7 +251,7 @@ public sealed partial class GevStream : IAsyncDisposable
             }
 
             _state = StateStopped;
-            GevLog.Info(LogSrc, $"Stream on port {LocalPort} stopped: {_stats.FramesCompleted} completed, {_stats.FramesIncomplete} incomplete, {_stats.FramesDroppedNoBuffer} dropped (no buffer), {_stats.ResendRecovered} packets recovered by resend.");
+            GevLog.Info(_logSrc, $"Stream on port {LocalPort} stopped: {_stats.FramesCompleted} completed, {_stats.FramesIncomplete} incomplete, {_stats.FramesDroppedNoBuffer} dropped (no buffer), {_stats.ResendRecovered} packets recovered by resend.");
         }
         finally
         {
@@ -309,7 +318,7 @@ public sealed partial class GevStream : IAsyncDisposable
         }
         catch (GevStatusException ex)
         {
-            GevLog.Debug(LogSrc, $"Device refused the inter-packet delay register ({GvcpConst.StatusName(ex.Status)}); leaving it alone.");
+            GevLog.Debug(_logSrc, $"Device refused the inter-packet delay register ({GvcpConst.StatusName(ex.Status)}); leaving it alone.");
             return;
         }
 
@@ -321,13 +330,13 @@ public sealed partial class GevStream : IAsyncDisposable
         }
         catch (GevStatusException ex) when (wanted == 0)
         {
-            GevLog.Warn(LogSrc, $"Device refused to clear its inter-packet delay of {current} ticks ({GvcpConst.StatusName(ex.Status)}); the frame rate may stay below what the sensor allows.");
+            GevLog.Warn(_logSrc, $"Device refused to clear its inter-packet delay of {current} ticks ({GvcpConst.StatusName(ex.Status)}); the frame rate may stay below what the sensor allows.");
             return;
         }
 
         if (wanted == 0)
         {
-            GevLog.Info(LogSrc, $"Cleared an inter-packet delay of {current} ticks that the device was still holding; left in place it caps the frame rate.");
+            GevLog.Info(_logSrc, $"Cleared an inter-packet delay of {current} ticks that the device was still holding; left in place it caps the frame rate.");
         }
     }
 
@@ -355,7 +364,7 @@ public sealed partial class GevStream : IAsyncDisposable
         }
         catch (GevStatusException ex)
         {
-            GevLog.Debug(LogSrc, $"Device refused the SCSP register ({GvcpConst.StatusName(ex.Status)}); punching the control port instead.");
+            GevLog.Debug(_logSrc, $"Device refused the SCSP register ({GvcpConst.StatusName(ex.Status)}); punching the control port instead.");
             port = 0;
         }
 
@@ -366,14 +375,14 @@ public sealed partial class GevStream : IAsyncDisposable
             // 먼저 보낸 적이 있어야만 되돌려 보내므로, 모를 때는 제어 포트가 아니라 이 번호로 뚫는다 —
             // 제어 포트로 뚫으면 매핑이 어긋나 한 패킷도 오지 않는다(그 상태로 파이어테스트도 전부 실패했다).
             port = LocalPort;
-            GevLog.Debug(LogSrc, $"Device reports no stream source port (SCSP = 0); punching {port} instead, since such a device mirrors the host port it was given.");
+            GevLog.Debug(_logSrc, $"Device reports no stream source port (SCSP = 0); punching {port} instead, since such a device mirrors the host port it was given.");
         }
 
         // 유지용 재송신이 레지스터를 다시 읽지 않도록 목적지를 기억해 둔다 — 수신 스레드에서 불리는 경로다.
         _punchTarget = new IPEndPoint(_deviceAddress, port);
         if (SendPunch(socket))
         {
-            GevLog.Debug(LogSrc, $"Firewall traversal: sent one byte from {_localAddress}:{LocalPort} to {_punchTarget}.");
+            GevLog.Debug(_logSrc, $"Firewall traversal: sent one byte from {_localAddress}:{LocalPort} to {_punchTarget}.");
         }
     }
 
@@ -394,7 +403,7 @@ public sealed partial class GevStream : IAsyncDisposable
             if (!_hasLoggedPunchFailure)
             {
                 _hasLoggedPunchFailure = true;
-                GevLog.Warn(LogSrc, $"Firewall traversal to {target} failed ({ex.SocketErrorCode}); a host firewall may drop the incoming stream.");
+                GevLog.Warn(_logSrc, $"Firewall traversal to {target} failed ({ex.SocketErrorCode}); a host firewall may drop the incoming stream.");
             }
             return false;
         }

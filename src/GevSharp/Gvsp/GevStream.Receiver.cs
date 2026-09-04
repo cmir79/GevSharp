@@ -279,7 +279,7 @@ public sealed partial class GevStream
     {
         var socket = _socket;
         if (socket is null) return;
-        GevLog.Debug(LogSrc, $"Receiver thread started on port {LocalPort}.");
+        GevLog.Debug(_logSrc, $"Receiver thread started on port {LocalPort}.");
 
         try
         {
@@ -308,7 +308,7 @@ public sealed partial class GevStream
         }
         catch (Exception ex)
         {
-            GevLog.Error(LogSrc, "Receiver thread terminated by an unexpected error.", ex);
+            GevLog.Error(_logSrc, "Receiver thread terminated by an unexpected error.", ex);
             _queue?.Complete(new GevStreamClosedException("Receiver thread failed: " + ex.Message));
         }
         finally
@@ -319,7 +319,7 @@ public sealed partial class GevStream
                 // 정지 요청 없이 나왔다면 소켓이 죽은 것이다 — 소비자가 영원히 기다리지 않게 큐를 닫는다(이미 닫혔으면 무시된다).
                 _queue?.Complete(new GevStreamClosedException($"Receiver thread stopped: stream socket receive failed ({_receiveExitError})."));
             }
-            GevLog.Debug(LogSrc, $"Receiver thread on port {LocalPort} exited.");
+            GevLog.Debug(_logSrc, $"Receiver thread on port {LocalPort} exited.");
         }
     }
 
@@ -346,7 +346,7 @@ public sealed partial class GevStream
                 if (!_hasLoggedOversize)
                 {
                     _hasLoggedOversize = true;
-                    GevLog.Warn(LogSrc, $"Received a datagram larger than the scratch buffer ({_scratch.Length} bytes); the device sends packets bigger than the negotiated size {PacketSize}.");
+                    GevLog.Warn(_logSrc, $"Received a datagram larger than the scratch buffer ({_scratch.Length} bytes); the device sends packets bigger than the negotiated size {PacketSize}.");
                 }
                 return true;
             case SocketError.ConnectionReset:
@@ -363,11 +363,11 @@ public sealed partial class GevStream
                 _consecutiveReceiveErrors++;
                 if (_consecutiveReceiveErrors == 1)
                 {
-                    GevLog.Warn(LogSrc, $"Stream socket receive failed: {ex.SocketErrorCode}; retrying.", ex);
+                    GevLog.Warn(_logSrc, $"Stream socket receive failed: {ex.SocketErrorCode}; retrying.", ex);
                 }
                 else if (_consecutiveReceiveErrors >= MaxConsecutiveReceiveErrors)
                 {
-                    GevLog.Error(LogSrc, $"Stream socket receive kept failing with {ex.SocketErrorCode} for {_consecutiveReceiveErrors} consecutive attempts; receiver stopped.", ex);
+                    GevLog.Error(_logSrc, $"Stream socket receive kept failing with {ex.SocketErrorCode} for {_consecutiveReceiveErrors} consecutive attempts; receiver stopped.", ex);
                     _receiveExitError = ex.SocketErrorCode;
                     return false;
                 }
@@ -402,7 +402,7 @@ public sealed partial class GevStream
         {
             _stats.IncFirewallKeepAlives();
             if (GevLog.IsEnabled(GevLogLevel.Debug))
-                GevLog.Debug(LogSrc, $"Firewall traversal: refreshed the mapping after {(now - _lastInboundTicks) * 1000 / Stopwatch.Frequency} ms without inbound packets.");
+                GevLog.Debug(_logSrc, $"Firewall traversal: refreshed the mapping after {(now - _lastInboundTicks) * 1000 / Stopwatch.Frequency} ms without inbound packets.");
         }
     }
 
@@ -447,7 +447,7 @@ public sealed partial class GevStream
             }
             if (GevLog.IsEnabled(GevLogLevel.Debug))
             {
-                GevLog.Debug(LogSrc, $"Error packet status 0x{view.Status:X4} ({GvcpConst.StatusName(view.Status)}) for block {view.BlockId} packet {view.PacketId}.");
+                GevLog.Debug(_logSrc, $"Error packet status 0x{view.Status:X4} ({GvcpConst.StatusName(view.Status)}) for block {view.BlockId} packet {view.PacketId}.");
             }
             if (slot is not null && !slot.IsSkipped && slot.IsScanNeeded) CheckMissing(slot, now);
             CheckCompletion(now, slot);
@@ -576,7 +576,7 @@ public sealed partial class GevStream
         {
             if (GevLog.IsEnabled(GevLogLevel.Debug))
             {
-                GevLog.Debug(LogSrc, $"Too many frames in flight; abandoning oldest block {_active[0]!.BlockId} to open block {blockId}.");
+                GevLog.Debug(_logSrc, $"Too many frames in flight; abandoning oldest block {_active[0]!.BlockId} to open block {blockId}.");
             }
             CloseSlot(0);
         }
@@ -642,7 +642,7 @@ public sealed partial class GevStream
             if (!_hasLoggedShortLeader)
             {
                 _hasLoggedShortLeader = true;
-                GevLog.Warn(LogSrc, $"Block {slot.BlockId}: leader carries {view.DataLength} bytes, too few to even name its payload type; frame dropped. Further occurrences are counted but not logged.");
+                GevLog.Warn(_logSrc, $"Block {slot.BlockId}: leader carries {view.DataLength} bytes, too few to even name its payload type; frame dropped. Further occurrences are counted but not logged.");
             }
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusInvalidHeader);
             return;
@@ -661,7 +661,7 @@ public sealed partial class GevStream
             if (!_hasLoggedShortLeader)
             {
                 _hasLoggedShortLeader = true;
-                GevLog.Warn(LogSrc, $"Block {slot.BlockId}: leader declares payload type 0x{leaderType:X4} but carries only {view.DataLength} bytes, "
+                GevLog.Warn(_logSrc, $"Block {slot.BlockId}: leader declares payload type 0x{leaderType:X4} but carries only {view.DataLength} bytes, "
                     + $"fewer than the {GvspConst.ImageLeaderDataSize} that leader needs; frame dropped. Further occurrences are counted but not logged.");
             }
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusInvalidHeader);
@@ -695,7 +695,7 @@ public sealed partial class GevStream
             || leader.OffsetX > int.MaxValue || leader.OffsetY > int.MaxValue
             || leader.LineBytes > int.MaxValue || imageBytes <= 0 || imageBytes > _maxPayloadBytes)
         {
-            GevLog.Warn(LogSrc, $"Leader of block {slot.BlockId} carries an unusable geometry ({leader.SizeX}x{leader.SizeY}, format 0x{leader.PixelFormat:X8}, {imageBytes} bytes, limit {_maxPayloadBytes}); frame dropped.");
+            GevLog.Warn(_logSrc, $"Leader of block {slot.BlockId} carries an unusable geometry ({leader.SizeX}x{leader.SizeY}, format 0x{leader.PixelFormat:X8}, {imageBytes} bytes, limit {_maxPayloadBytes}); frame dropped.");
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusInvalidParameter);
             return false;
         }
@@ -737,7 +737,7 @@ public sealed partial class GevStream
         else if (slot.Buf.Data.Length < needed)
         {
             // 리더보다 먼저 온 페이로드로 잡아 둔 버퍼가 작다 — 이미 쓴 바이트를 옮길 길이 없으니 이 프레임은 포기한다.
-            GevLog.Warn(LogSrc, $"Block {slot.BlockId}: payload arrived before the leader into a {slot.Buf.Data.Length}-byte buffer but the frame needs {needed} bytes; frame dropped.");
+            GevLog.Warn(_logSrc, $"Block {slot.BlockId}: payload arrived before the leader into a {slot.Buf.Data.Length}-byte buffer but the frame needs {needed} bytes; frame dropped.");
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusOverflow);
             return false;
         }
@@ -796,7 +796,7 @@ public sealed partial class GevStream
                 // 크기를 짐작할 근거가 없다 — 리더가 오면 그때 잡는다(이 패킷은 리센드로 다시 받는다).
                 if (GevLog.IsEnabled(GevLogLevel.Debug))
                 {
-                    GevLog.Debug(LogSrc, $"Block {slot.BlockId}: payload {id} arrived before any leader; no buffer size known yet, packet dropped.");
+                    GevLog.Debug(_logSrc, $"Block {slot.BlockId}: payload {id} arrived before any leader; no buffer size known yet, packet dropped.");
                 }
                 _stats.IncPacketsIgnored();
                 return;
@@ -821,7 +821,7 @@ public sealed partial class GevStream
             if (!_hasLoggedChunkOverflow)
             {
                 _hasLoggedChunkOverflow = true;
-                GevLog.Warn(LogSrc, $"Block {slot.BlockId}: chunk payload exceeds the {buf.Data.Length}-byte frame buffer; frame dropped and buffers will grow. Set GevStreamOpt.PayloadSize to the device PayloadSize to avoid this.");
+                GevLog.Warn(_logSrc, $"Block {slot.BlockId}: chunk payload exceeds the {buf.Data.Length}-byte frame buffer; frame dropped and buffers will grow. Set GevStreamOpt.PayloadSize to the device PayloadSize to avoid this.");
             }
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusOverflow);
             return;
@@ -889,7 +889,7 @@ public sealed partial class GevStream
             if (!_hasLoggedPayloadCeiling)
             {
                 _hasLoggedPayloadCeiling = true;
-                GevLog.Warn(LogSrc, $"A frame claims {bytes} bytes, above the {_maxPayloadBytes}-byte limit; buffers are not grown. Raise GevStreamOpt.MaxPayloadBytes if the device really sends frames that large.");
+                GevLog.Warn(_logSrc, $"A frame claims {bytes} bytes, above the {_maxPayloadBytes}-byte limit; buffers are not grown. Raise GevStreamOpt.MaxPayloadBytes if the device really sends frames that large.");
             }
             return;
         }
@@ -900,7 +900,7 @@ public sealed partial class GevStream
     {
         if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
-            GevLog.Debug(LogSrc, $"Block {slot.BlockId}: payload bytes per packet {slot.DataBytes} -> {dataBytes}.");
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: payload bytes per packet {slot.DataBytes} -> {dataBytes}.");
         }
         slot.DataBytes = dataBytes;
         RecomputeExpectedPackets(slot);
@@ -913,7 +913,7 @@ public sealed partial class GevStream
         var n = (slot.ExpectedBytes + slot.DataBytes - 1) / slot.DataBytes;
         if (n >= MaxPacketsPerFrame)
         {
-            GevLog.Warn(LogSrc, $"Block {slot.BlockId}: {slot.ExpectedBytes} bytes at {slot.DataBytes} bytes/packet needs {n} packets, above the limit of {MaxPacketsPerFrame}; frame dropped.");
+            GevLog.Warn(_logSrc, $"Block {slot.BlockId}: {slot.ExpectedBytes} bytes at {slot.DataBytes} bytes/packet needs {n} packets, above the limit of {MaxPacketsPerFrame}; frame dropped.");
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusInvalidParameter);
             return;
         }
@@ -955,7 +955,7 @@ public sealed partial class GevStream
 
         if (slot.ExpectedPackets != n && GevLog.IsEnabled(GevLogLevel.Debug))
         {
-            GevLog.Debug(LogSrc, $"Block {slot.BlockId}: trailer sets packet count {slot.ExpectedPackets} -> {n}.");
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: trailer sets packet count {slot.ExpectedPackets} -> {n}.");
         }
         slot.ExpectedPackets = n;
         slot.ReceivedPayloads = slot.CountReceivedPayloads();
@@ -991,7 +991,7 @@ public sealed partial class GevStream
         var buf = slot.Buf!;
         if (payloadLength > buf.Data.Length || (slot.ExpectedBytes >= 0 && payloadLength < slot.ExpectedBytes))
         {
-            GevLog.Warn(LogSrc, $"Block {slot.BlockId}: all-in packet carries {available} payload bytes but the frame needs {slot.ExpectedBytes}; frame dropped.");
+            GevLog.Warn(_logSrc, $"Block {slot.BlockId}: all-in packet carries {available} payload bytes but the frame needs {slot.ExpectedBytes}; frame dropped.");
             MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusInvalidHeader);
             return;
         }
@@ -1183,7 +1183,7 @@ public sealed partial class GevStream
                 slot.IsRatioReached = true;
                 if (GevLog.IsEnabled(GevLogLevel.Debug))
                 {
-                    GevLog.Debug(LogSrc, $"Block {slot.BlockId}: resend budget exhausted ({slot.RequestedPackets} packets requested, {newPackets} more needed, limit {maxRequests}); frame abandoned.");
+                    GevLog.Debug(_logSrc, $"Block {slot.BlockId}: resend budget exhausted ({slot.RequestedPackets} packets requested, {newPackets} more needed, limit {maxRequests}); frame abandoned.");
                 }
                 return false;
             }
@@ -1216,7 +1216,7 @@ public sealed partial class GevStream
         }
         catch (Exception ex)
         {
-            GevLog.Warn(LogSrc, $"Packet resend request for block {slot.BlockId} failed; resend disabled for this frame.", ex);
+            GevLog.Warn(_logSrc, $"Packet resend request for block {slot.BlockId} failed; resend disabled for this frame.", ex);
             slot.IsResendDisabled = true;
             return true;
         }
@@ -1233,7 +1233,7 @@ public sealed partial class GevStream
 
         if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
-            GevLog.Debug(LogSrc, $"Block {slot.BlockId}: resend requested for packets {first}..{last}.");
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: resend requested for packets {first}..{last}.");
         }
         return true;
     }
@@ -1351,7 +1351,7 @@ public sealed partial class GevStream
         _stats.AddPacketsMissing(missing);
         if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
-            GevLog.Debug(LogSrc, $"Block {slot.BlockId} incomplete: {slot.ReceivedPayloads}/{expected} payload packets, leader {(slot.HasLeader ? "yes" : "no")}, {slot.RequestedPackets} packets requested for resend.");
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId} incomplete: {slot.ReceivedPayloads}/{expected} payload packets, leader {(slot.HasLeader ? "yes" : "no")}, {slot.RequestedPackets} packets requested for resend.");
         }
         RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, missing, expected, 0);
 
@@ -1417,7 +1417,7 @@ public sealed partial class GevStream
         }
         catch (Exception ex)
         {
-            GevLog.Warn(LogSrc, "FrameDropped handler threw.", ex);
+            GevLog.Warn(_logSrc, "FrameDropped handler threw.", ex);
         }
     }
 
@@ -1454,7 +1454,7 @@ public sealed partial class GevStream
             if (_hasLoggedOtherPayloadType) return;
             _hasLoggedOtherPayloadType = true;
         }
-        GevLog.Warn(LogSrc, $"Unsupported GVSP payload type {payloadType}; frames of this type are dropped (only image and extended-chunk payloads are assembled).");
+        GevLog.Warn(_logSrc, $"Unsupported GVSP payload type {payloadType}; frames of this type are dropped (only image and extended-chunk payloads are assembled).");
     }
 
     /// <summary>콘텐츠 타입은 7 비트라 두 워드로 값별 한 번씩을 빠짐없이 거른다 — 패킷마다 오는 값이라 하나라도 새면 핫패스에서 문자열이 만들어진다.</summary>
@@ -1471,6 +1471,6 @@ public sealed partial class GevStream
             if ((_loggedUnsupportedContentHi & bit) != 0) return;
             _loggedUnsupportedContentHi |= bit;
         }
-        GevLog.Warn(LogSrc, $"Unsupported GVSP content type {contentType}; packets of this type are ignored.");
+        GevLog.Warn(_logSrc, $"Unsupported GVSP content type {contentType}; packets of this type are ignored.");
     }
 }
