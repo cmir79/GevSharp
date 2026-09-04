@@ -1,5 +1,9 @@
 # GevSharp
 
+[![NuGet](https://img.shields.io/nuget/v/GevSharp?logo=nuget&logoColor=white&label=NuGet&color=004880)](https://www.nuget.org/packages/GevSharp)
+[![ci](https://github.com/cmir79/GevSharp/actions/workflows/ci.yml/badge.svg)](https://github.com/cmir79/GevSharp/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Vendor-free, pure managed C# library for industrial GigE cameras:
 GVCP device control, GVSP streaming with packet resend, and GenICam GenApi XML feature access.
 
