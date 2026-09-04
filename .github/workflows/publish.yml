@@ -61,7 +61,7 @@ jobs:
         id: login
         uses: NuGet/login@v1
         with:
-          user: cmir79
+          user: kintaein
 
       # 같은 번호를 다시 밀어도 실패로 끝내지 않는다. 판 번호가 틀린 경우는 위에서 이미 걸렀으므로,
       # 여기서 걸리는 것은 같은 판을 다시 돌린 경우뿐이다.
