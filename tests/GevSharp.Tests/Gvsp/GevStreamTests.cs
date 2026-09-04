@@ -37,6 +37,31 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task DiscardQueuedFramesReportsHowFarItSkipped()
+    {
+        // 번호의 연속을 세는 쪽은 버린 번호까지 기준에 반영해야 자기가 만든 공백을 유실로 세지 않는다.
+        // 그러려면 몇 장인지가 아니라 어디까지 버렸는지를 알아야 한다.
+        var opt = StreamRig.DefaultOpt();
+        opt.BufferCount = 8;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        Assert.Equal(0, rig.Stream.DiscardQueuedFrames(out var noneDiscarded));
+        Assert.Equal(0UL, noneDiscarded);
+
+        for (var i = 0; i < 3; i++) rig.Sender.SendFrame(100UL + (ulong)i, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 3);
+
+        Assert.Equal(3, rig.Stream.DiscardQueuedFrames(out var lastDiscarded));
+        Assert.Equal(102UL, lastDiscarded);
+
+        // 그 번호를 기준으로 삼으면 다음 장이 이어진다 — 배수가 만든 공백이 유실로 보이지 않는다.
+        rig.Sender.SendFrame(103UL, 64, 48, Mono8);
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(lastDiscarded + 1, frame.FrameId);
+    }
+
+    [Fact]
     public async Task StopAsyncDrainsTheQueueSoNoFrameSurvivesTheStop()
     {
         // 정지가 큐를 남긴다면 다음에 여는 쪽이 지난 판의 프레임을 받게 된다. 여기서 못 박아 둔다.

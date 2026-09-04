@@ -299,15 +299,33 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 않아, 비우려던 것이 오히려 취득을 굶긴다. 이름을 붙여 두는 이유가 그것이다.
     /// </para>
     /// <para>정지된 스트림에서는 0 을 돌려준다 — <see cref="StopAsync"/> 가 이미 비웠다.</para>
+    /// <para>
+    /// 프레임 번호의 연속을 세고 있다면 <see cref="DiscardQueuedFrames(out ulong)"/> 를 써서 버린 번호를
+    /// 기준에 반영한다. 장수만으로는 어디까지 건너뛰었는지 알 수 없다.
+    /// </para>
     /// </summary>
-    public int DiscardQueuedFrames()
+    public int DiscardQueuedFrames() => DiscardQueuedFrames(out _);
+
+    /// <summary>
+    /// 큐에 쌓인 완성 프레임을 모두 버리고, 버린 장수와 그중 마지막 프레임 번호를 함께 돌려준다.
+    /// 버린 것이 없으면 <paramref name="lastDiscardedFrameId"/> 는 0 이다.
+    /// <para>
+    /// 프레임 번호의 연속을 세는 쪽은 <b>버린 번호까지 기준에 반영해야 한다.</b> 100·101·102 를 버리고
+    /// 기준을 99 에 둔 채로 다음 103 을 받으면, 자기가 만든 공백을 자기가 유실로 센다. 그 경보를 보게 될
+    /// 사람은 배수를 넣은 바로 그 사람이라, 원인이 자기 자신인 줄 모르고 망을 의심하러 간다.
+    /// </para>
+    /// </summary>
+    public int DiscardQueuedFrames(out ulong lastDiscardedFrameId)
     {
+        lastDiscardedFrameId = 0;
+
         var queue = _queue;
         if (queue is null) return 0;
 
         var dropped = 0;
         while (queue.TryDrain(out var frame))
         {
+            lastDiscardedFrameId = frame.FrameId;
             frame.Dispose();
             dropped++;
         }
