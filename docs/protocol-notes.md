@@ -53,7 +53,13 @@ See `GvbsAddr`. Highlights:
   `0x0944` timestamp control (write 2 = reset, 1 = latch), `0x0948/0x094C` latched timestamp.
 - `0x0A00` CCP: 1 = exclusive, 2 = control, 4 = control switchover enable; 0 = open. Writing CCP requires
   no privilege when the register is 0; writes from a non-controlling host return `ACCESS_DENIED (0x8006)`.
-  `0x0A04`/`0x0A14` primary application port/IP (device fills these from the CCP writer's socket).
+  `0x0A04`/`0x0A14` primary application port/IP — the socket of whoever holds control, which answers
+  "who is holding this camera" without having to hunt for a process on every host. **Only if the device
+  fills them**: capability bit 27 (0x0934) says so, and it is not universal. Measured on two cameras:
+  one advertises the bit and reports the socket, the other has the bit clear and answers
+  `INVALID_ADDRESS (0x8003)` to the read — so a failed read is a fact about the model, not about who
+  holds the camera. Check the bit before reading, and when it is clear say the device does not tell
+  rather than that nobody holds it.
 - Stream channel n (n = 0 first): base `0x0D00 + 0x40·n`: `+0x00` SCP host port (write 0 to close),
   `+0x04` SCPS (bit31 fire test packet, bit30 do-not-fragment, bit29 big-endian payload, bits0–15 packet
   size in bytes including IP+UDP headers), `+0x08` SCPD inter-packet delay (timestamp ticks), `+0x18`
