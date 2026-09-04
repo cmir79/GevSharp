@@ -3,7 +3,7 @@
   <PropertyGroup>
     <!-- 락스텝 버전 — 전 패키지가 이 한 값을 공유한다. 릴리즈마다 여기 한 곳만 올린다.
          규칙: 내용이 한 바이트라도 바뀌면(메타데이터 포함) 반드시 상향 — NuGet 캐시는 id+version 으로만 식별한다. -->
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
 
     <Authors>kintaein</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
