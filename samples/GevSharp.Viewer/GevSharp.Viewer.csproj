@@ -24,4 +24,17 @@
     <ProjectReference Include="..\..\src\GevSharp\GevSharp.csproj" />
   </ItemGroup>
 
+
+  <!--
+    실행에 쓰이지 않는 곁파일을 게시물에서 뺀다 — 네이티브 라이브러리(Skia·HarfBuzz)의 심볼과 문서 주석 XML. 단일 파일 번들은 네이티브 DLL 만
+    담고 그 옆의 .pdb 는 담지 않으므로, 두면 exe 옆에 덩그러니 남기만 한다. 실행에는 쓰이지 않는다 —
+    빈 폴더에 exe 하나만 두고 실행되는 것을 확인했다. 건네는 것이 한 파일이면 출력도 한 파일이어야 한다.
+    우리 어셈블리의 심볼은 어셈블리 안에 들어 있으므로 여기서 빠질 것이 없다.
+  -->
+  <Target Name="DropLooseSideFiles" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb' or '%(Extension)' == '.xml'" />
+    </ItemGroup>
+  </Target>
+
 </Project>
