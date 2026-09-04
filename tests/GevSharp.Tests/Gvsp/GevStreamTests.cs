@@ -13,6 +13,30 @@ public class GevStreamTests
     private const uint Mono12Packed = 0x010C0006;
     private const uint Rgb8 = 0x02180014;
 
+    [Fact]
+    public async Task QueuedFramesCountsWhatTheConsumerHasNotTakenYet()
+    {
+        // 받아 가지 않은 완성 프레임이 몇 장 쌓여 있는지가 이 값이다. 프레임이 늦게 보이는데 유실은 0 인
+        // 상황에서 취득이 밀리는지 소비가 밀리는지를 가르는 값이라, 소비를 멈춘 채 세어 본다.
+        var opt = StreamRig.DefaultOpt();
+        opt.BufferCount = 8;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        Assert.Equal(0, rig.Stream.QueuedFrames);
+
+        for (var i = 0; i < 3; i++) rig.Sender.SendFrame(1UL + (ulong)i, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 3);
+
+        // 한 장을 가져가면 그만큼 줄어든다 — 누적 계수기가 아니라 그 순간의 점유다.
+        using (await rig.ReceiveAsync()) { }
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 2);
+
+        var snap = rig.Stream.Stats.Snapshot();
+        Assert.Equal(3, snap.FramesCompleted);
+        Assert.Equal(1, snap.FramesDelivered);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

@@ -431,6 +431,18 @@ public sealed partial class GevStream : IAsyncDisposable
     /// </summary>
     public int SocketReceiveBufferBytes { get; private set; }
 
+    /// <summary>
+    /// 지금 소비자를 기다리고 있는 완성 프레임 수. 누적 계수기가 아니라 그 순간의 값이라
+    /// <see cref="GevStreamStats"/> 가 아니라 여기에 둔다.
+    /// <para>
+    /// 이 값이 <see cref="GevStreamOpt.BufferCount"/> 에 붙어 있으면 받는 쪽이 아니라 <b>받아 가는 쪽</b>이
+    /// 밀린다는 뜻이다. 프레임이 늦게 보이는데 유실은 0 인 상황에서 취득과 소비 중 어느 쪽을 볼지가
+    /// 이 하나로 갈린다. 프레임을 받아 가지 않으면 버퍼가 돌아오지 않아 결국 취득 쪽 유실로 나타나므로,
+    /// 원인과 결과가 뒤집혀 보이기 쉬운 자리다.
+    /// </para>
+    /// </summary>
+    public int QueuedFrames => _queue?.Count ?? 0;
+
     /// <summary>풀 버퍼 한 장의 크기(바이트). 리더가 알린 크기에 따라 자란다.</summary>
     internal int PoolBufferBytes => _pool.BufferBytes;
 
