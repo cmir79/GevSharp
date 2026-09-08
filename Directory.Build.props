@@ -1,9 +1,11 @@
 <Project>
 
   <PropertyGroup>
-    <!-- 락스텝 버전 — 전 패키지가 이 한 값을 공유한다. 릴리즈마다 여기 한 곳만 올린다.
-         규칙: 내용이 한 바이트라도 바뀌면(메타데이터 포함) 반드시 상향 — NuGet 캐시는 id+version 으로만 식별한다. -->
-    <Version>0.2.1</Version>
+    <!-- 판 번호는 여기 한 곳. 릴리스(태그)마다 한 번 정한다 — 커밋마다 올리지 않는다. main 은 "다음 판 번호" 를
+         달고 커밋을 쌓고, 낼 때 쌓인 내용을 보고 API 추가가 있으면 minor, 문서·수정뿐이면 patch 로 확정한다.
+         올린 번호는 다시 쓰지 않는다 — NuGet 은 지울 수도 덮어쓸 수도 없다. publish.yml 이 태그와 이 값이
+         같은지 검사하고, 태그가 아닌 ref 에서는 올리지 않는다. -->
+    <Version>0.3.0</Version>
 
     <Authors>kintaein</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

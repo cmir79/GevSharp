@@ -27,7 +27,9 @@ GVCP device control, GVSP streaming with packet resend, and GenICam GenApi XML f
 ## Status
 
 Early development. The version stays at `0.x` because the public API may still move as more cameras
-are met — see `docs/` for the design and the milestone plan.
+are met — see `docs/` for the design and the milestone plan. Releases are cut from `v*` tags only;
+`main` carries the *next* version number while changes accumulate, so a version bump is not one change
+but one release.
 
 The library is exercised against an in-process device simulator (`tests/GevSharp.Sim`) and a
 third-party virtual camera in CI, on Linux and Windows, plus a .NET Framework 4.8 run of the same
