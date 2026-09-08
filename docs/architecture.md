@@ -276,7 +276,9 @@ public sealed class GevStreamOpt
     public bool FirewallTraversal { get; set; } = true;       // one byte to the device's SCSP port after opening the channel
     public int FirewallTraversalIntervalMs { get; set; } = 15_000;   // re-send that byte after this much silence (0 = never)
     public int? LocalPort { get; set; }                       // null = ephemeral
-    public int InterPacketDelay { get; set; } = 0;            // SCPD in timestamp ticks; 0 = leave device value
+    public int InterPacketDelay { get; set; } = 0;            // SCPD in timestamp ticks, written whenever the device holds a different value. 0 means "no delay",
+                                                             // NOT "leave the device value": a delay left behind by an earlier session silently caps the frame rate.
+                                                             // Ticks run at a device-specific rate (125 MHz and 66.67 MHz measured) — convert via GevDevice.TimestampTickFrequency
     public ThreadPriority ReceiverPriority { get; set; } = ThreadPriority.AboveNormal;
     public int? PayloadSize { get; set; }                     // null = the pool grows lazily from the first leader; pass the device's PayloadSize yourself when frames carry chunk data
     public int MaxPayloadBytes { get; set; } = 256 * 1024 * 1024;   // ceiling on a leader-declared frame and on the size the pool will learn
@@ -290,7 +292,7 @@ public sealed class GevStream : IAsyncDisposable
     public bool IsStarted { get; }                            // true between a successful StartAsync and StopAsync
     public event Action<GevFrameDiag>? FrameDropped;          // Reason is one of four: Incomplete / NoBuffer / Error / Unsupported (called on receiver thread — keep it cheap)
 
-    public Task StartAsync(CancellationToken ct = default);   // bind + tune socket, write SCDA/SCP, negotiate SCPS, start thread. Does NOT send AcquisitionStart.
+    public Task StartAsync(CancellationToken ct = default);   // bind + tune socket, write SCDA/SCP, negotiate SCPS, apply SCPD, start thread. Does NOT send AcquisitionStart.
     // Acquisition is the caller's step and it needs the transport-layer lock first:
     //   await stream.StartAsync(); await device.SetTlParamsLockedAsync(true);
     //   await nodes.GetCommand("AcquisitionStart").ExecuteAsync();
@@ -383,8 +385,17 @@ bits the device had (do-not-fragment, big-endian; read once at start) and, in `A
 do-not-fragment because that is the condition the size was verified under.
 Start sequence: bind socket → set `ReceiveBufferSize` (log the actual value the OS granted) → write
 SCDA = LocalAddress, SCP = LocalPort (the fire test needs the destination first) → read SCPS flags →
-negotiate SCPS → write SCPS → write SCPD if requested → start thread.
+negotiate SCPS → write SCPS → read SCPD and write `InterPacketDelay` when it differs → start thread.
 Stop sequence: write SCP = 0 (and SCDA = 0) → close socket → join thread.
+
+**Inter-packet delay.** SCPD is read at start and written whenever it differs from `InterPacketDelay`; 0 means
+"no delay", not "leave the device value". Left alone, a delay written by an earlier session survives into the
+next one and caps the frame rate with nothing pointing at the cause — the device just reports that rate as its
+maximum (measured: a leftover 150 us held a 14 fps camera at 7 fps). Equal values are not rewritten, so a device
+that ignores the register never sees a needless write. If the device refuses to *read* SCPD it is left alone;
+if it refuses to *clear* it (request 0) the stream logs a warning and continues, because such a device never
+supported a delay; if it refuses a non-zero request the error propagates, because the request was not honoured.
+Clearing a leftover delay is logged with the value removed.
 
 **Firewall traversal.** After writing SCDA/SCP and *before* the packet-size probe, the stream sends one byte
 from its own socket to the device's stream source port (SCSP, valid once the channel is open). A stateful host
