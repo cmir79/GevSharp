@@ -1,6 +1,7 @@
 # Real-camera evaluation scenarios
 
-GevSharp is validated against two vendors (Basler, Crevis). Passing both is the vendor-free proof.
+GevSharp is validated against two vendors (Basler, Crevis), in monochrome and colour. Passing both is
+the vendor-free proof.
 Each scenario is run with `samples/GevSharp.Cli` and the numbers are recorded here per release.
 
 | # | Scenario | Pass criterion | CLI |
@@ -480,3 +481,18 @@ symptom justifies: the cost is a few control packets and no frame is affected.
 The practical consequence is for alarms. **Do not raise an alarm on resend request counts** — they
 report a condition that resolves itself. Alarm on missing packets and incomplete frames, both of
 which stayed at zero here.
+
+### Crevis MG-A320K-35, a pair (colour, 2062x1544), 2026-09-09 — colour on a production line
+
+This entry is reported from a deployment rather than measured on the bench, so it has no table. An
+assembly-line inspection station runs two of these cameras (2062x1544, 30 ms exposure, 14 fps)
+through the CvInspect adapter, with no vendor SDK installed on the machine; the only change from the
+station's earlier vendor-SDK configuration was the transport selection. Both cameras are found by
+serial number, the colour comes out right with nothing pinned on the host — no Bayer pattern
+override, no mirror or offset written by the host, the camera's declared pixel format taken as is —
+and the station's inspection verdicts on its ten taught parts match those recorded before the change.
+
+What it settles: a second vendor's colour camera works on the declared pattern, as the Basler colour
+camera above did on the bench, so both vendors are now covered in monochrome and in colour. What it
+does not: this is a functional check, not a soak. No packet or frame statistics were collected, the
+endurance figures remain the monochrome pair's, and the firmware version is not yet recorded.

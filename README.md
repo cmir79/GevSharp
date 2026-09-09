@@ -36,11 +36,16 @@ third-party virtual camera in CI, on Linux and Windows, plus a .NET Framework 4.
 tests against the `netstandard2.0` asset. macOS is compiled in CI for all three target frameworks but
 the suite is not run there yet — see `docs/architecture.md` for what that does and does not mean.
 
-It is also run against real hardware. Two cameras from different vendors (Basler acA2500-14gm and
-Crevis MG-A500M-22) sharing one 1 GbE port for eight hours delivered 288,000 frames and 163 million
-packets — 1.46 TB — with no packet missing, no frame short, and the same rate in the first and last
-five-minute interval. That is two vendors, not the whole field, which is the reason this is not 1.0.
-`docs/evaluation.md` records what the hardware settled that no public source did.
+It is also run against real hardware. Two monochrome cameras from different vendors (Basler
+acA2500-14gm and Crevis MG-A500M-22) sharing one 1 GbE port for eight hours delivered 288,000 frames
+and 163 million packets — 1.46 TB — with no packet missing, no frame short, and the same rate in the
+first and last five-minute interval. Colour has been exercised as well: a Basler acA4112-8gc streamed
+every pixel format it offers at 4096×3000 on the bench, its Bayer phase checked against the vendor
+viewer's own render, and an assembly-line inspection station now runs on a pair of Crevis
+MG-A320K-35 colour cameras with no vendor SDK installed on the machine, the colour coming out right
+with nothing pinned. Endurance comes from the monochrome pair and colour has hours, not months — and
+that is two vendors, not the whole field, which is the reason this is not 1.0. `docs/evaluation.md`
+records what the hardware settled that no public source did.
 
 ## Quick look
 
