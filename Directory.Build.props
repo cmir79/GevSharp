@@ -7,7 +7,7 @@
          내지 않는다 — 다음 판에 같이 나간다). 올린 번호는
          다시 쓰지 않는다 — NuGet 은 지울 수도 덮어쓸 수도 없다. publish.yml 이 태그와 이 값이 같은지, 태그 커밋이
          main 에 있는지 검사하고, 태그가 아닌 ref 에서는 올리지 않는다. -->
-    <Version>0.4.0-dev</Version>
+    <Version>0.4.0</Version>
 
     <Authors>kintaein</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
