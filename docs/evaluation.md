@@ -3,6 +3,9 @@
 GevSharp is validated against two vendors (Basler, Crevis), in monochrome and colour. Passing both is
 the vendor-free proof.
 Each scenario is run with `samples/GevSharp.Cli` and the numbers are recorded here per release.
+Every section below is such a bench measurement unless the line under its heading says otherwise; that line
+names the layer so a section quoted on its own still carries it. Cite this file rather than copying its
+numbers — copies drift when the file is corrected.
 
 | # | Scenario | Pass criterion | CLI |
 |---|---|---|---|
@@ -18,6 +21,8 @@ Each scenario is run with `samples/GevSharp.Cli` and the numbers are recorded he
 
 ### Basler acA2500-14gm (mono, 2592x1944), 2026-09-03
 
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
+
 Direct link on a dedicated NIC, MTU 9000, Windows on a Public firewall profile.
 
 | # | Scenario | Result |
@@ -31,6 +36,8 @@ Direct link on a dedicated NIC, MTU 9000, Windows on a Public firewall profile.
 | 7 | Multi-camera | Pending (one camera available) |
 
 ### Continuous streaming, 15 minutes
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
 
 Not the four hours scenario 6 asks for, but long enough to say something the 60 s run cannot. At
 2592x1944 Mono8, jumbo 9000, default 32 MiB socket buffer:
@@ -53,6 +60,8 @@ What this run does **not** establish is scenario 6's memory criterion: the worki
 "no memory growth" is still unmeasured. The 4 h run remains to be done, with the working set recorded.
 
 ### Resend on a real camera — the device answers, but only while the block is still current
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
 
 Scenario 5 cannot be run by waiting for loss: at 2592x1944 Mono8, 14.56 fps, jumbo 9000, the link
 delivered 494,940 packets in 60 s with none missing. Loss (or at least late delivery) had to be forced by
@@ -96,6 +105,8 @@ The recovery logic itself — request, receive, fill the hole, complete the fram
 simulator, which honours resends the way the protocol describes.
 
 ### Basler acA4112-8gc (colour, 4096x3000 BayerRG8), 2026-09-03
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
 
 A second camera, swapped onto the same host and NIC. It matters because everything above was mono 8-bit:
 this one streams a Bayer format at 12,288,000 bytes per frame, 1371 payload packets, and a higher
@@ -193,6 +204,8 @@ in the transport.
 
 ### Idle-gap measurement (firewall mapping), same camera
 
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
+
 A stream held open with acquisition stopped, then started again. Nothing else differs between the two rows.
 
 | Idle gap | Keep-alive | Frames after restarting acquisition |
@@ -213,6 +226,8 @@ category unreadable. A fourth was cosmetic but real: a blocking receive can retu
 which the receiver logged as an error and answered with a sleep.
 
 ### Odd-width GVSP Packed line rule — settled by measurement, and we had it wrong
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
 
 `docs/protocol-notes.md` and `PixelFormatInfo.LineBytes` rounded a GVSP Packed line up to a whole 2-pixel
 group (`ceil(width / 2) * 3`), because no public source settled it. The camera settles it. Reading the
@@ -261,6 +276,8 @@ case end to end (7,260 bytes, not 7,320).
 
 ### A second defect the same session found: `Slope=Varying` converters reject every write
 
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
+
 `PixelFormat` on this camera is an `Enumeration` over an `IntConverter` (`PixelFormat_CtrlValueFao`) whose
 formulas are a lookup table — a chain of ternaries ending in `0xffffffff` for "no such format" — declared
 `Slope=Varying`. `ConverterLimitsAsync` derives Min and Max by pushing the target's own Min and Max through
@@ -290,6 +307,8 @@ Simulator counterparts of scenarios 2–7 run in CI against `GevSharp.Sim` (loop
 against a third-party virtual camera.
 
 ### Crevis MG-A500M-22 (mono, 2464x2056), 2026-09-03 — a second vendor, and two defects it exposed
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
 
 Bringing up a second vendor on the same host found two real defects in this library. Both were
 fatal to that camera and invisible on the first one, which is the point of testing a second vendor.
@@ -360,6 +379,8 @@ lost control; control recovers as soon as acquisition stops.
 
 ### Crevis at full rate, 2026-09-04 — the fastest single camera measured here
 
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
+
 The eight-hour run below deliberately caps both cameras at 5 fps, so it says nothing about the
 ceiling. Alone on the port, with nothing capping it, this camera is the closest any of them gets to
 line rate.
@@ -395,6 +416,8 @@ stop arriving and the packet counters are clean, the acquisition mode is the fir
 
 ### Two cameras at once, 10 minutes, 2026-09-03 — and why inter-packet delay is not optional
 
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
+
 Both cameras on one 1 GbE port, free-running, is not a test of this library — it is a test of the
 wire. Two 5 MP sensors at their full rate ask for about 140 MB/s and the port carries about 119,
 so the first attempt simply measured saturation: 119.4 MB/s received in total, and almost every
@@ -427,6 +450,8 @@ The practical rule for more than one camera on one port: cap the frame rates so 
 then set SCPD so the bursts do too. The first alone is not enough.
 
 ### Eight hours, two vendors, one port, 2026-09-03 to 2026-09-04
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
 
 The point of a long run is not the total; it is whether anything drifts. Both cameras were capped at
 5 fps with SCPD spreading each frame's packets about 150 us apart, sharing one 1 GbE port, and left
@@ -483,6 +508,8 @@ report a condition that resolves itself. Alarm on missing packets and incomplete
 which stayed at zero here.
 
 ### Crevis MG-A320K-35, a pair (colour, 2062x1544), 2026-09-09 — colour on a production line
+
+*Reported from a production line through the CvInspect adapter — not a CLI-harness measurement, and no packet statistics were collected.*
 
 This entry is reported from a deployment rather than measured on the bench, so it has no table. An
 assembly-line inspection station runs two of these cameras (2062x1544, 30 ms exposure, 14 fps)
