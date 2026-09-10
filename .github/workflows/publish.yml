@@ -17,14 +17,17 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+        with:
+          # 태그 커밋이 main 에 있는지 보려면 이력이 있어야 한다.
+          fetch-depth: 0
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: |
             8.0.x
             10.0.x
 
-      # 태그에서만 올린다. main 은 "다음 판 번호" 를 달고 커밋을 쌓는 자리라, 거기서 손으로 돌리면 미완성 내용이
-      # 그 번호로 나가고 나중의 진짜 태그는 --skip-duplicate 에 조용히 밀린다. 재실행도 태그를 ref 로 골라서 한다.
+      # 태그에서만 올린다. 브랜치에서 손으로 돌리면 미완성 내용이 그 번호로 나가고 나중의 진짜 태그는
+      # --skip-duplicate 에 조용히 밀린다. 재실행도 태그를 ref 로 골라서 한다.
       # 태그와 판 번호가 어긋난 채로 올라가는 것도 막는다 — NuGet 은 한 번 올린 번호를 지울 수도, 덮어쓸
       # 수도 없다. 판 번호는 Directory.Build.props 한 곳뿐이다.
       - name: Check the ref is a version tag that matches Directory.Build.props
@@ -36,6 +39,16 @@ jobs:
           echo "tag=$tag  Directory.Build.props=$version"
           if [ "$tag" != "$version" ]; then
             echo "::error::tag v$tag does not match <Version>$version</Version>"
+            exit 1
+          fi
+
+      # 태그는 main 의 커밋에만 단다 — dev 에서 태그를 밀면 릴리스 PR 을 거치지 않은 내용이 그 번호로 나간다.
+      - name: Check the tag commit is on main
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME points at $(git rev-parse --short HEAD), which is not on main — release from main only"
             exit 1
           fi
 
