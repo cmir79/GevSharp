@@ -37,6 +37,8 @@ public class DeviceControlTests
         Assert.True(ReferenceEquals(done, lost.Task), "ControlLost did not fire after the device released CCP on its own");
         var ex = Assert.IsType<GevControlLostException>(await lost.Task);
         Assert.Contains("released", ex.Message);
+        // 주기 600 ms 가 시한 200 ms 보다 길다 — 설정 문제라고 말해야지, 프로세스가 멈췄다고 말하면 안 된다.
+        Assert.Contains("heartbeat period 600 ms is not shorter than the device timeout 200 ms", ex.Message);
         Assert.False(rig.Device.IsOpen);
         await Assert.ThrowsAsync<GevControlLostException>(() => rig.Device.WriteRegAsync(SimFeatureAddr.Width, 128));
         await Assert.ThrowsAsync<GevControlLostException>(() => rig.Device.OpenStreamAsync());

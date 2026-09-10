@@ -205,8 +205,44 @@ public class GevDeviceTests
         var done = await Task.WhenAny(lost.Task, Task.Delay(5000));
         Assert.Same(lost.Task, done);
 
-        Assert.IsType<GevControlLostException>(await lost.Task);
+        // 하트비트는 제때 닿고 있었다 — 장치가 놓을 이유가 없었으니 남이 손댄 것이라고 말해야 한다.
+        var ex = Assert.IsType<GevControlLostException>(await lost.Task);
+        Assert.Contains("another application", ex.Message);
         Assert.False(dev.IsOpen);
+        var later = await Assert.ThrowsAsync<GevControlLostException>(() => dev.ReadRegAsync(0));
+        Assert.Contains("another application", later.Message);
+    }
+
+    [Fact]
+    public async Task ControlLostAfterAStallSaysSo_AndEveryLaterCallRepeatsTheReason()
+    {
+        // 디버거 중단·메모리 스냅샷·절전으로 프로세스가 멈추면 하트비트가 끊기고 장치는 시한 뒤에 CCP 를 놓는다. 라이브 화면은
+        // 마지막 프레임을 붙들고 있어 한참 뒤의 첫 조작이 원인처럼 보이므로, 예외가 "공백이 시한을 넘겼다" 고 말해야 한다.
+        // 여기서는 응답기를 잠시 침묵시켜 공백을 만든다 — 시한 200 ms, 하트비트 왕복 300 ms 라 한두 번 실패한 뒤(세 번은 아니다)
+        // 침묵이 풀리고, 그 다음 하트비트가 비워진 CCP 를 읽는다.
+        using var r = new GvcpTestResponder();
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o =>
+        {
+            o.HeartbeatTimeoutMs = 200; o.HeartbeatPeriodMs = 20; o.GvcpTimeoutMs = 300; o.GvcpRetries = 0;
+        }));
+        Assert.Equal(200, dev.DeviceHeartbeatTimeoutMs);
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        dev.ControlLost += (d, ex) => lost.TrySetResult(ex);
+
+        r.IsSilent = true;
+        await Task.Delay(400);
+        r.WriteU32(GvbsAddr.Ccp, 0);
+        r.IsSilent = false;
+
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.Same(lost.Task, done);
+        var ex = Assert.IsType<GevControlLostException>(await lost.Task);
+        Assert.Contains("stalled", ex.Message);
+        Assert.Contains("against a device timeout of 200 ms", ex.Message);
+
+        var later = await Assert.ThrowsAsync<GevControlLostException>(() => dev.ReadRegAsync(0));
+        Assert.Contains("stalled", later.Message);
+        Assert.Contains("reopen the device", later.Message);
     }
 
     [Fact]

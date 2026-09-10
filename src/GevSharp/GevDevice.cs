@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using GevSharp.Gvcp;
 
@@ -34,6 +35,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     private Task? _heartbeatTask;
     private GevDeviceInfo _info = null!;
     private int _state = StateOpening;
+    /// <summary>제어권을 잃은 사유 — 그 뒤의 모든 조작이 던지는 예외에 실린다. 처음 적은 것만 남는다.</summary>
+    private string? _controlLostReason;
     private volatile bool _isControlling;
     /// <summary>CCP 쓰기를 실제로 내보냈다 — ACK 를 못 봤어도(취소·유실) 장치는 이미 적용했을 수 있으므로 닫을 때 놓아 줘야 한다.</summary>
     private volatile bool _ccpWriteSent;
@@ -223,6 +226,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     private async Task HeartbeatLoopAsync(int periodMs, CancellationToken ct)
     {
         var failures = 0;
+        // 마지막으로 장치에 닿은 하트비트의 시각. 제어권이 사라졌을 때 이 공백과 장치 시한의 관계가 원인을 가른다.
+        var lastReached = Stopwatch.GetTimestamp();
         try
         {
             while (!ct.IsCancellationRequested)
@@ -247,7 +252,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
                     GevLog.Warn(_logSrc, $"heartbeat failed ({failures}/{HeartbeatMaxFailures}): {ex.Message}");
                     if (failures >= HeartbeatMaxFailures)
                     {
-                        OnControlLost(ex);
+                        OnControlLost(ex, $"heartbeat failed {HeartbeatMaxFailures} times in a row; the last one that reached the device was "
+                                          + $"{ElapsedMs(lastReached)} ms ago (device timeout {DeviceHeartbeatTimeoutMs} ms): {ex.Message}");
                         return;
                     }
                     continue;
@@ -256,9 +262,11 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
                 failures = 0;
                 if ((ccp & (GvbsAddr.CcpControl | GvbsAddr.CcpExclusive)) == 0)
                 {
-                    OnControlLost(new GevControlLostException($"control channel privilege was released (CCP reads 0x{ccp:X})"));
+                    var reason = ReleaseReason(ccp, ElapsedMs(lastReached), periodMs);
+                    OnControlLost(new GevControlLostException(reason), reason);
                     return;
                 }
+                lastReached = Stopwatch.GetTimestamp();
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -268,16 +276,42 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         catch (Exception ex)
         {
             GevLog.Error(_logSrc, "heartbeat loop stopped unexpectedly", ex);
-            OnControlLost(ex);
+            OnControlLost(ex, $"heartbeat loop stopped unexpectedly: {ex.Message}");
         }
+    }
+
+    private static long ElapsedMs(long sinceTimestamp)
+        => (Stopwatch.GetTimestamp() - sinceTimestamp) * 1000 / Stopwatch.Frequency;
+
+    /// <summary>
+    /// CCP 에서 제어 비트가 사라진 원인을, 마지막으로 장치에 닿은 하트비트와 장치 시한의 관계로 가른다.
+    /// <para>
+    /// 시한보다 긴 공백이면 장치는 규칙대로 놓은 것이고 멈춰 있던 쪽은 이쪽이다 — 디버거 중단, 메모리 스냅샷, 절전, 또는 그동안의
+    /// 링크 단절. 라이브 화면은 마지막 프레임을 붙들고 있어 아무것도 달라 보이지 않으므로, 한참 뒤의 첫 조작이 원인처럼 보인다.
+    /// 그 오해를 문구가 그 자리에서 풀어야 한다(실제로 그렇게 한 시간 가까이 잃은 일이 있었다).
+    /// 공백이 시한 안이면 장치가 우리를 놓을 이유가 없었다 — 다른 애플리케이션이 놓았거나 가져갔거나, 장치가 재시작한 것이다.
+    /// 주기 자체가 시한보다 길면 설정 문제라 먼저 가른다(열 때 경고도 냈다).
+    /// </para>
+    /// </summary>
+    private string ReleaseReason(uint ccp, long sinceMs, int periodMs)
+    {
+        var timeout = DeviceHeartbeatTimeoutMs;
+        var head = $"control channel privilege was released (CCP reads 0x{ccp:X})";
+        if (timeout > 0 && periodMs >= timeout)
+            return $"{head}: the heartbeat period {periodMs} ms is not shorter than the device timeout {timeout} ms, so the device dropped control between two heartbeats";
+        if (timeout > 0 && sinceMs > timeout)
+            return $"{head}: the last heartbeat reached the device {sinceMs} ms ago against a device timeout of {timeout} ms, so this process or the host was stalled, or the link was down, for that long (debugger break, memory snapshot, machine suspend) and the device dropped control on its own timeout";
+        return $"{head} although the last heartbeat reached the device only {sinceMs} ms ago (device timeout {timeout} ms): another application released or took the channel, or the device restarted";
     }
 
     /// <summary>
     /// 상태를 ControlLost 로 바꾸고 이벤트를 스레드 풀에서 올린다. 하트비트 태스크 안에서 직접 부르면
     /// 핸들러가 <see cref="DisposeAsync"/> 를 기다릴 때 그 태스크 자신을 기다리게 되어 멈춘다 — 그래서 분리한다.
     /// </summary>
-    private void OnControlLost(Exception? cause)
+    private void OnControlLost(Exception? cause, string reason)
     {
+        // 사유를 먼저 적는다 — 상태가 바뀐 직후 다른 스레드가 예외를 만들 때 사유가 비어 있지 않게. 처음 적은 것이 남는다.
+        Interlocked.CompareExchange(ref _controlLostReason, reason, null);
         if (Interlocked.CompareExchange(ref _state, StateControlLost, StateOpen) != StateOpen) return;
         // 제어권을 잃은 것이 확인됐다 — 닫을 때 CCP = 0 을 쓰지 않는다. 이미 우리 것이 아니고,
         // 다른 애플리케이션이 가져갔다면 남의 제어권을 지우려는 쓰기가 된다.
@@ -308,7 +342,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             case StateDisposed:
                 throw new ObjectDisposedException(nameof(GevDevice));
             case StateControlLost:
-                throw new GevControlLostException($"control of {Address} was lost; reopen the device");
+                var reason = Volatile.Read(ref _controlLostReason);
+                throw new GevControlLostException(reason is null
+                    ? $"control of {Address} was lost; reopen the device"
+                    : $"control of {Address} was lost ({reason}); reopen the device");
         }
     }
 
