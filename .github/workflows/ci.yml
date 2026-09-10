@@ -2,14 +2,15 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   # 손으로 다시 돌릴 수 있게 — 결과만 보고 싶을 때 빈 커밋을 만들지 않으려고.
   workflow_dispatch:
 
 # 연달아 밀어 넣으면 마지막 것만 돌린다 — 중간 커밋의 실행은 시작 즉시 취소된다.
 # (macOS 러너가 특히 느려서, 앞선 커밋들이 줄을 서면 정작 보고 싶은 마지막 결과가 한참 뒤에 나온다.)
-# 브랜치별로 묶으므로 main 과 PR 은 서로 취소하지 않는다.
+# ref 별로 묶으므로(브랜치는 브랜치끼리, PR 은 PR 끼리) main·dev·PR 은 서로 취소하지 않는다. dev 푸시와 열린
+# dev→main PR 은 같은 커밋을 두 번 돌리는데, 릴리스 PR 이 열려 있는 짧은 동안뿐이라 감수한다.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -19,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS 는 뺐다 — 아래 'macos-unresolved' 잡에서 따로 돌리고 전체를 막지는 않는다.
+        # macOS 는 뺐다 — 아래 'macos-build' 잡에서 따로 돌리고 전체를 막지는 않는다.
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:

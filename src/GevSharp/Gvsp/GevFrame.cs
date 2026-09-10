@@ -6,6 +6,7 @@ namespace GevSharp;
 internal struct FrameMeta
 {
     public ulong FrameId;
+    public bool IsExtendedId;
     public ulong Timestamp;
     public uint PixelFormatCode;
     public ushort PayloadType;
@@ -42,6 +43,7 @@ public sealed class GevFrame : IDisposable
         _buf = buf;
         _version = version;
         FrameId = meta.FrameId;
+        IsExtendedId = meta.IsExtendedId;
         Timestamp = meta.Timestamp;
         PixelFormatCode = meta.PixelFormatCode;
         PayloadType = meta.PayloadType;
@@ -65,8 +67,17 @@ public sealed class GevFrame : IDisposable
         ImageSize = imageBytes <= 0 || imageBytes > meta.PayloadSize ? meta.PayloadSize : (int)imageBytes;
     }
 
-    /// <summary>GVSP 블록 ID(16비트 또는 64비트).</summary>
+    /// <summary>GVSP 블록 ID(16비트 또는 64비트 — 어느 쪽인지는 <see cref="IsExtendedId"/>).</summary>
     public ulong FrameId { get; }
+
+    /// <summary>
+    /// <see cref="FrameId"/> 가 64비트 확장 블록 ID 인지. false 면 16비트라 65535 다음이 1 이다(0 은 예약) — 번호의
+    /// 연속이나 선후를 따지는 쪽은 그 되돌이를 감안해 비교해야 한다. 수신부 자신은 그렇게 한다:
+    /// <c>((newest - id) &amp; 0xFFFF) &lt; 0x8000</c> 이면 id 가 더 오래된 것이다. true 면 그냥 크기 비교로 충분하다.
+    /// 값은 패킷 헤더의 EI 비트에서 온 프레임별 사실이고, 장치가 확장 ID 로 보내는지는 스트림 채널 설정(SCCFG)이 정한다 —
+    /// 이 라이브러리는 그 설정을 바꾸지 않는다.
+    /// </summary>
+    public bool IsExtendedId { get; }
 
     /// <summary>리더의 타임스탬프(장치 틱).</summary>
     public ulong Timestamp { get; }

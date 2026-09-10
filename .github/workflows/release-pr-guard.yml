@@ -1,0 +1,43 @@
+name: release-pr-guard
+
+# main 으로 가는 PR(릴리스·핫픽스)의 가드. ci.yml 과 파일을 나눈 이유: PR 의 base 를 dev 에서 main 으로 바꿔도
+# 가드가 그 head 에서 다시 돌아야 해서 edited 유형이 필요한데, edited 를 ci.yml 에 넣으면 제목·본문 편집마다
+# 무거운 잡이 필수 검사 이름으로 "건너뜀" 을 남기고(건너뜀 = 성공이라 빨간 PR 이 편집 한 번에 초록이 된다) 돌던
+# CI 가 같은 concurrency 그룹에서 취소된다. 릴리스 노트가 PR 본문에서 나오므로 본문 편집은 릴리스 절차의 일부다 —
+# 그 편집이 CI 를 건드리면 안 된다.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: release-pr-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ① main 의 모든 커밋을 이 브랜치가 담고 있어야 한다 — 핫픽스가 dev 에 병합되지 않은 채 다음 릴리스가 나가면 그
+  #   수정이 되돌아간다. ② 판 번호에 -dev 가 남아 있으면 안 된다 — 릴리스 PR 의 마지막 커밋이 그것을 떼는 자리다.
+  # PR 의 병합 커밋이 아니라 head 커밋을 검사한다(checkout 기본값은 base 를 합친 임시 병합 커밋이라 main 이 늘
+  # 조상으로 보인다). main 룰셋이 이 잡을 필수 검사로 요구한다 — 잡 이름이 곧 검사 이름이라 바꾸면 룰셋도 바꾼다.
+  release-pr-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: main must be an ancestor of the PR head
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::main has commits this branch does not contain — merge main into it first, or a hotfix is lost"
+            exit 1
+          fi
+      - name: The version must not carry the -dev suffix
+        shell: bash
+        run: |
+          version=$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props || true)
+          [ -n "$version" ] || { echo "::error::<Version> not found in Directory.Build.props"; exit 1; }
+          echo "Directory.Build.props=$version"
+          case "${version,,}" in *-dev*) echo "::error::<Version>$version</Version> still carries -dev — the release PR's last commit drops it"; exit 1;; esac

@@ -62,6 +62,22 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task FrameReportsWhetherItsBlockIdIsExtended()
+    {
+        // 16비트 ID 는 65535 다음이 1 이라 번호의 연속을 따지는 쪽이 되돌이를 감안해야 하고, 64비트 확장 ID 는 그럴
+        // 필요가 없다. 어느 쪽인지는 패킷 헤더의 EI 비트가 프레임마다 말해 주므로 프레임에 실어 소비자가 고르게 한다.
+        await using var rig = new StreamRig(StreamRig.DefaultOpt());
+        await rig.StartAsync();
+
+        rig.Sender.SendFrame(1UL, 64, 48, Mono8);
+        using (var plain = await rig.ReceiveAsync()) Assert.False(plain.IsExtendedId);
+
+        rig.Sender.ExtendedIds = true;
+        rig.Sender.SendFrame(2UL, 64, 48, Mono8);
+        using (var extended = await rig.ReceiveAsync()) Assert.True(extended.IsExtendedId);
+    }
+
+    [Fact]
     public async Task StopAsyncDrainsTheQueueSoNoFrameSurvivesTheStop()
     {
         // 정지가 큐를 남긴다면 다음에 여는 쪽이 지난 판의 프레임을 받게 된다. 여기서 못 박아 둔다.
