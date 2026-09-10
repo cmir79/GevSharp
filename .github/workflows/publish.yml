@@ -143,14 +143,23 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
+            # 본문에 한글·대시가 있다 — 콘솔 인코딩이 코드 페이지면 여기서 깨져 되돌릴 수 없다.
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
             $sha = (git rev-parse HEAD).Trim()
-            $body = (gh api "repos/$env:GITHUB_REPOSITORY/commits/$sha/pulls" --jq '.[0].body // empty') -join [Environment]::NewLine
-            if ($LASTEXITCODE -eq 0 -and $body -and $body.Trim().Length -gt 0) {
+            $body = (gh api "repos/$env:GITHUB_REPOSITORY/commits/$sha/pulls" --jq '[.[] | select(.merged_at)] | .[0].body // empty') -join [Environment]::NewLine
+            $rc = $LASTEXITCODE
+            if ($rc -ne 0) {
+              # API 가 실패한 것을 "PR 이 없다" 로 읽고 자동 노트로 릴리스를 만들면, 그 뒤 재실행은 릴리스가 있다며
+              # 노트를 다시 보지 않는다. 여기서 멈추고 다시 돌린다.
+              Write-Host "::error::gh api exit=$rc while looking up the pull request for $sha - re-run the workflow"
+              exit $rc
+            }
+            if ($body -and $body.Trim().Length -gt 0) {
               $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
               Set-Content -Path $notes -Value $body -Encoding utf8
               gh release create $tag --title $tag --notes-file $notes
             } else {
-              Write-Host "no pull request body at $sha - generating notes"
+              Write-Host "no merged pull request with a body at $sha (body length $($body.Length)) - generating notes"
               gh release create $tag --title $tag --generate-notes
             }
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

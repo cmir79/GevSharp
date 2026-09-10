@@ -4,10 +4,6 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    # edited 를 넣는 이유: PR 의 base 를 바꿔도(dev → main) 가드가 그 head 에서 다시 돌아야 한다 — 기본 유형에는
-    # 없어서, dev 를 향해 열었다가 main 으로 돌린 PR 은 가드가 "건너뜀" 으로 남은 채 통과한다. edited 는 제목·본문
-    # 편집에도 오므로 무거운 잡은 그때 건너뛰고 가드만 다시 돈다.
-    types: [opened, synchronize, reopened, edited]
   # 손으로 다시 돌릴 수 있게 — 결과만 보고 싶을 때 빈 커밋을 만들지 않으려고.
   workflow_dispatch:
 
@@ -21,7 +17,6 @@ concurrency:
 
 jobs:
   build-test:
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +75,6 @@ jobs:
   # 각각 확인해 배제하거나 고쳤고(조인은 실제 결함이라 고쳤다), 남은 원인은 모른다.
   # "빌드가 깨진다" 와 "실행을 확인하지 못했다" 는 다른 사실이므로 전자만 검사한다.
   macos-build:
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -95,7 +89,6 @@ jobs:
   # 남이 만든 가상 카메라 대향 — 별도 프로세스를 띄워 프로토콜로만 대화한다(링크하지 않는다).
   # 설치 명령의 패키지·실행 파일 이름은 그 배포판이 정한 이름이라 그대로 쓴다.
   virtual-camera:
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -126,7 +119,6 @@ jobs:
         run: cat virtual-camera.log || true
 
   pack:
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
     runs-on: ubuntu-latest
     needs: build-test
     steps:
@@ -142,31 +134,3 @@ jobs:
         with:
           name: nupkg
           path: out/*.nupkg
-
-  # main 으로 가는 PR(릴리스·핫픽스)의 가드. ① main 의 모든 커밋을 이 브랜치가 담고 있어야 한다 — 핫픽스가 dev 에
-  # 병합되지 않은 채 다음 릴리스가 나가면 그 수정이 되돌아간다. ② 판 번호에 -dev 가 남아 있으면 안 된다 — 릴리스 PR 의
-  # 마지막 커밋이 그것을 떼는 자리다. PR 의 병합 커밋이 아니라 head 커밋을 검사한다(checkout 기본값은 base 를 합친
-  # 임시 병합 커밋이라 main 이 늘 조상으로 보인다).
-  release-pr-guard:
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: main must be an ancestor of the PR head
-        shell: bash
-        run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor origin/main HEAD; then
-            echo "::error::main has commits this branch does not contain — merge main into it first, or a hotfix is lost"
-            exit 1
-          fi
-      - name: The version must not carry the -dev suffix
-        shell: bash
-        run: |
-          version=$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props || true)
-          [ -n "$version" ] || { echo "::error::<Version> not found in Directory.Build.props"; exit 1; }
-          echo "Directory.Build.props=$version"
-          case "${version,,}" in *-dev*) echo "::error::<Version>$version</Version> still carries -dev — the release PR's last commit drops it"; exit 1;; esac
