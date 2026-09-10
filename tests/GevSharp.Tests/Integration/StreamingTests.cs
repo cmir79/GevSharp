@@ -476,6 +476,7 @@ public class StreamingTests
             foreach (var f in frames)
             {
                 Assert.True(f.IsComplete, $"frame {f.FrameId} incomplete in extended-id mode");
+                Assert.True(f.IsExtendedId, $"frame {f.FrameId} should report the extended id");
                 Assert.Equal((FrameBytes + dataBytes - 1) / dataBytes, f.ExpectedPackets);
                 AssertGeometry(f, 128, 64);
                 AssertPattern(rig, f);

@@ -703,6 +703,7 @@ public sealed partial class GevStream
         var hasChunk = leader.HasChunkData;
         slot.ExpectedBytes = hasChunk ? -1 : imageBytes;
         slot.Meta.FrameId = slot.BlockId;
+        slot.Meta.IsExtendedId = extendedIds;
         slot.Meta.Timestamp = leader.Timestamp;
         slot.Meta.PixelFormatCode = leader.PixelFormat;
         slot.Meta.PayloadType = leader.PayloadType;

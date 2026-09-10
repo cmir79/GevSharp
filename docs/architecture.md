@@ -309,6 +309,7 @@ public sealed class GevStream : IAsyncDisposable
 public sealed class GevFrame : IDisposable
 {
     public ulong FrameId { get; }        // block id (16-bit or 64-bit)
+    public bool IsExtendedId { get; }    // true: FrameId is the 64-bit extended id; false: 16-bit, 65535 wraps to 1 (0 is reserved) — compare modulo 2^16, as the receiver does
     public ulong Timestamp { get; }      // device ticks from the leader
     public uint PixelFormatCode { get; } // PFNC value; PixelFormat enum via Pfnc.PixelFormatInfo
     public int Width { get; } public int Height { get; } public int OffsetX { get; } public int OffsetY { get; }
