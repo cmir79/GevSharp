@@ -23,31 +23,32 @@ public partial class MainWindow : Window
         _hooked = Vm;
         if (_hooked is null) return;
         _hooked.PropertyChanged += OnVmPropertyChanged;
-        SyncSelectedRow();
+        SyncSelectedRow(retry: true);
     }
 
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(MainVm.SelectedRow)) SyncSelectedRow();
+        if (e.PropertyName == nameof(MainVm.SelectedRow)) SyncSelectedRow(retry: true);
     }
 
     /// <summary>
-    /// VM 이 고른 행을 목록에 그대로 옮긴다. SelectedItem 의 두 방향 바인딩은 목록→VM 은 되는데 VM→목록이 오지 않았다 —
-    /// 실측으로 목록이 그 항목을 갖고 VM 도 골랐는데 SelectedIndex 가 -1 에 머물렀고, 직접 넣으면 바로 선택됐다. 그래서
-    /// 바인딩은 목록→VM 한 방향만 두고 이 방향은 여기서 직접 한다. 같은 행이면 손대지 않아 되돌이가 없다.
+    /// VM 이 고른 행을 목록에 그대로 옮긴다. SelectedItem 의 두 방향 바인딩은 목록→VM 은 되지만, 목록을 비웠다 다시 채운 뒤
+    /// 같은 값을 다시 올리는 경우에는 VM→목록이 오지 않는다(실측: 목록이 그 항목을 갖고 VM 도 골랐는데 SelectedIndex 가
+    /// -1 에 머물렀고, 직접 넣으면 바로 선택됐다). 그래서 바인딩은 목록→VM 한 방향만 두고 이 방향은 여기서 직접 한다.
+    /// 같은 행이면 손대지 않아 되돌이가 없다.
     /// <para>
-    /// 목록을 방금 새로 채운 같은 호출 안에서는 넣은 값이 붙지 않는다(첫 화면의 자동 선택이 그 경우다). 붙지 않았으면 한 차례
-    /// 뒤에 한 번 더 넣는다 — 그때는 목록이 항목을 다 받아들인 뒤라 붙는다.
+    /// 목록을 방금 새로 채운 같은 호출 안에서는 넣은 값이 붙지 않는다. 붙지 않았으면 한 차례 뒤에 딱 한 번 더 넣는다 —
+    /// 그때는 목록이 항목을 다 받아들인 뒤라 붙는다. 그래도 안 붙으면(그 행이 목록에 없다) 거기서 그만둔다.
     /// </para>
     /// </summary>
-    private void SyncSelectedRow()
+    private void SyncSelectedRow(bool retry)
     {
         if (Vm is not { } vm || this.FindControl<ListBox>("DeviceList") is not { } list) return;
         var row = vm.SelectedRow;
         if (ReferenceEquals(list.SelectedItem, row)) return;
         list.SelectedItem = row;
-        if (!ReferenceEquals(list.SelectedItem, row))
-            Avalonia.Threading.Dispatcher.UIThread.Post(SyncSelectedRow, Avalonia.Threading.DispatcherPriority.Background);
+        if (retry && !ReferenceEquals(list.SelectedItem, row))
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => SyncSelectedRow(retry: false), Avalonia.Threading.DispatcherPriority.Background);
     }
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);

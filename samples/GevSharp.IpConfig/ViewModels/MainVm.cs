@@ -160,6 +160,8 @@ public sealed class MainVm : VmBase
     private bool _isDhcpSelected;
     private readonly Dictionary<string, string> _connectionNames = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _scan;
+    private readonly DispatcherTimer _settle;
+    private Action? _settled;
     private bool _autoScan = true;
     private bool _isScanning;
 
@@ -172,8 +174,8 @@ public sealed class MainVm : VmBase
     public ObservableCollection<DeviceRowVm> Devices { get; } = new();
     public ObservableCollection<HostNic> Nics { get; } = new();
 
-    /// <summary>어댑터별로 묶은 장치 목록. <see cref="Rows"/> 는 이것을 평평하게 편 것이다.</summary>
-    public ObservableCollection<NicGroupVm> Groups { get; } = new();
+    /// <summary>어댑터별로 묶은 장치 목록 — 화면이 읽는 것은 이것을 평평하게 편 <see cref="Rows"/> 뿐이다.</summary>
+    private readonly List<NicGroupVm> _groups = new();
 
     /// <summary>
     /// 화면의 왼쪽이 그리는 목록 하나 — 어댑터 머리 행(<see cref="NicGroupVm"/>) 뒤에 그 어댑터의 카메라 행(<see cref="DeviceRowVm"/>)이
@@ -188,7 +190,7 @@ public sealed class MainVm : VmBase
     /// <summary>
     /// 목록이 고른 행. 카메라면 <see cref="Selected"/>, 어댑터 머리면 <see cref="SelectedGroup"/> 으로 간다 — 둘은 배타라 어느 쪽이든
     /// 하나만 남는다. 목록을 다시 만드는 동안 들어오는 null 은 무시한다: 지우는 중에 오는 값이지 사람이 고른 것이 아니고,
-    /// 다시 채운 뒤에 같은 카메라를 열쇠(MAC)로 되찾아 고른다.
+    /// 다시 채운 뒤에 같은 카메라를 열쇠(MAC)로 되찾아 고른다. 그 밖의 null 은 사람이 푼 것(Ctrl+클릭)이라 그대로 받는다.
     /// </summary>
     public object? SelectedRow
     {
@@ -200,6 +202,7 @@ public sealed class MainVm : VmBase
             {
                 case DeviceRowVm row: Select(row, loadFields: true); break;
                 case NicGroupVm group: SelectedGroup = group; break;
+                case null: Select(null, loadFields: false); SelectedGroup = null; break;
             }
         }
     }
@@ -241,7 +244,8 @@ public sealed class MainVm : VmBase
             // 저장 주소는 사람이 카메라를 고를 때만 읽는다. 검색이 목록을 새로 만들며 같은 카메라를 다시
             // 고르는 자리에서까지 열면, 적용 중에 그 검색이 돌 때 우리 세션 둘이 같은 카메라를 동시에 열게 된다 —
             // 뒤에 닫히는 쪽이 CCP 를 0 으로 쓰면서 앞 세션의 제어권을 걷어 가고, 적용은 아무것도 못 쓴 채 끝난다.
-            if (loadFields) _ = RefreshStoredAsync(value);
+            // 그리고 선택이 잠시 멈춘 뒤에 연다 — 화살표 키로 목록을 훑을 때 행마다 카메라를 열지 않도록.
+            if (loadFields) AfterSettle(() => { if (ReferenceEquals(_selected, value)) _ = RefreshStoredAsync(value); });
         }
     }
 
@@ -261,6 +265,10 @@ public sealed class MainVm : VmBase
         get => _selectedGroup;
         set
         {
+            // 목록을 다시 만들면 같은 어댑터도 새 객체로 온다. 그때는 선택만 옮기고 이름 칸·방화벽 조회는 건드리지
+            // 않는다 — 매초 도는 재검색마다 PowerShell 을 띄우고 치던 이름을 덮을 이유가 없다.
+            var sameAdapter = value is not null && _selectedGroup is not null
+                              && string.Equals(_selectedGroup.Key, value.Key, StringComparison.Ordinal);
             if (!Set(ref _selectedGroup, value)) return;
             // 같은 이유로 카메라를 먼저 비운다(위 Select 참조).
             if (value is not null) _selected = null;
@@ -271,9 +279,22 @@ public sealed class MainVm : VmBase
             Raise(nameof(Selected));
             Raise(nameof(HasSelection));
             Raise(nameof(HasAnySelection));
+            if (sameAdapter) return;
             AdapterName = value.Nic?.Shown ?? "";
-            _ = RefreshFirewallAsync(value.Nic);
+            // 방화벽은 PowerShell 을 띄워 묻는다 — 화살표 키로 머리 행을 지나갈 때마다 띄우지 않도록 선택이 멈춘 뒤에 묻는다.
+            AfterSettle(() => { if (ReferenceEquals(_selectedGroup, value)) _ = RefreshFirewallAsync(value.Nic); });
         }
+    }
+
+    /// <summary>
+    /// 선택이 잠시(300 ms) 멈춘 뒤에 할 일. 화살표 키로 목록을 훑으면 행마다 선택이 바뀌는데, 행마다 카메라를 열거나
+    /// PowerShell 을 띄우면 목록이 굼떠진다. 마지막에 멈춘 행의 일만 한다.
+    /// </summary>
+    private void AfterSettle(Action action)
+    {
+        _settled = action;
+        _settle.Stop();
+        _settle.Start();
     }
 
     public bool HasGroupSelection => _selectedGroup is not null;
@@ -380,6 +401,14 @@ public sealed class MainVm : VmBase
         _scan = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _scan.Tick += (_, _) => _ = AutoScanAsync();
         _scan.Start();
+        _settle = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _settle.Tick += (_, _) =>
+        {
+            _settle.Stop();
+            var action = _settled;
+            _settled = null;
+            action?.Invoke();
+        };
         _ = AutoScanAsync();
     }
 
@@ -1061,20 +1090,20 @@ public sealed class MainVm : VmBase
         var keepGroup = _selectedGroup?.Key;
         var typed = _adapterName;
 
-        Groups.Clear();
+        _groups.Clear();
         var byInterface = Devices.ToLookup(d => d.Info.InterfaceAddress.ToString());
 
         foreach (var nic in Nics)
         {
             var mine = nic.Address is null ? new List<DeviceRowVm>() : byInterface[nic.Address.ToString()].ToList();
-            Groups.Add(new NicGroupVm(nic, nic.Address, mine));
+            _groups.Add(new NicGroupVm(nic, nic.Address, mine));
         }
 
         // 어느 어댑터에도 맞지 않는 주소로 들어온 장치 — 어댑터가 그새 사라졌거나 주소가 바뀐 경우다.
         var known = Nics.Where(n => n.Address is not null).Select(n => n.Address!.ToString()).ToHashSet(StringComparer.Ordinal);
         foreach (var g in byInterface.Where(g => !known.Contains(g.Key)).OrderBy(g => g.Key))
         {
-            Groups.Add(new NicGroupVm(null, g.First().Info.InterfaceAddress, g.ToList()));
+            _groups.Add(new NicGroupVm(null, g.First().Info.InterfaceAddress, g.ToList()));
         }
 
         // 화면이 그리는 목록을 다시 채운다. 지우는 동안 목록이 선택을 비우며 null 을 되밀지만 가드가 그것을 버린다 —
@@ -1083,7 +1112,7 @@ public sealed class MainVm : VmBase
         try
         {
             Rows.Clear();
-            foreach (var group in Groups)
+            foreach (var group in _groups)
             {
                 Rows.Add(group);
                 foreach (var d in group.Devices) Rows.Add(d);
@@ -1094,10 +1123,20 @@ public sealed class MainVm : VmBase
             _rebuildingRows = false;
         }
 
+        // 다시 채운 목록은 아무것도 고르지 않은 채다. 고른 카메라의 객체가 그대로면(재검색이 아니라 어댑터 이름·상태가
+        // 바뀌어 다시 묶은 경우) 그 자리에서 되살린다 — 아니면 오른쪽은 카메라를 보이는데 목록에는 강조가 없는 채로
+        // 남고, 재검색은 장치가 그대로라 아무것도 하지 않아 영영 그대로다. 어댑터는 아래에서 열쇠로 되찾는다.
+        if (_selected is not null) Raise(nameof(SelectedRow));
+
         if (keepGroup is null) return;
 
-        var again = Groups.FirstOrDefault(g => string.Equals(g.Key, keepGroup, StringComparison.Ordinal));
-        if (again is null) return;
+        var again = _groups.FirstOrDefault(g => string.Equals(g.Key, keepGroup, StringComparison.Ordinal));
+        if (again is null)
+        {
+            // 고른 어댑터가 사라졌다 — 오른쪽에 없는 어댑터를 계속 보이지 않는다.
+            SelectedGroup = null;
+            return;
+        }
 
         SelectedGroup = again;
 
