@@ -48,7 +48,7 @@ jobs:
         run: |
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "::error::tag $GITHUB_REF_NAME points at $(git rev-parse --short HEAD), which is not on main — release from main only"
+            echo "::error::tag $GITHUB_REF_NAME points at $(git rev-parse --short HEAD), which is not on origin/main — push main first, then re-run this workflow with the tag selected as ref"
             exit 1
           fi
 
@@ -96,8 +96,9 @@ jobs:
     needs: publish
     permissions:
       # 릴리스에 파일을 붙이려면 쓰기가 필요하다. 앞 잡과 나눠 둔 이유가 이것이다 —
-      # 패키지를 올리는 쪽에는 이 권한을 주지 않는다.
+      # 패키지를 올리는 쪽에는 이 권한을 주지 않는다. PR 읽기는 릴리스 노트를 PR 본문에서 가져오기 위한 것.
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -126,7 +127,8 @@ jobs:
           path: out/tools/*.exe
 
       # 릴리스가 아직 없으면 만들고, 있으면 파일만 갈아 끼운다. 손으로 적어 둔 릴리스 노트를
-      # 덮지 않으려고 만들기와 붙이기를 나눈다.
+      # 덮지 않으려고 만들기와 붙이기를 나눈다. 만들 때의 노트는 태그 커밋(릴리스 PR 의 병합 커밋)에 딸린
+      # PR 본문이다 — 그것이 변경 기록이다. PR 이 없거나 본문이 비어 있으면 자동 생성 노트로 대신한다.
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -141,7 +143,16 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title $tag --generate-notes
+            $sha = (git rev-parse HEAD).Trim()
+            $body = (gh api "repos/$env:GITHUB_REPOSITORY/commits/$sha/pulls" --jq '.[0].body // empty') -join [Environment]::NewLine
+            if ($LASTEXITCODE -eq 0 -and $body -and $body.Trim().Length -gt 0) {
+              $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+              Set-Content -Path $notes -Value $body -Encoding utf8
+              gh release create $tag --title $tag --notes-file $notes
+            } else {
+              Write-Host "no pull request body at $sha - generating notes"
+              gh release create $tag --title $tag --generate-notes
+            }
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           gh release upload $tag (Get-ChildItem out/tools/*.exe).FullName --clobber
