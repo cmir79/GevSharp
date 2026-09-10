@@ -41,7 +41,10 @@ public sealed class DeviceRowVm
         ? $"{Info.Manufacturer} {Info.Model}"
         : $"{Info.UserDefinedName} ({Info.Model})";
 
-    public string Detail => $"{Info.Address}  ·  {Format(Info.Mac)}  ·  SN {Info.SerialNumber}";
+    /// <summary>주소·MAC·시리얼에 장치 버전(펌웨어)까지 — 탐색 응답이 실어 온 것이라 열지 않고도 보인다. 비어 있으면 그 칸은 뺀다.</summary>
+    public string Detail => string.IsNullOrWhiteSpace(Info.DeviceVersion)
+        ? $"{Info.Address}  ·  {Format(Info.Mac)}  ·  SN {Info.SerialNumber}"
+        : $"{Info.Address}  ·  {Format(Info.Mac)}  ·  SN {Info.SerialNumber}  ·  ver {Info.DeviceVersion}";
 
     /// <summary>
     /// 이 장치를 들은 인터페이스와 서브넷이 어긋나는 상태. 제어는 오가는데 스트림만 오지 않는 전형적인 원인이라

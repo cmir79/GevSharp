@@ -2,7 +2,11 @@ using System.Net;
 
 namespace GevSharp.Cli.Commands;
 
-/// <summary>브로드캐스트 탐색(모든 인터페이스) 또는 주소 하나에 대한 유니캐스트 프로브. 결과는 표 하나.</summary>
+/// <summary>
+/// 브로드캐스트 탐색(모든 인터페이스) 또는 주소 하나에 대한 유니캐스트 프로브. 결과는 표 하나.
+/// 표는 DISCOVERY_ACK 가 실어 온 식별 필드를 빠짐없이 보인다 — 장치 버전(펌웨어)도 그 응답에 이미 들어 있으므로,
+/// 그 값 하나를 보려고 세션을 열 필요가 없다. 받아 온 것과 보여 주는 것이 어긋나면 "열어야 알 수 있다" 는 오해를 만든다.
+/// </summary>
 public sealed class DiscoverCmd : ICliCommand
 {
     public string Name => "discover";
@@ -15,7 +19,8 @@ public sealed class DiscoverCmd : ICliCommand
         "  --interface ip      host interface to scan; repeatable (default: every IPv4 interface that is up, loopback excluded)\n" +
         "  --probe ip[:port]   send one unicast DISCOVERY_CMD to that address instead of broadcasting. Reaches devices behind\n" +
         "                      a router and loopback simulators, which never see a broadcast. Exit code 2 when nothing answers.\n" +
-        "  Columns: IP, MAC, manufacturer, model, serial number, user-defined name, interface that heard the reply.";
+        "  Columns: IP, MAC, manufacturer, model, device version, serial number, user-defined name, interface that heard\n" +
+        "  the reply. Everything shown comes from the discovery reply itself; no session is opened.";
 
     public CliOptSpec Spec { get; } = new CliOptSpec().Value("timeout").Value("interface").Value("probe");
 
@@ -45,10 +50,11 @@ public sealed class DiscoverCmd : ICliCommand
             devices = await GevDiscovery.DiscoverAsync(opt, ct);
         }
 
-        var table = new TextTable("IP", "MAC", "Manufacturer", "Model", "Serial", "User name", "Interface");
+        var table = new TextTable("IP", "MAC", "Manufacturer", "Model", "Version", "Serial", "User name", "Interface");
         foreach (var d in devices)
         {
-            table.AddRow(d.Address.ToString(), NetText.Mac(d.Mac), d.Manufacturer, d.Model, d.SerialNumber, d.UserDefinedName, d.InterfaceAddress.ToString());
+            table.AddRow(d.Address.ToString(), NetText.Mac(d.Mac), d.Manufacturer, d.Model, d.DeviceVersion, d.SerialNumber, d.UserDefinedName,
+                d.InterfaceAddress.ToString());
         }
         if (devices.Count == 0)
         {
