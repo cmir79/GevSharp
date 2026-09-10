@@ -207,7 +207,7 @@ public sealed class CamVm : VmBase, IAsyncDisposable
     public void SaveCurrent(string path)
     {
         var bmp = _render.Current ?? throw new InvalidOperationException("There is no frame to save yet.");
-        bmp.Save(path);
+        bmp.Save(path, PngBitmapEncoderOptions.Default);
     }
 
     /// <summary>트리 선택이 바뀌면 그 노드를 읽고 설명을 화면 아래에 건다.</summary>

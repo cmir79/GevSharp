@@ -166,7 +166,7 @@ public class NodeMapBindTests
     }
 
     [Fact]
-    public void MutualLimitReferencesAreLegal_NotACycle()
+    public async Task MutualLimitReferencesAreLegal_NotACycle()
     {
         // 하한의 Max 가 상한을, 상한의 Min 이 하한을 가리키는 짝 — GenICam 에서 흔한 상호 클램프다.
         // 한계를 따라가면 상대의 **값**을 읽지 상대의 한계를 읽지 않으므로 재귀가 닫히지 않는다.
@@ -177,11 +177,11 @@ public class NodeMapBindTests
 
         var lower = map.GetFloat("Lower");
         var upper = map.GetFloat("Upper");
-        Assert.Equal(1.0, lower.GetAsync().AsTask().Result);
-        Assert.Equal(9.0, upper.GetAsync().AsTask().Result);
+        Assert.Equal(1.0, await lower.GetAsync());
+        Assert.Equal(9.0, await upper.GetAsync());
         // 한계는 상대의 값이다 — 그리고 그 조회가 끝난다.
-        Assert.Equal(9.0, lower.GetMaxAsync().AsTask().Result);
-        Assert.Equal(1.0, upper.GetMinAsync().AsTask().Result);
+        Assert.Equal(9.0, await lower.GetMaxAsync());
+        Assert.Equal(1.0, await upper.GetMinAsync());
     }
 
     [Theory]

@@ -270,7 +270,7 @@ public sealed partial class GevStream : IAsyncDisposable
     /// </para>
     /// <para>
     /// 트리거마다 그 트리거의 프레임이어야 하는 자리에서는 이것이 조용한 오판이 된다. 지난 장으로 판정하고도
-    /// 예외도 경고도 나지 않는다. 그런 자리에서는 기다리기 전에 <see cref="DiscardQueuedFrames"/> 로 비운다.
+    /// 예외도 경고도 나지 않는다. 그런 자리에서는 기다리기 전에 <see cref="DiscardQueuedFrames()"/> 로 비운다.
     /// </para>
     /// </summary>
     public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default)

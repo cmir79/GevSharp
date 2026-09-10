@@ -73,10 +73,10 @@ public class GevStreamTests
         for (var i = 0; i < 3; i++) rig.Sender.SendFrame(1UL + (ulong)i, 64, 48, Mono8);
         await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 3);
 
-        await rig.Stream.StopAsync();
+        await rig.Stream.StopAsync(Ct);
 
         Assert.Equal(0, rig.Stream.QueuedFrames);
-        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync());
+        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync(Ct));
     }
 
     [Fact]
