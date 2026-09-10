@@ -61,44 +61,37 @@
                           ToolTip.Tip="Keep looking once a second, so an address change shows up on its own" />
           </Grid>
 
-          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <ItemsControl ItemsSource="{Binding Groups}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:NicGroupVm">
-                  <StackPanel Spacing="1" Margin="0,0,6,10">
-                    <!-- 어댑터 머리를 누르면 오른쪽이 그 어댑터 이야기로 바뀐다. -->
-                    <Border Background="Transparent" Cursor="Hand" Padding="0,2" PointerPressed="OnAdapterPressed">
-                      <StackPanel Spacing="1">
-                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12"
-                                   TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
-                        <TextBlock Classes="caption" Text="{Binding Header}" TextTrimming="CharacterEllipsis"
-                                   ToolTip.Tip="{Binding Header}" />
-                        <TextBlock Classes="caption" Text="{Binding State}" TextTrimming="CharacterEllipsis"
-                                   ToolTip.Tip="{Binding State}" />
-                      </StackPanel>
-                    </Border>
-                    <TextBlock Text="{Binding Note}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
-                               IsVisible="{Binding Note, Converter={x:Static ObjectConverters.IsNotNull}}" />
-                    <ListBox Classes="devices" ItemsSource="{Binding Devices}" Margin="0,3,0,0"
-                             SelectedItem="{Binding $parent[ItemsControl].((vm:MainVm)DataContext).Selected}">
-                      <ListBox.ItemTemplate>
-                        <DataTemplate x:DataType="vm:DeviceRowVm">
-                          <StackPanel Spacing="0">
-                            <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"
-                                       ToolTip.Tip="{Binding Title}" />
-                            <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis"
-                                       ToolTip.Tip="{Binding Detail}" />
-                            <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
-                                       IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
-                          </StackPanel>
-                        </DataTemplate>
-                      </ListBox.ItemTemplate>
-                    </ListBox>
-                  </StackPanel>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </ScrollViewer>
+          <!-- 목록은 하나다. 어댑터 머리 행 뒤에 그 어댑터의 카메라 행이 이어지고, 어느 행이든 누르면 오른쪽이 그 이야기로
+               바뀐다. 어댑터마다 목록을 따로 두고 같은 선택에 묶었을 때는 한 목록에서 고른 것이 다른 목록에 씹히고 옛 강조가
+               남았다 — 목록이 하나라야 선택도 하나다. -->
+          <ListBox x:Name="DeviceList" Classes="devices" ItemsSource="{Binding Rows}"
+                   SelectedItem="{Binding SelectedRow, Mode=OneWayToSource}"
+                   SelectionMode="Single">
+            <ListBox.DataTemplates>
+              <DataTemplate DataType="{x:Type vm:NicGroupVm}" x:DataType="vm:NicGroupVm">
+                <StackPanel Spacing="1" Margin="0,6,0,0">
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                  <TextBlock Classes="caption" Text="{Binding Header}" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding Header}" />
+                  <TextBlock Classes="caption" Text="{Binding State}" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding State}" />
+                  <TextBlock Text="{Binding Note}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
+                             IsVisible="{Binding Note, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                </StackPanel>
+              </DataTemplate>
+              <DataTemplate DataType="{x:Type vm:DeviceRowVm}" x:DataType="vm:DeviceRowVm">
+                <StackPanel Spacing="0" Margin="12,0,0,0">
+                  <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding Title}" />
+                  <TextBlock Classes="caption" Text="{Binding Detail}" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding Detail}" />
+                  <TextBlock Text="{Binding Warning}" Foreground="#E5C07B" FontSize="10" TextWrapping="Wrap"
+                             IsVisible="{Binding Warning, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.DataTemplates>
+          </ListBox>
         </DockPanel>
       </Border>
 

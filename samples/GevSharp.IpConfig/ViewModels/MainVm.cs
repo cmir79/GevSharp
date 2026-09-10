@@ -172,8 +172,37 @@ public sealed class MainVm : VmBase
     public ObservableCollection<DeviceRowVm> Devices { get; } = new();
     public ObservableCollection<HostNic> Nics { get; } = new();
 
-    /// <summary>어댑터별로 묶은 장치 목록. 화면의 왼쪽이 이것을 그린다.</summary>
+    /// <summary>어댑터별로 묶은 장치 목록. <see cref="Rows"/> 는 이것을 평평하게 편 것이다.</summary>
     public ObservableCollection<NicGroupVm> Groups { get; } = new();
+
+    /// <summary>
+    /// 화면의 왼쪽이 그리는 목록 하나 — 어댑터 머리 행(<see cref="NicGroupVm"/>) 뒤에 그 어댑터의 카메라 행(<see cref="DeviceRowVm"/>)이
+    /// 이어진다. 어댑터마다 목록을 따로 두고 전부 같은 선택에 묶으면, 한 목록에서 고른 순간 다른 목록들이 "내 것이 아닌 값" 을
+    /// 받아 선택을 비우며 null 을 되밀어 방금 고른 것이 사라지고, 비우지 못한 목록에는 옛 강조가 남아 둘이 골라진 것처럼 보인다.
+    /// 목록이 하나라야 선택도 하나다.
+    /// </summary>
+    public ObservableCollection<object> Rows { get; } = new();
+
+    private bool _rebuildingRows;
+
+    /// <summary>
+    /// 목록이 고른 행. 카메라면 <see cref="Selected"/>, 어댑터 머리면 <see cref="SelectedGroup"/> 으로 간다 — 둘은 배타라 어느 쪽이든
+    /// 하나만 남는다. 목록을 다시 만드는 동안 들어오는 null 은 무시한다: 지우는 중에 오는 값이지 사람이 고른 것이 아니고,
+    /// 다시 채운 뒤에 같은 카메라를 열쇠(MAC)로 되찾아 고른다.
+    /// </summary>
+    public object? SelectedRow
+    {
+        get => (object?)_selected ?? _selectedGroup;
+        set
+        {
+            if (_rebuildingRows) return;
+            switch (value)
+            {
+                case DeviceRowVm row: Select(row, loadFields: true); break;
+                case NicGroupVm group: SelectedGroup = group; break;
+            }
+        }
+    }
 
     public DeviceRowVm? Selected
     {
@@ -190,6 +219,10 @@ public sealed class MainVm : VmBase
     {
         {
             if (!Set(ref _selected, value, nameof(Selected))) return;
+            // 둘은 배타다. SelectedRow 를 올리기 전에 상대를 비워야 한다 — 올리는 순간 목록이 SelectedRow 를 읽어 가는데,
+            // 그때 옛 상대가 남아 있으면 목록이 그것으로 되돌아가고 사람이 누른 것은 사라진다(실제로 그랬다).
+            if (value is not null) _selectedGroup = null;
+            Raise(nameof(SelectedRow));
             Raise(nameof(HasSelection));
             Raise(nameof(HasAnySelection));
             Raise(nameof(SelectedSummary));
@@ -198,7 +231,6 @@ public sealed class MainVm : VmBase
             Raise(nameof(MatchingNic));
             Raise(nameof(CanSuggest));
             if (value is null) { Firewall = null; return; }
-            _selectedGroup = null;
             Raise(nameof(SelectedGroup));
             Raise(nameof(HasGroupSelection));
             Raise(nameof(HasAnySelection));
@@ -230,10 +262,12 @@ public sealed class MainVm : VmBase
         set
         {
             if (!Set(ref _selectedGroup, value)) return;
+            // 같은 이유로 카메라를 먼저 비운다(위 Select 참조).
+            if (value is not null) _selected = null;
+            Raise(nameof(SelectedRow));
             Raise(nameof(HasGroupSelection));
             Raise(nameof(HasAnySelection));
             if (value is null) return;
-            _selected = null;
             Raise(nameof(Selected));
             Raise(nameof(HasSelection));
             Raise(nameof(HasAnySelection));
@@ -987,9 +1021,10 @@ public sealed class MainVm : VmBase
 
         // 고르고 있던 카메라가 그대로 있으면 화면은 손대지 않고 객체만 갈아 끼운다. 여기서 장치 값을 다시
         // 읽어 넣으면, 방식을 DHCP 에서 고정으로 막 바꿔 놓은 사람의 선택이 다음 검색 한 번에 지워진다.
+        // 아무것도 안 골랐으면 그대로 비워 둔다 — 첫 화면에서 첫 카메라를 대신 골라 주지 않는다. 고른 것이 잠시
+        // 사라진 경우도 손대지 않는다: 다음 검색에 돌아오면 같은 MAC 으로 되찾는다.
         var again = keep is null ? null : Devices.FirstOrDefault(d => d.Info.Mac.Equals(keep));
         if (again is not null) Select(again, loadFields: false);
-        else Selected = Devices.FirstOrDefault();
     }
 
     /// <summary>지금 그려 둔 것과 같은지. 장치를 가리는 것은 MAC 이고, 화면에 보이는 것은 주소와 이름이다.</summary>
@@ -1040,6 +1075,23 @@ public sealed class MainVm : VmBase
         foreach (var g in byInterface.Where(g => !known.Contains(g.Key)).OrderBy(g => g.Key))
         {
             Groups.Add(new NicGroupVm(null, g.First().Info.InterfaceAddress, g.ToList()));
+        }
+
+        // 화면이 그리는 목록을 다시 채운다. 지우는 동안 목록이 선택을 비우며 null 을 되밀지만 가드가 그것을 버린다 —
+        // 무엇을 다시 고를지는 아래(어댑터)와 Apply(카메라)가 열쇠로 정한다.
+        _rebuildingRows = true;
+        try
+        {
+            Rows.Clear();
+            foreach (var group in Groups)
+            {
+                Rows.Add(group);
+                foreach (var d in group.Devices) Rows.Add(d);
+            }
+        }
+        finally
+        {
+            _rebuildingRows = false;
         }
 
         if (keepGroup is null) return;
