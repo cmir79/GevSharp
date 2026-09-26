@@ -19,7 +19,7 @@ namespace GevSharp;
 public sealed partial class GevStream
 {
     private const int MaxInFlightFrames = 4;
-    private const int IdleReceiveTimeoutMs = 200;
+    private const int IdleWaitMs = 200;
     private const int ScratchSlackBytes = 64;
     private const int RecentClosedCount = 8;
     /// <summary>한 프레임의 패킷 id 상한 — 비트·마감 배열 크기를 묶는다(576 바이트 패킷으로 140 MB 프레임까지).</summary>
@@ -42,7 +42,7 @@ public sealed partial class GevStream
     private long _punchIntervalTicks;
     private long _lastInboundTicks;
     private long _lastPunchTicks;
-    private int _activeReceiveTimeoutMs;
+    private int _activeWaitMs;
     private bool _isResendEnabled;
     private double _requestRatio;
     private bool _isDeliverIncomplete;
@@ -61,7 +61,6 @@ public sealed partial class GevStream
     private readonly ulong[] _recentClosedTimestamp = new ulong[RecentClosedCount];
     private int _recentClosedNext;
     private int _recentClosedFilled;
-    private int _currentReceiveTimeoutMs = -1;
     private int _consecutiveReceiveErrors;
     private SocketError _receiveExitError;
     private uint _loggedUnsupportedPayloadTypes;
@@ -253,7 +252,7 @@ public sealed partial class GevStream
         _packetTimeoutTicks = MsToTicks(_opt.PacketTimeoutMs);
         _retentionTicks = MsToTicks(_opt.FrameRetentionMs);
         // 조립 중인 프레임이 있으면 가장 짧은 마감(유예) 간격으로 깨어나 구멍을 본다. 패킷이 흐르는 동안은 타임아웃이 걸리지 않는다.
-        _activeReceiveTimeoutMs = Math.Max(1, Math.Min(_opt.InitialPacketTimeoutMs, _opt.PacketTimeoutMs));
+        _activeWaitMs = Math.Max(1, Math.Min(_opt.InitialPacketTimeoutMs, _opt.PacketTimeoutMs));
         _maxPayloadBytes = Math.Min(_opt.MaxPayloadBytes, int.MaxValue - ScratchSlackBytes);
         _hasLoggedPayloadCeiling = false;
         _hasLoggedShortLeader = false;
@@ -277,7 +276,6 @@ public sealed partial class GevStream
         _activeCount = 0;
         _recentClosedNext = 0;
         _recentClosedFilled = 0;
-        _currentReceiveTimeoutMs = -1;
     }
 
     private static long MsToTicks(int ms) => (long)ms * Stopwatch.Frequency / 1000;
@@ -290,23 +288,45 @@ public sealed partial class GevStream
 
         try
         {
+            // 기다림은 소켓 수신 시한(SO_RCVTIMEO)이 아니라 Poll 로 한다. 시한을 건 블로킹 수신은 윈도우에서 만료되는 순간 막 도착한
+            // 데이터그램을 잃을 수 있다 — 만료 뒤 소켓 상태는 정해지지 않는다고 플랫폼이 밝히고 있고, 루프백 부하 시험에서 잃은 수가
+            // IOPending 반환 수와 같았다. 그래서 받을 것이 있을 때만 논블로킹으로 받고(흐르는 동안은 호출 하나로 끝난다), 비었을 때만
+            // Poll 로 기다린다. Poll 은 데이터를 건드리지 않고 기다리기만 하므로 경계에서 잃을 것이 없다.
+            try { socket.Blocking = false; }
+            catch (ObjectDisposedException) { return; }
+
             while (!_isStopRequested)
             {
                 int length;
+                SocketError error;
                 try
                 {
-                    // 타임아웃 조정도 try 안에서 — 정지 중 닫힌 소켓은 여기서도 ObjectDisposedException 을 내며, 그것은 오류가 아니라 정상 종료다.
-                    UpdateReceiveTimeout(socket);
-                    length = socket.Receive(_scratch, 0, _scratch.Length, SocketFlags.None);
+                    length = socket.Receive(_scratch, 0, _scratch.Length, SocketFlags.None, out error);
+                    if (error == SocketError.WouldBlock)
+                    {
+                        var waitMicros = (_activeCount > 0 ? _activeWaitMs : IdleWaitMs) * 1000;
+                        if (!socket.Poll(waitMicros, SelectMode.SelectRead))
+                        {
+                            OnWaitElapsed();
+                        }
+                        continue;
+                    }
                 }
                 catch (SocketException ex)
                 {
-                    if (_isStopRequested || !HandleReceiveError(ex)) break;
+                    // Poll 의 오류(닫히는 중인 소켓 등)는 예외로 온다 — 수신 오류와 같은 분류로 다룬다.
+                    if (_isStopRequested || !HandleReceiveError(ex.SocketErrorCode, ex)) break;
                     continue;
                 }
                 catch (ObjectDisposedException)
                 {
                     break;
+                }
+
+                if (error != SocketError.Success)
+                {
+                    if (_isStopRequested || !HandleReceiveError(error, null)) break;
+                    continue;
                 }
 
                 _consecutiveReceiveErrors = 0;
@@ -338,24 +358,27 @@ public sealed partial class GevStream
     /// </summary>
     private void MarkReceiverEnded() => Interlocked.CompareExchange(ref _state, StateFaulted, StateStarted);
 
-    /// <summary>수신 오류 분류. 계속 돌아도 되면 true, 루프를 끝내야 하면 false.</summary>
-    private bool HandleReceiveError(SocketException ex)
+    /// <summary>기다림이 아무것도 받지 못하고 끝났다 — 방화벽 매핑을 살피고 조립 중인 프레임의 구멍·마감을 본다.</summary>
+    private void OnWaitElapsed()
     {
-        switch (ex.SocketErrorCode)
+        var now = Stopwatch.GetTimestamp();
+        MaybePunchFirewall(now);
+        OnTick(now);
+    }
+
+    /// <summary>수신 오류 분류. 계속 돌아도 되면 true, 루프를 끝내야 하면 false. ex 는 예외로 온 경우에만 있다(로그용).</summary>
+    private bool HandleReceiveError(SocketError code, SocketException? ex)
+    {
+        switch (code)
         {
             case SocketError.TimedOut:
             case SocketError.WouldBlock:
-            // IOPending 은 "겹친 수신이 아직 끝나지 않았다" 는 뜻이지 오류가 아니다 — 이번 호출에 데이터가 실려 오지 않았을 뿐이고
-            // 잃은 것도 없다. 윈도우에서 수신 타임아웃을 오가며 바꾸는 블로킹 소켓이 이따금 이 값을 돌려준다(실카메라 풀레이트
-            // 60 초에 7 회 관측, 그 구간에도 누락 패킷 0). 오류로 다루면 경고가 쌓이고 1 ms 를 자는 사이 침묵이 길어져
-            // 보내지도 않은 꼬리를 재요청하게 된다 — 타임아웃과 똑같이 "한 번 더 받아 보자" 로 넘긴다.
+            // IOPending 은 "겹친 수신이 아직 끝나지 않았다" 는 뜻이다 — 수신 시한을 건 블로킹 소켓이 윈도우에서 이따금 돌려주던 값이고,
+            // 지금의 논블로킹 수신 + Poll 대기에서는 나오지 않아야 한다. 그래도 나오면 오류로 쌓지 않고 기다림이 끝난 것으로 다룬다
+            // (1 ms 를 자면 침묵이 길어져 보내지도 않은 꼬리를 재요청하게 된다).
             case SocketError.IOPending:
-            {
-                var now = Stopwatch.GetTimestamp();
-                MaybePunchFirewall(now);
-                OnTick(now);
+                OnWaitElapsed();
                 return true;
-            }
             case SocketError.MessageSize:
                 _stats.IncPacketsIgnored();
                 if (!_hasLoggedOversize)
@@ -371,19 +394,19 @@ public sealed partial class GevStream
             case SocketError.OperationAborted:
             case SocketError.NotSocket:
             case SocketError.Shutdown:
-                _receiveExitError = ex.SocketErrorCode;
+                _receiveExitError = code;
                 return false;
             default:
                 // 분류되지 않은 오류 — 처음 한 번만 남기고 잠깐 쉬었다 다시 시도하되, 계속되면 수신을 포기한다(무한 재시도·로그 홍수 방지).
                 _consecutiveReceiveErrors++;
                 if (_consecutiveReceiveErrors == 1)
                 {
-                    GevLog.Warn(_logSrc, $"Stream socket receive failed: {ex.SocketErrorCode}; retrying.", ex);
+                    GevLog.Warn(_logSrc, $"Stream socket receive failed: {code}; retrying.", ex);
                 }
                 else if (_consecutiveReceiveErrors >= MaxConsecutiveReceiveErrors)
                 {
-                    GevLog.Error(_logSrc, $"Stream socket receive kept failing with {ex.SocketErrorCode} for {_consecutiveReceiveErrors} consecutive attempts; receiver stopped.", ex);
-                    _receiveExitError = ex.SocketErrorCode;
+                    GevLog.Error(_logSrc, $"Stream socket receive kept failing with {code} for {_consecutiveReceiveErrors} consecutive attempts; receiver stopped.", ex);
+                    _receiveExitError = code;
                     return false;
                 }
                 Thread.Sleep(1);
@@ -391,18 +414,10 @@ public sealed partial class GevStream
         }
     }
 
-    private void UpdateReceiveTimeout(Socket socket)
-    {
-        var desired = _activeCount > 0 ? _activeReceiveTimeoutMs : IdleReceiveTimeoutMs;
-        if (desired == _currentReceiveTimeoutMs) return;
-        socket.ReceiveTimeout = desired;
-        _currentReceiveTimeoutMs = desired;
-    }
-
     /// <summary>
     /// 인바운드가 오래 끊겼으면 방화벽 매핑을 살리는 한 바이트를 다시 보낸다. 상태 기반 방화벽의 매핑은 유휴로 두면 만료되고,
     /// 그러면 다시 흐르기 시작한 GVSP 가 통째로 버려진다 — 트리거 간격이 벌어지거나 획득을 멈춘 채 스트림을 열어 둔 경우다.
-    /// 패킷이 흐르는 동안에는 여기까지 오지 않는다(수신이 타임아웃될 때만 불린다).
+    /// 패킷이 흐르는 동안에는 여기까지 오지 않는다(수신 대기가 아무것도 받지 못하고 끝날 때만 불린다).
     /// </summary>
     private void MaybePunchFirewall(long now)
     {

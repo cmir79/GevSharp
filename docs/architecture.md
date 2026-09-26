@@ -385,9 +385,13 @@ with the ordinary success status instead — one measured camera does (`docs/eva
 ```
 ```
 
-Receiver design: one dedicated background thread per stream. Blocking `Receive` (not `ReceiveFrom`: no
-per-packet `EndPoint` allocation; the deliberate consequence is that the datagram source is not checked
-against the device address — any host that can reach the bound UDP port feeds the reassembler) into a
+Receiver design: one dedicated background thread per stream. Non-blocking `Receive` while datagrams are
+queued, and `Poll` to wait (2 ms-class interval while a frame is being assembled, 200 ms idle) only when the
+socket is empty — never a socket receive timeout, because a timed-out blocking receive on Windows can lose
+the datagram arriving at that moment (measured: `docs/evaluation.md`, "Receive wait on Windows"). `Receive`,
+not `ReceiveFrom`: no per-packet `EndPoint` allocation; the deliberate consequence is that the datagram
+source is not checked against the device address — any host that can reach the bound UDP port feeds the
+reassembler. Datagrams go into a
 scratch `byte[]` (size = max(PacketSize, 9000) + slack), parse the 8/20-byte header, and copy the payload
 straight into the frame buffer at `(packetId - 1) * dataBytesPerPacket`. Track received packets per frame
 in a bit array. A hole is an id below the highest id received so far; the not-yet-transmitted tail becomes
