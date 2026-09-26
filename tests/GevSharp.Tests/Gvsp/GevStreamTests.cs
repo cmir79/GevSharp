@@ -1450,6 +1450,81 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task PacketStrideThatShrinksAfterBytesWereLaidDropsTheFrameAsError()
+    {
+        // 리더와 첫 페이로드(id 1)가 함께 유실되면 패킷당 바이트를 배울 근거가 없어 협상값(SCPS)에서 구한 간격으로 자리를 정한다.
+        // 장치가 그보다 짧은 패킷을 보내면 먼저 온 id 2.. 는 넓은 간격에 실리고, 리센드로 돌아온 id 1 이 진짜 간격을 알려 줄 때는
+        // 이미 늦었다. 그 뒤로 받은 패킷 수는 다 차고 받은 끝(가장 먼 끝)도 리더 크기를 넘으므로, 그대로 두면 어긋난 바이트와
+        // 그 사이에 남은 이전 프레임 바이트가 완성으로 나간다. 이미 실은 바이트는 옮길 수 없으니 프레임을 오류로 버려야 한다.
+        // 버퍼를 넉넉히 잡아 둔다 — 넓은 간격에서 뒤쪽 id 가 버퍼 밖으로 밀려나면 예산 초과로 버려져 이 경로에 오지 않는다.
+        var (rig, _) = await StartWithDirtyBufferAsync(deliverIncomplete: false, opt => opt.PayloadSize = 16384);
+        await using (rig)
+        {
+            rig.Sender.PacketSize = 1036;
+            var sent = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x5A);
+            Assert.True(sent.DataBytesPerPacket < GvspConst.DataBytesPerPacket(rig.Stream.PacketSize, extendedIds: false));
+            Assert.Equal(7, sent.PacketCount);
+            rig.Sender.Drop.Add((2, 0));
+            rig.Sender.Drop.Add((2, 1));
+            rig.Sender.SendFrame(sent);
+
+            await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames > 0 || rig.DroppedCount > 0);
+            if (rig.Stream.TryReceive(out var delivered) && delivered is not null)
+            {
+                using (delivered)
+                {
+                    Assert.False(delivered.IsComplete && !delivered.Data.Span.SequenceEqual(sent.Data),
+                        $"block {delivered.FrameId} was delivered complete with its bytes laid at the wrong packet stride");
+                }
+            }
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(2UL, diag.FrameId);
+            Assert.Equal(GevFrameDropReason.Error, diag.Reason);
+            Assert.Equal(1, rig.Stream.Stats.FramesDroppedError);
+            Assert.Equal(1, rig.Stream.Stats.FramesCompleted);   // 더럽히려고 보낸 첫 프레임뿐
+
+            // 리더가 함께 오는 프레임은 실기 전에 id 1 로 간격을 배운다 — 같은 짧은 패킷이어도 그대로 완성되고, 버퍼도 풀로 돌아와 있다.
+            var next = rig.Sender.SendFrame(3, 64, 100, Mono8, seed: 0x33);
+            using var frame = await rig.ReceiveAsync();
+            Assert.Equal(3UL, frame.FrameId);
+            Assert.True(frame.IsComplete);
+            Assert.True(frame.Data.Span.SequenceEqual(next.Data));
+        }
+    }
+
+    [Fact]
+    public async Task PacketStrideThatGrowsAfterBytesWereLaidDropsTheChunkFrameAsError()
+    {
+        // 반대 방향: 장치가 협상값보다 긴 패킷을 보내는데 첫 페이로드(id 1)가 유실되고 짧은 마지막 패킷이 먼저 왔다. 마지막 패킷은
+        // 협상값 간격에 실리고, 리센드로 돌아온 id 1 이 더 긴 간격을 알려 줄 때는 이미 늦었다. 청크가 붙은 프레임은 리더가 크기를
+        // 알려 주지 못해 완성을 패킷 수로만 가리므로, 그대로 두면 마지막 패킷(청크 꼬리)을 잃은 프레임이 완성으로 나간다.
+        var (rig, _) = await StartWithDirtyBufferAsync(deliverIncomplete: false);
+        await using (rig)
+        {
+            rig.Sender.PacketSize = 3000;
+            var sent = rig.Sender.BuildChunkFrame(2, 64, 50, Mono8, chunkBytes: 400, seed: 0x5A);
+            Assert.True(sent.DataBytesPerPacket > GvspConst.DataBytesPerPacket(rig.Stream.PacketSize, extendedIds: false));
+            Assert.Equal(2, sent.PacketCount);
+            rig.Sender.Drop.Add((2, 1));
+            rig.Sender.SendFrame(sent);
+
+            await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames > 0 || rig.DroppedCount > 0);
+            if (rig.Stream.TryReceive(out var delivered) && delivered is not null)
+            {
+                using (delivered)
+                {
+                    Assert.False(delivered.IsComplete && !delivered.Data.Span.SequenceEqual(sent.Data),
+                        $"block {delivered.FrameId} was delivered complete with {delivered.PayloadSize} of {sent.Data.Length} bytes, its last packet laid at the wrong packet stride");
+                }
+            }
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(2UL, diag.FrameId);
+            Assert.Equal(GevFrameDropReason.Error, diag.Reason);
+            Assert.Equal(1, rig.Stream.Stats.FramesDroppedError);
+        }
+    }
+
+    [Fact]
     public async Task LeaderRecoveredAfterAShorterTrailerStillShrinksTheFrame()
     {
         // 가변 높이 프레임의 리더가 유실돼 리센드로 트레일러 뒤에 왔다. 트레일러가 알린 실제 줄 수를 리더를 적용할 때도 써야

@@ -50,6 +50,7 @@ public sealed partial class GevStream
     private bool _hasLoggedChunkOverflow;
     private bool _hasLoggedShortLeader;
     private bool _hasLoggedShortBlock;
+    private bool _hasLoggedStrideChange;
 
     private readonly FrameSlot?[] _active = new FrameSlot?[MaxInFlightFrames];
     private readonly FrameSlot[] _freeSlots = new FrameSlot[MaxInFlightFrames];
@@ -257,6 +258,7 @@ public sealed partial class GevStream
         _hasLoggedPayloadCeiling = false;
         _hasLoggedShortLeader = false;
         _hasLoggedShortBlock = false;
+        _hasLoggedStrideChange = false;
         _punchIntervalTicks = _opt.FirewallTraversal && _opt.FirewallTraversalIntervalMs > 0
             ? MsToTicks(_opt.FirewallTraversalIntervalMs)
             : 0;
@@ -870,6 +872,7 @@ public sealed partial class GevStream
     /// 패킷당 데이터 길이를 배운다. 기본은 SCPS 에서 계산한 값이고, 첫 페이로드(id 1)가 프레임보다 짧으면 그 길이가 진짜 값이다.
     /// id 1 을 못 받았으면 마지막이 아닌 것이 확실한 패킷(id &lt; 예상 수)의 길이로 배운다 — 아직 아무 바이트도 싣기 전이라 오프셋이 어긋나지 않는다.
     /// 기본값보다 긴 패킷이 오면 장치가 SCPS 를 무시하는 것이므로 그 길이를 따른다.
+    /// 어느 쪽이든 id 2 이상을 이미 옛 간격으로 실은 뒤에 배우면 늦었다 — <see cref="SetDataBytes"/> 가 그 프레임을 버린다.
     /// </summary>
     private void LearnDataBytes(FrameSlot slot, uint id, int length)
     {
@@ -913,8 +916,22 @@ public sealed partial class GevStream
         _payloadSizeHint = (int)bytes;
     }
 
+    /// <summary>
+    /// 패킷당 데이터 길이(= 패킷 간격)를 바꾼다. id 2 이상을 이미 옛 간격으로 실었다면 그 바이트는 틀린 자리에 있고 옮길 길이 없다
+    /// (id 1 만은 간격과 무관하게 0 에 실린다). 그런 프레임은 오류로 버린다 — 그대로 두면 받은 패킷 수는 다 차고, 받은 끝은
+    /// 가장 먼 끝이라 간격이 줄 때는 오히려 리더 크기를 넘고, 청크 프레임은 애초에 패킷 수로만 완성을 가리므로 어긋난 바이트와
+    /// 그 사이에 남은 이전 프레임 바이트가 완성 프레임으로 나간다. 리더와 id 1 이 함께 유실돼 협상값에서 구한 간격으로 먼저 실은
+    /// 뒤에야 진짜 간격을 배우는 경우다.
+    /// </summary>
     private void SetDataBytes(FrameSlot slot, int dataBytes)
     {
+        if (slot.HighestPacketId >= 2 && dataBytes != slot.DataBytes)
+        {
+            LogStrideChangeOnce(slot, dataBytes);
+            // 장치가 아니라 수신기 쪽 사정이다 — 협상값보다 짧거나(허용) 긴(무시) 패킷을 보내는 장치는 흔하고, 자리를 짐작한 것은 수신기다.
+            MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusLocalProblem);
+            return;
+        }
         if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
             GevLog.Debug(_logSrc, $"Block {slot.BlockId}: payload bytes per packet {slot.DataBytes} -> {dataBytes}.");
@@ -1377,6 +1394,23 @@ public sealed partial class GevStream
         else if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
             GevLog.Debug(_logSrc, $"Block {slot.BlockId}: cut short at {slot.ReceivedEnd} of {slot.ExpectedBytes} bytes ({slot.ExpectedPackets} payload packets).");
+        }
+    }
+
+    /// <summary>간격을 잘못 짐작해 버린 프레임은 스트림당 한 번만 경고하고, 그 뒤로는 오류 통계·<see cref="FrameDropped"/> 로 센다.</summary>
+    private void LogStrideChangeOnce(FrameSlot slot, int dataBytes)
+    {
+        if (!_hasLoggedStrideChange)
+        {
+            _hasLoggedStrideChange = true;
+            GevLog.Warn(_logSrc, $"Block {slot.BlockId}: payload packets were already placed at {slot.DataBytes} bytes per packet before a packet showed "
+                + $"the device sends {dataBytes}; bytes already placed cannot be moved, so the frame is dropped as an error. This happens when the leader "
+                + "and the first payload packet are both lost and the device's packet length differs from the negotiated packet size. "
+                + "Further occurrences are counted but not logged.");
+        }
+        else if (GevLog.IsEnabled(GevLogLevel.Debug))
+        {
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: packet stride {slot.DataBytes} -> {dataBytes} after bytes were placed; frame dropped.");
         }
     }
 
