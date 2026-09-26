@@ -2,6 +2,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using GevSharp.Gvcp;
 using GevSharp.Gvsp;
+using GevSharp.Tests.GenApi.Model;
 
 namespace GevSharp.Tests.Gvsp;
 
@@ -1321,11 +1322,12 @@ public class GevStreamTests
     /// 풀 버퍼 하나를 정상 프레임으로 한 번 채워 둔 스트림 — 다음 프레임이 같은 버퍼를 받으므로, 덜 온 자리에 이전 프레임의
     /// 바이트가 남아 있으면 눈에 보인다(새 버퍼는 0 이라 그 오염이 가려진다).
     /// </summary>
-    private static async Task<(StreamRig Rig, GvspTestSender.SynthFrame Previous)> StartWithDirtyBufferAsync(bool deliverIncomplete)
+    private static async Task<(StreamRig Rig, GvspTestSender.SynthFrame Previous)> StartWithDirtyBufferAsync(bool deliverIncomplete, Action<GevStreamOpt>? configure = null)
     {
         var opt = StreamRig.DefaultOpt();
         opt.BufferCount = 1;
         opt.DeliverIncompleteFrames = deliverIncomplete;
+        configure?.Invoke(opt);
         var rig = new StreamRig(opt);
         await rig.StartAsync();
         var previous = rig.Sender.SendFrame(1, 64, 100, Mono8, seed: 0xAA);
@@ -1410,6 +1412,39 @@ public class GevStreamTests
             Assert.Equal(3UL, frame.FrameId);
             Assert.True(frame.IsComplete);
             Assert.True(frame.Data.Span.SequenceEqual(next.Data));
+            Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        }
+    }
+
+    [Fact]
+    public async Task BlockCutBeforeItsFirstPayloadClosesAtOnceAsIncomplete()
+    {
+        // 장치가 리더만 보내고 곧바로 id 1 의 트레일러로 블록을 끊었다(첫 페이로드 전에 멈췄다). 트레일러가 약속한 페이로드는 0 개라
+        // 더 올 것이 없다. 패킷 수 0 을 "아직 모름" 으로 읽으면 보존 시간 내내 기다리며 뒤 프레임을 막고, 불완전 프레임을 받겠다고 한
+        // 소비자에게도 끝내 나가지 않는다 — 한 패킷이라도 받은 뒤 끊긴 블록과 다르게 다룰 까닭이 없다.
+        var (rig, previous) = await StartWithDirtyBufferAsync(deliverIncomplete: true, opt => opt.FrameRetentionMs = 30_000);
+        await using (rig)
+        {
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            Assert.Equal(5, cut.PacketCount);
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendTrailer(cut, 1);
+
+            // 보존 시간(30 초)까지 기다린다면 여기서 시한을 넘긴다.
+            using var frame = await rig.ReceiveAsync(3000);
+            Assert.Equal(2UL, frame.FrameId);
+            Assert.False(frame.IsComplete);
+            Assert.Equal(cut.Data.Length, frame.PayloadSize);
+            Assert.Equal(5, frame.ExpectedPackets);
+            Assert.Equal(5, frame.MissingPackets);
+            // 검사기가 살아 있는지: 버퍼는 이전 프레임으로 더럽혀 두었다 — 비우지 않으면 그 바이트가 그대로 나온다.
+            Assert.False(frame.Data.Span.SequenceEqual(previous.Data), "the frame still holds the previous frame");
+            Assert.True(frame.Data.Span.SequenceEqual(new byte[cut.Data.Length]), "nothing of this block arrived, so the frame must be all zeros");
+
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(2UL, diag.FrameId);
+            Assert.Equal(GevFrameDropReason.Incomplete, diag.Reason);
+            Assert.Equal(5, diag.MissingPackets);
             Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
         }
     }
@@ -1541,5 +1576,57 @@ public class GevStreamTests
         // 중단이지 손실이 아니다 — 통계에는 세지 않는다.
         Assert.Equal(0, rig.Stream.Stats.FramesCompleted);
         Assert.Equal(0, rig.Stream.Stats.FramesIncomplete);
+    }
+}
+
+/// <summary>
+/// 스트림이 남기는 로그 줄 — <see cref="GevLog.Sink"/> 는 프로세스 전역이라 싱크를 바꿔 끼는 동안 다른 테스트와 나란히 돌지 않는 컬렉션에 둔다.
+/// </summary>
+[Collection(GevLogSinkCollection.Name)]
+public class GevStreamLogTests
+{
+    private const uint Mono8 = 0x01080001;
+
+    /// <summary>싱크를 바꿔 끼운 채 본문을 돌리고, 그동안 남은 (레벨, 메시지) 를 돌려준다.</summary>
+    private static async Task<(GevLogLevel Level, string Message)[]> CaptureAsync(Func<Task> body)
+    {
+        var logged = new List<(GevLogLevel, string)>();
+        var previousSink = GevLog.Sink;
+        var previousLevel = GevLog.MinLevel;
+        GevLog.MinLevel = GevLogLevel.Debug;
+        GevLog.Sink = (level, _, message, _) =>
+        {
+            lock (logged) logged.Add((level, message));
+        };
+        try
+        {
+            await body();
+        }
+        finally
+        {
+            GevLog.Sink = previousSink;
+            GevLog.MinLevel = previousLevel;
+        }
+        lock (logged) return logged.ToArray();
+    }
+
+    [Fact]
+    public async Task BlockCutBeforeItsFirstPayloadIsReportedLikeAnyCutBlock()
+    {
+        // 첫 페이로드 전에 끊긴 블록도 끊긴 블록이다 — 같은 경고가 한 번 나가야 "장치가 블록을 끊는다" 가 현장 로그에 보인다.
+        var logged = await CaptureAsync(async () =>
+        {
+            var opt = StreamRig.DefaultOpt();
+            opt.FrameRetentionMs = 30_000;
+            await using var rig = new StreamRig(opt);
+            await rig.StartAsync();
+
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendTrailer(cut, 1);
+            await rig.WaitDroppedAsync(3000);
+        });
+
+        Assert.Contains(logged, l => l.Level == GevLogLevel.Warn && l.Message.Contains("the trailer ended the block after 0 payload packet(s)"));
     }
 }

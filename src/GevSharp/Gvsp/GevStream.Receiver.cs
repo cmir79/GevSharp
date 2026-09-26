@@ -1352,9 +1352,13 @@ public sealed partial class GevStream
         => slot.HasLeader && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
             && (slot.ExpectedBytes < 0 || slot.ReceivedEnd >= slot.ExpectedBytes);
 
-    /// <summary>트레일러가 약속한 패킷은 다 받았는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 끊었고 더 올 것이 없다.</summary>
+    /// <summary>
+    /// 트레일러가 약속한 패킷은 다 받았는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 끊었고 더 올 것이 없다.
+    /// 트레일러가 id 1 로 왔으면(첫 페이로드 전에 끊겼다) 약속한 패킷 수는 0 이고 그것도 끊긴 블록이다 — 트레일러가 정한 0 은
+    /// "아직 모름" 이 아니므로 보존 시간까지 기다릴 까닭이 없다.
+    /// </summary>
     private static bool IsCutShort(FrameSlot slot)
-        => slot.HasLeader && slot.HasTrailer && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
+        => slot.HasLeader && slot.HasTrailer && slot.Buf is not null && slot.ReceivedPayloads >= slot.ExpectedPackets
             && slot.ExpectedBytes >= 0 && slot.ReceivedEnd < slot.ExpectedBytes;
 
     /// <summary>
@@ -1430,7 +1434,9 @@ public sealed partial class GevStream
         }
         RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, missing, expected, 0);
 
-        if (_isDeliverIncomplete && slot.HasLeader && buf is not null && slot.ExpectedPackets > 0)
+        // 트레일러가 페이로드 0 개로 끊은 블록도 크기는 리더가 알려 주었으므로 다른 끊긴 블록처럼 0 으로 채워 내보낸다.
+        if (_isDeliverIncomplete && slot.HasLeader && buf is not null
+            && (slot.ExpectedPackets > 0 || (slot.HasTrailer && slot.ExpectedBytes >= 0)))
         {
             ZeroHoles(slot);
             FinalizePayloadSize(slot);
