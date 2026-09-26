@@ -103,7 +103,9 @@ public static class GevDiscovery
             return found;
         }
 
-        UdpClient client;
+        // 소켓은 만드는 순간 OS 핸들을 쥔다 — 바인드·옵션 설정이 실패해도 여기서 닫지 않으면 핸들이 GC 종료자가 돌 때까지 남아,
+        // 탐색을 부를 때마다 실패한 인터페이스 수만큼 쌓인다.
+        UdpClient? client = null;
         try
         {
             client = new UdpClient(AddressFamily.InterNetwork);
@@ -114,8 +116,14 @@ public static class GevDiscovery
         }
         catch (SocketException ex)
         {
+            client?.Dispose();
             GevLog.Warn(LogSrc, $"{iface}: cannot bind a discovery socket ({ex.SocketErrorCode})", ex);
             return found;
+        }
+        catch
+        {
+            client?.Dispose();
+            throw;
         }
 
         using (client)
