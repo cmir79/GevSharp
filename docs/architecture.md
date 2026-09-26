@@ -163,7 +163,9 @@ public sealed class GevDeviceOpt
     public string? XmlCacheDir { get; set; }                 // null = no on-disk cache of the camera XML
     public bool AllowSwitchover { get; set; } = false;       // set CCP switchover-enable bit
     public int? MaxPendingAckWaitMs { get; set; }            // null = derived so a PENDING_ACK cannot hold the GVCP queue
-                                                             // past the device heartbeat timeout; setting a value turns that derivation off
+                                                             // past the device heartbeat timeout; setting a value turns that derivation off.
+                                                             // 0 = no extension (not "no cap"): a PENDING_ACK'd command must finish within one
+                                                             // GvcpTimeoutMs, else GevTimeoutException without a resend, whatever GvcpRetries says
 }
 
 public sealed class GevDevice : IGevPort, IAsyncDisposable

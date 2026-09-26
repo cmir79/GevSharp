@@ -17,6 +17,7 @@ public sealed class GvcpChannelOpt
     /// <summary>
     /// PENDING_ACK 가 요청한 추가 대기의 상한(한 요청 누적). PENDING_ACK 를 받은 요청은 재전송하지 않으므로
     /// 한 요청에서 연장을 받는 시도는 하나뿐이고, 이 값이 곧 그 요청이 연장으로 쓸 수 있는 전부다.
+    /// 0 = 연장 없음: PENDING_ACK 를 받은 요청은 응답 창(<see cref="TimeoutMs"/>) 하나 안에 끝나야 하고, 못 끝나면 재전송 없이 시한 초과다.
     /// </summary>
     public int MaxPendingAckWaitMs { get; set; } = DefaultMaxPendingAckWaitMs;
 }
