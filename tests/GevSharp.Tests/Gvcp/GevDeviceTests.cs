@@ -214,6 +214,46 @@ public class GevDeviceTests
     }
 
     [Fact]
+    public async Task AHeartbeatTimeoutBeyondIntRangeIsSaturatedNotNegative()
+    {
+        // GVBS 0x0938 은 부호 없는 32비트다. int 로 그냥 옮기면 0xFFFFFFFF 가 -1(= Timeout.Infinite)이 되어,
+        // "장치가 적용한 타임아웃" 이라는 공개 값을 대기 시간으로 쓰는 호출자가 영영 기다린다.
+        using var r = new GvcpTestResponder();
+        r.WriteU32(GvbsAddr.HeartbeatTimeout, 0xFFFF_FFFF);
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o => o.AccessMode = GevAccessMode.ReadOnly));
+
+        Assert.Equal(int.MaxValue, dev.DeviceHeartbeatTimeoutMs);
+    }
+
+    [Fact]
+    public async Task AHeartbeatTimeoutBeyondIntRangeKeepsTheHeartbeatOnTheRequestedTimeout()
+    {
+        // 제어 세션에서 장치가 하트비트 타임아웃 쓰기를 받아 놓고 0xFFFFFFFF 를 고집한다. 공개 값은 포화될 뿐 음수가 아니고,
+        // 주기와 PENDING_ACK 상한은 그 값이 아니라 요청한 타임아웃(3000)으로 끌어낸다 — 포화된 값으로 끌어내면 하트비트가
+        // 8 일에 한 번이 된다. 제어권 상실 문구도 음수가 아니라 그 값을 싣는다.
+        using var r = new GvcpTestResponder();
+        r.WriteU32(GvbsAddr.HeartbeatTimeout, 0xFFFF_FFFF);
+        r.WriteIgnoredAddr = GvbsAddr.HeartbeatTimeout;
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o => o.HeartbeatPeriodMs = null));
+
+        Assert.True(HasWriteOf(r.Requests, GvbsAddr.HeartbeatTimeout, 3000), "the requested heartbeat timeout was not written");
+        Assert.Equal(0xFFFF_FFFFu, r.ReadU32(GvbsAddr.HeartbeatTimeout));
+        Assert.Equal(int.MaxValue, dev.DeviceHeartbeatTimeoutMs);
+        Assert.Equal(1000, dev.HeartbeatPeriodMs);                       // 3000 / 3
+        Assert.Equal(1400, dev.Gvcp.Opt.MaxPendingAckWaitMs);            // 3000 - 1000 - 2*300
+
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        dev.ControlLost += (d, ex) => lost.TrySetResult(ex);
+        r.WriteU32(GvbsAddr.Ccp, 0);
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.Same(lost.Task, done);
+
+        var lostEx = Assert.IsType<GevControlLostException>(await lost.Task);
+        Assert.Contains("another application", lostEx.Message);
+        Assert.True(lostEx.Message.Contains($"device timeout {int.MaxValue} ms"), lostEx.Message);
+    }
+
+    [Fact]
     public async Task ControlLostAfterAStallSaysSo_AndEveryLaterCallRepeatsTheReason()
     {
         // 디버거 중단·메모리 스냅샷·절전으로 프로세스가 멈추면 하트비트가 끊기고 장치는 시한 뒤에 CCP 를 놓는다. 라이브 화면은

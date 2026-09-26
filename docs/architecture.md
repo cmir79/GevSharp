@@ -158,7 +158,7 @@ public sealed class GevDeviceOpt
     public int GvcpTimeoutMs { get; set; } = 500;
     public int GvcpRetries { get; set; } = 3;
     public int HeartbeatTimeoutMs { get; set; } = 3000;      // written to GVBS 0x0938 when we control
-    public int? HeartbeatPeriodMs { get; set; }              // null = device-accepted timeout / 3; ReadOnly sessions run no heartbeat (GevDevice.HeartbeatPeriodMs = 0)
+    public int? HeartbeatPeriodMs { get; set; }              // null = device-accepted timeout / 3 (HeartbeatTimeoutMs / 3 when the device reads back 0 or a value beyond int range); ReadOnly sessions run no heartbeat (GevDevice.HeartbeatPeriodMs = 0)
     public IPAddress? LocalAddress { get; set; }             // null = auto (route lookup / discovery interface)
     public string? XmlCacheDir { get; set; }                 // null = no on-disk cache of the camera XML
     public bool AllowSwitchover { get; set; } = false;       // set CCP switchover-enable bit
@@ -178,7 +178,7 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
     public bool IsOpen { get; }
     public uint GvcpCapability { get; }            // GVBS 0x0934
     public ulong TimestampTickFrequency { get; }   // GVBS 0x093C/0x0940 (0 if unreadable)
-    public int DeviceHeartbeatTimeoutMs { get; }   // GVBS 0x0938 read back after we wrote it
+    public int DeviceHeartbeatTimeoutMs { get; }   // GVBS 0x0938 read back after we wrote it; a uint register, saturated at int.MaxValue (never negative)
     public int HeartbeatPeriodMs { get; }          // 0 for a read-only session (no heartbeat runs)
     public event Action<GevDevice, Exception?>? ControlLost;   // heartbeat failed or CCP taken by someone else
 

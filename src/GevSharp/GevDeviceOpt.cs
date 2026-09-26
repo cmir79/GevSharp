@@ -23,7 +23,10 @@ public sealed class GevDeviceOpt
     public int GvcpRetries { get; set; } = 3;
     /// <summary>제어권을 잡을 때 GVBS 0x0938 에 쓰는 장치 쪽 하트비트 타임아웃.</summary>
     public int HeartbeatTimeoutMs { get; set; } = 3000;
-    /// <summary>하트비트(CCP 읽기) 주기. null = 장치가 받아들인 타임아웃 / 3.</summary>
+    /// <summary>
+    /// 하트비트(CCP 읽기) 주기. null = 장치가 받아들인 타임아웃 / 3. 장치가 0 이나 int 에 들어가지 않는 값(2^31 ms 이상)을
+    /// 되돌려 주면 <see cref="HeartbeatTimeoutMs"/> / 3.
+    /// </summary>
     public int? HeartbeatPeriodMs { get; set; }
     /// <summary>
     /// PENDING_ACK 이 늘릴 수 있는 추가 대기의 상한. PENDING_ACK 을 받은 요청 하나가 GVCP 줄을 붙드는 시간이 여기서 정해진다.

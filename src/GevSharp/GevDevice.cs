@@ -70,7 +70,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     public uint GvcpCapability { get; private set; }
     /// <summary>GVBS 0x093C/0x0940 (Hz). 읽지 못하면 0.</summary>
     public ulong TimestampTickFrequency { get; private set; }
-    /// <summary>장치가 실제로 적용한 하트비트 타임아웃(GVBS 0x0938 을 다시 읽은 값).</summary>
+    /// <summary>
+    /// 장치가 실제로 적용한 하트비트 타임아웃(GVBS 0x0938 을 다시 읽은 값). 레지스터는 부호 없는 32비트라
+    /// int 에 들어가지 않는 값(2^31 ms 이상)은 <see cref="int.MaxValue"/> 로 포화한다 — 음수가 되는 일은 없다.
+    /// </summary>
     public int DeviceHeartbeatTimeoutMs { get; private set; }
     /// <summary>하트비트 주기. 읽기 전용 세션은 0.</summary>
     public int HeartbeatPeriodMs { get; private set; }
@@ -153,7 +156,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     {
         _info = await GevDeviceInfo.ReadFromDeviceAsync(Gvcp, LocalAddress, ct).ConfigureAwait(false);
         GvcpCapability = await ReadRegCoreAsync(GvbsAddr.GvcpCapability, ct).ConfigureAwait(false);
-        DeviceHeartbeatTimeoutMs = (int)await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
+        DeviceHeartbeatTimeoutMs = SaturateToMs(await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false));
         TimestampTickFrequency = await ReadTickFrequencyAsync(ct).ConfigureAwait(false);
         GevLog.Info(_logSrc, $"opened {_info.Manufacturer} {_info.Model} [{_info.SerialNumber}] via {LocalAddress} (spec {_info.SpecMajor}.{_info.SpecMinor}, cap 0x{GvcpCapability:X8}, tick {TimestampTickFrequency} Hz)");
 
@@ -189,9 +192,13 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         {
             GevLog.Warn(_logSrc, $"device rejected heartbeat timeout {_opt.HeartbeatTimeoutMs} ms ({GvcpConst.StatusName(ex.Status)}); keeping the device value");
         }
-        DeviceHeartbeatTimeoutMs = (int)await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
+        var rawTimeoutMs = await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
+        DeviceHeartbeatTimeoutMs = SaturateToMs(rawTimeoutMs);
 
-        var effectiveTimeout = DeviceHeartbeatTimeoutMs > 0 ? DeviceHeartbeatTimeoutMs : _opt.HeartbeatTimeoutMs;
+        // 주기와 PENDING_ACK 상한을 끌어낼 근거로는 1..int.MaxValue 로 읽힌 값만 쓴다. 0 이나 int 에 들어가지 않는 값이면
+        // 요청한 타임아웃으로 계산한다 — 포화된 값으로 끌어내면 하트비트가 며칠에 한 번이 되는데, 그 되읽기를 믿을 근거가 없고
+        // 너무 드물게 치면 잃는 것은 제어권, 너무 자주 치면 잃는 것은 패킷 몇 개라 요청값 쪽이 안전하다.
+        var effectiveTimeout = rawTimeoutMs is > 0 and <= int.MaxValue ? (int)rawTimeoutMs : _opt.HeartbeatTimeoutMs;
         HeartbeatPeriodMs = _opt.HeartbeatPeriodMs ?? Math.Max(1, effectiveTimeout / 3);
         if (HeartbeatPeriodMs >= effectiveTimeout)
             GevLog.Warn(_logSrc, $"heartbeat period {HeartbeatPeriodMs} ms is not shorter than the device timeout {effectiveTimeout} ms; control may drop");
@@ -202,6 +209,12 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         _heartbeatTask = Task.Run(() => HeartbeatLoopAsync(HeartbeatPeriodMs, _heartbeatCts.Token));
         GevLog.Debug(_logSrc, $"control acquired (CCP 0x{ccp:X}), heartbeat every {HeartbeatPeriodMs} ms, device timeout {DeviceHeartbeatTimeoutMs} ms");
     }
+
+    /// <summary>
+    /// 부호 없는 32비트 ms 레지스터 값을 int 로 옮긴다. int 에 들어가지 않는 값은 <see cref="int.MaxValue"/> 로 포화한다 —
+    /// 그냥 캐스트하면 0xFFFFFFFF 가 -1(<see cref="Timeout.Infinite"/>)이 되어, 그 값을 대기 시간으로 쓰는 쪽이 영영 기다린다.
+    /// </summary>
+    private static int SaturateToMs(uint raw) => raw > int.MaxValue ? int.MaxValue : (int)raw;
 
     private async Task<ulong> ReadTickFrequencyAsync(CancellationToken ct)
     {
