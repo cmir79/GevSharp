@@ -327,7 +327,10 @@ public sealed class GevStream : IAsyncDisposable
                                                              // receiver thread ends on its own (stream socket died) — then ReceiveAsync hands
                                                              // out what is queued and throws GevStreamClosedException; the stream cannot be
                                                              // restarted, and StopAsync is still needed to turn the device off and return buffers
-    public event Action<GevFrameDiag>? FrameDropped;          // Reason is one of four: Incomplete / NoBuffer / Error / Unsupported (called on receiver thread — keep it cheap)
+    public event Action<GevFrameDiag>? FrameDropped;          // Reason is one of four: Incomplete / NoBuffer / Error / Unsupported (called on receiver thread — keep it cheap);
+                                                             // the diag carries FrameId, missing/expected packets, a reason code, and the block's leader
+                                                             // Timestamp (ulong?, null when no image leader arrived) — block ids restart on some devices,
+                                                             // so the timestamp is what ties a drop to a particular acquisition
 
     public Task StartAsync(CancellationToken ct = default);   // bind + tune socket, write SCDA/SCP, negotiate SCPS, apply SCPD, start thread. Does NOT send AcquisitionStart.
     // Acquisition is the caller's step and it needs the transport-layer lock first:

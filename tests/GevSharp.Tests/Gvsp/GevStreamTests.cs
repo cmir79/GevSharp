@@ -1153,9 +1153,51 @@ public class GevStreamTests
         var diag = await rig.WaitDroppedAsync();
         Assert.Equal(1UL, diag.FrameId);
         Assert.Equal(GevFrameDropReason.Incomplete, diag.Reason);
+        // 같은 번호가 두 촬영에 쓰였으니 번호로는 어느 쪽이 버려졌는지 모른다 — 진단이 옛 리더의 타임스탬프를 싣는다.
+        Assert.Equal(111_000UL, diag.Timestamp);
         Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
         Assert.Equal(1, rig.Stream.Stats.FramesCompleted);
         Assert.False(rig.Stream.TryReceive(out _));
+    }
+
+    [Fact]
+    public async Task DroppedFrameCarriesItsLeaderTimestamp_OrNoneWhenTheLeaderWasLost()
+    {
+        // 블록 번호만으로는 "이 드롭이 내 그랩의 장인가" 를 가를 수 없다 — 시작마다 1 부터 세는 장치가 있다.
+        // 리더를 받은 드롭은 그 리더의 장치 타임스탬프를 싣고, 리더를 못 받은 드롭은 없다고 말한다(0 으로 흘리지 않는다).
+        var opt = StreamRig.DefaultOpt();
+        opt.ResendEnabled = false;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        var withLeader = rig.Sender.BuildFrame(1, 64, 100, Mono8, seed: 1, timestamp: 424_242);
+        rig.Sender.Drop.Add((1, 2));
+        rig.Sender.SendFrame(withLeader);
+        var d1 = await rig.WaitDroppedAsync();
+        Assert.Equal(1UL, d1.FrameId);
+        Assert.Equal(GevFrameDropReason.Incomplete, d1.Reason);
+        Assert.Equal(424_242UL, d1.Timestamp);
+        Assert.Contains("ts 424242", d1.ToString());
+
+        var noLeader = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 2, timestamp: 555_555);
+        rig.Sender.Drop.Add((2, 0));
+        rig.Sender.SendFrame(noLeader);
+        var next = rig.Sender.SendFrame(3, 64, 100, Mono8, seed: 3);
+        var d2 = await rig.WaitDroppedAsync();
+        Assert.Equal(2UL, d2.FrameId);
+        Assert.Null(d2.Timestamp);
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(3UL, frame.FrameId);
+        Assert.Equal(next.Timestamp, frame.Timestamp);
+    }
+
+    [Fact]
+    public void FrameDiagKeepsItsOldConstructorWithoutATimestamp()
+    {
+        // 기존 생성자는 이진 호환을 위해 남는다 — 타임스탬프는 없음으로.
+        var d = new GevFrameDiag(7, GevFrameDropReason.NoBuffer, 0, 3, 0);
+        Assert.Null(d.Timestamp);
+        Assert.Equal(7UL, d.FrameId);
     }
 
     [Fact]

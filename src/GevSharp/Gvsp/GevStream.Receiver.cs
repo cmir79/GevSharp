@@ -84,6 +84,8 @@ public sealed partial class GevStream
         public bool HasTrailer;
         /// <summary>트레일러가 알린 줄 수(0 은 모름). 리더가 트레일러 뒤에 와도 가변 높이 축소를 할 수 있게 남겨 둔다.</summary>
         public uint TrailerSizeY;
+        /// <summary><see cref="Meta"/> 의 Timestamp 가 이 블록의 리더에서 왔는지 — 드롭 진단에 실을지 가른다(0 도 유효한 틱이다).</summary>
+        public bool HasTimestamp;
         public FrameMeta Meta;
         /// <summary>이미지 바이트 수. −1 은 미정(청크가 붙는 프레임) — 트레일러가 패킷 수를 정한다.</summary>
         public long ExpectedBytes;
@@ -148,6 +150,7 @@ public sealed partial class GevStream
             HasLeader = false;
             HasTrailer = false;
             TrailerSizeY = 0;
+            HasTimestamp = false;
             Meta = default;
             ExpectedBytes = -1;
             DataBytes = 0;
@@ -634,7 +637,7 @@ public sealed partial class GevStream
         }
         _stats.IncFramesIncomplete();
         _stats.AddPacketsMissing(expected);
-        RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, expected, expected, 0);
+        RaiseDropped(slot,GevFrameDropReason.Incomplete, expected, expected, 0);
         if (slot.Buf is not null)
         {
             _pool.Return(slot.Buf, slot.BufVersion);
@@ -761,6 +764,9 @@ public sealed partial class GevStream
     private bool ApplyLeader(FrameSlot slot, in GvspImageLeader leader, bool extendedIds)
     {
         slot.HasLeader = true;
+        // 타임스탬프는 아래 검사보다 먼저 남긴다 — 이 프레임이 조립할 수 없어 버려지더라도 드롭 진단이 어느 촬영의 장인지 말할 수 있게.
+        slot.Meta.Timestamp = leader.Timestamp;
+        slot.HasTimestamp = true;
 
         var payloadType = leader.PayloadTypeBase;
         if (payloadType != GvspConst.PayloadImage && payloadType != GvspConst.PayloadExtendedChunkData)
@@ -785,7 +791,6 @@ public sealed partial class GevStream
         slot.ExpectedBytes = hasChunk ? -1 : imageBytes;
         slot.Meta.FrameId = slot.BlockId;
         slot.Meta.IsExtendedId = extendedIds;
-        slot.Meta.Timestamp = leader.Timestamp;
         slot.Meta.PixelFormatCode = leader.PixelFormat;
         slot.Meta.PayloadType = leader.PayloadType;
         slot.Meta.Width = (int)leader.SizeX;
@@ -1514,7 +1519,7 @@ public sealed partial class GevStream
                 case GevFrameDropReason.Unsupported: _stats.IncFramesDroppedUnsupported(); break;
                 default: _stats.IncFramesDroppedError(); break;
             }
-            RaiseDropped(slot.BlockId, slot.SkipReason, 0, slot.ExpectedPackets, slot.SkipCode);
+            RaiseDropped(slot,slot.SkipReason, 0, slot.ExpectedPackets, slot.SkipCode);
             return;
         }
 
@@ -1545,7 +1550,7 @@ public sealed partial class GevStream
         {
             GevLog.Debug(_logSrc, $"Block {slot.BlockId} incomplete: {slot.ReceivedPayloads}/{expected} payload packets, leader {(slot.HasLeader ? "yes" : "no")}, {slot.RequestedPackets} packets requested for resend.");
         }
-        RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, missing, expected, 0);
+        RaiseDropped(slot,GevFrameDropReason.Incomplete, missing, expected, 0);
 
         // 트레일러가 페이로드 0 개로 끊은 블록도 크기는 리더가 알려 주었으므로 다른 끊긴 블록처럼 0 으로 채워 내보낸다.
         if (_isDeliverIncomplete && slot.HasLeader && buf is not null
@@ -1603,17 +1608,17 @@ public sealed partial class GevStream
             // 큐 용량은 풀 크기와 같아 원래 여기 올 수 없다 — 왔다면 버퍼를 잃지 않게 돌려준다.
             frame.Dispose();
             _stats.IncFramesDroppedNoBuffer();
-            RaiseDropped(slot.BlockId, GevFrameDropReason.NoBuffer, 0, slot.ExpectedPackets, 0);
+            RaiseDropped(slot,GevFrameDropReason.NoBuffer, 0, slot.ExpectedPackets, 0);
         }
     }
 
-    private void RaiseDropped(ulong blockId, GevFrameDropReason reason, int missing, int expected, ushort code)
+    private void RaiseDropped(FrameSlot slot, GevFrameDropReason reason, int missing, int expected, ushort code)
     {
         var handler = FrameDropped;
         if (handler is null) return;
         try
         {
-            handler(new GevFrameDiag(blockId, reason, missing, expected, code));
+            handler(new GevFrameDiag(slot.BlockId, reason, missing, expected, code, slot.HasTimestamp ? slot.Meta.Timestamp : null));
         }
         catch (Exception ex)
         {
