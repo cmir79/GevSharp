@@ -326,22 +326,32 @@ device behaviour, now reported instead of delivered as a wrong image. Scope: thi
 cancelled grab, intermittent (2 of 8 rounds per version). Figures and raw logs are the consumer's (its
 `cvinspect-0290-cutloop` run); see its records.
 
-The consumer then measured why (same camera, commands sent directly: start, stop, wait g ms, start). The
-camera does not execute a stop that arrives right after a start at once: it executes it about
-2 x exposure + 68 ms after that start, and a frame from the *next* start that is on the wire by then is cut
-mid-transfer. Exposures of 5, 30 and 100 ms all fitted, from the cut positions. Cuts happened in most trials when
-the next start followed within 25–50 ms, and never once it came after the previous start + exposure + transfer; a
-stop arriving after the exposure had ended, or the stop after a continuous run, left nothing pending and cut
-nothing. So a consumer that stops right after starting (a cancelled single grab) and starts again at once should
-wait until the previous start + exposure + transfer time before starting again. The consumer's A/B with that
-settle time, 80 cancelled grabs at a 30 ms gap: 0 of 40 timed out with it, 7 of 40 without. This is device
+The consumer then measured *when* it happens (same camera, commands sent directly: start, stop, wait g ms, start).
+What was measured are rules, not the device's internal mechanism:
+1. a start sent after a cancelled grab is cut when it falls before about *previous start + 2 x exposure + 68 ms*
+   (exposures 5, 30 and 100 ms, slope 2.00, from the cut positions);
+2. a start after *previous start + exposure + transfer* (about 70 ms here) was never cut;
+3. all 97 cut cases were ones in which the cancelled grab's own frame never arrived, and none of the 43 cases
+   inside that window in which it did arrive was cut;
+4. the cancelled grab's own block arrived cut in 0 of 758 cases.
+
+This model does not expose a readable acquisition status (`AcquisitionActive` was "not available" in every
+probe), so when the stop actually takes effect has not been observed; "a stop that stays pending in the device" is
+an interpretation that fits the rules, not an observation. The practical consequence is measured: a consumer
+that restarts right after a cancelled grab and waits until *previous start + exposure + transfer* first avoided
+it — 80 cancelled grabs at a 30 ms gap, 0 of 40 timed out with that settle time, 7 of 40 without. This is device
 behaviour, not a library fix; the library's part is to report such a frame as incomplete (R29) rather than deliver
-it. Scope: this Basler only (Crevis not measured); figures are the consumer's (its `cvinspect-cutmech` runs).
-The same pending stop can also cut a *continuous* acquisition started right after it: starting live 25–100 ms after
-a cancelled single grab (exposure 30 ms), 5 of 43 runs got 0–1 whole frames in the first second, every block
-ending with a trailer at 254 of 563 packets until acquisition was stopped and started again; with the settle time,
-0 of 42. For that shape the one-time warning now says the device ended the block early, and it keeps the
-size-rule hint for shortfalls below one packet.
+it.
+
+It also showed up in a *continuous* acquisition started right after a cancelled grab. Conditions: Basler
+acA2500-14gm (this one camera), exposure 30 ms, cancel 2–7 ms after the call, `StartContinuous` 75 ms later, 1 s of
+live, counting only runs in which the start went out, through the consumer's GevCam layer on GevSharp 0.5.0:
+5 of 43 runs got 0–1 whole frames, every block ending with a trailer at 254 of 563 packets until acquisition was
+stopped and started again; with the settle time, 0 of 42. In the same run, exposure 5 ms with a 25 ms delay: 4 of
+27 (first frame only); exposure 100 ms with a 100 ms delay: 2 of 24 (first frame only); no delay: 0 of 35.
+For shortfalls of whole packets like these the one-time warning now says the device ended the block early; the
+size-rule hint is kept for shortfalls below one packet. Crevis was not measured. All figures are the consumer's
+(its `cvinspect-cutmech` runs and `cvinspect-0290-cutloop` A/B).
 
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of
