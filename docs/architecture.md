@@ -326,7 +326,9 @@ public sealed class GevStream : IAsyncDisposable
     public Task StopAsync(CancellationToken ct = default);    // SCP = 0, SCDA = 0, close the socket to wake the thread, join it,
                                                              // then **drain the queue and Dispose every frame still in it** — skipping that
                                                              // leaves those pool buffers held forever — and complete pending receives
-                                                             // with GevStreamClosedException
+                                                             // with GevStreamClosedException. The token aborts no step: a cancelled (even
+                                                             // pre-cancelled) token still turns the device off, runs the whole local
+                                                             // cleanup and returns normally — a half-stopped stream is worse than either
     public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);  // waits until a frame, the token, or StopAsync/DisposeAsync —
                                                              // NOT until the device goes away (see "Stream lifetime" below)
     public bool TryReceive(out GevFrame? frame);

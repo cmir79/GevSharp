@@ -196,7 +196,18 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 장치 전송을 끄고(SCP = 0, SCDA = 0) 소켓을 닫아 수신 스레드를 깨운 뒤 합류한다. 조립 중이던 프레임은 버려지고,
     /// 큐에 남은 프레임은 반납되며, 대기 중인 <see cref="ReceiveAsync"/> 는 <see cref="GevStreamClosedException"/> 으로 끝난다.
     /// 여러 번 불러도 된다. 레지스터 쓰기 실패는 로그만 남기고 로컬 정리는 끝까지 진행한다.
+    /// <para>
+    /// <b>토큰은 정지를 끊지 않는다.</b> 이미 취소된 토큰이 와도, 도중에 취소돼도 위 단계를 전부 밟고 정상으로 돌아온다 —
+    /// 돌아왔다면 스트림은 멈춘 것이다. 반쯤 멈춘 스트림은 온전히 도는 것보다 나쁘다: 장치 전송 끄기를 건너뛰면 장치가
+    /// 닫힌 포트를 향해 계속 쏘고, 로컬 정리를 건너뛰면 큐에 든 버퍼가 돌아오지 않는다. 다 멈춘 뒤에 취소 예외를 던지지도 않는다 —
+    /// 셧다운을 취소 처리로 감싼 호출자는 그 예외 때문에 뒤따르는 정리(장치 닫기 등)를 건너뛰게 되는데, 정작 정지는 끝나 있다.
+    /// </para>
+    /// <para>
+    /// 기다리는 자리마다 상한이 따로 있다: 겹친 시작·정지가 끝나기를(그쪽도 아래 상한에 묶인다), 레지스터 쓰기는 제어 채널의
+    /// 시한·재시도를, 수신 스레드 합류는 2 초를 넘지 않는다.
+    /// </para>
     /// </summary>
+    /// <param name="ct">어떤 단계도 끊지 않는다(위 설명). 취소돼 있어도 정지를 끝까지 하고 정상으로 돌아온다.</param>
     public async Task StopAsync(CancellationToken ct = default)
     {
         var thread = _thread;
@@ -205,7 +216,10 @@ public sealed partial class GevStream : IAsyncDisposable
             throw new InvalidOperationException("StopAsync must not be called from the receiver thread (for example inside a FrameDropped handler).");
         }
 
-        await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
+        // 토큰을 넘기지 않는다 — SemaphoreSlim 은 이미 취소된 토큰이면 비어 있는 자물쇠도 잡지 않고 곧장 취소로 끝나,
+        // 정지가 아무 일도 하지 않은 채 돌아간다. 겹친 시작이 자물쇠를 쥔 자리에서도 마찬가지로, 그 시작이 끝난 뒤 스트림이
+        // 그대로 돌게 된다. 쥐는 쪽은 전부 상한이 있으므로(위 설명) 이 대기도 끝난다.
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             if (_state == StateStopped) return;
@@ -217,9 +231,11 @@ public sealed partial class GevStream : IAsyncDisposable
             _state = StateStopping;
             _isStopRequested = true;
 
-            try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, ct).ConfigureAwait(false); }
+            // 장치 전송 끄기는 호출자의 토큰과 무관하게 시도한다(실패한 시작의 되돌리기와 같다). 토큰을 넘기면 SCP 쓰기 도중의
+            // 취소가 "SCP 쓰기 실패" 로 기록되고, 이미 취소된 토큰을 받은 SCDA 쓰기는 보내지도 못한 채 끝난다.
+            try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, CancellationToken.None).ConfigureAwait(false); }
             catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCP = 0 while stopping the stream.", ex); }
-            try { await WriteRegAsync(GvbsAddr.ScdaOffset, 0, ct).ConfigureAwait(false); }
+            try { await WriteRegAsync(GvbsAddr.ScdaOffset, 0, CancellationToken.None).ConfigureAwait(false); }
             catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCDA = 0 while stopping the stream.", ex); }
 
             var socket = _socket;

@@ -427,6 +427,55 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task StopCancelledMidwayStillTurnsTheDeviceTransmissionOff()
+    {
+        // 정지 도중 취소가 와도 장치 전송 끄기(SCP = 0, SCDA = 0)는 끝까지 가야 한다. 건너뛰면 장치는 닫힌 포트를 향해
+        // 계속 쏘는데 정지는 성공으로 돌아와, 호출자는 그 사실을 알 길이 없다.
+        await using var rig = new StreamRig();
+        await rig.StartAsync();
+
+        var scp = GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset);
+        var scda = GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset);
+        using var cts = new CancellationTokenSource();
+        rig.Regs.OnWrite = (addr, value) =>
+        {
+            if (addr == scp && value == 0) cts.Cancel();   // SCP = 0 이 나가는 바로 그때 취소가 도착한다
+        };
+
+        await rig.Stream.StopAsync(cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.Contains((scda, 0u), rig.Regs.Writes);
+        Assert.False(rig.Stream.IsStarted);
+        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync(Ct));
+    }
+
+    [Fact]
+    public async Task StopWithAPreCancelledTokenStillStopsEverything()
+    {
+        // 셧다운 경로는 시한이 이미 지난 토큰으로 정지를 부르기 쉽다. 그래도 정지는 끝까지 한다 — 장치 전송 끄기,
+        // 소켓 닫기, 큐 비우기, 정지 상태. 아무것도 안 하고 취소만 던지면 스트림은 그대로 돌고 큐의 버퍼도 돌아오지 않는다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        rig.Sender.SendFrame(1UL, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 1);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await rig.Stream.StopAsync(cts.Token);
+
+        var writes = rig.Regs.Writes;
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 0u), writes);
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset), 0u), writes);
+        Assert.False(rig.Stream.IsStarted);
+        Assert.Equal(0, rig.Stream.QueuedFrames);
+        Assert.Equal(opt.BufferCount, rig.Stream.PoolFreeBuffers);
+        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync(Ct));
+    }
+
+    [Fact]
     public void ReceiveBeforeStartThrows()
     {
         var stream = new GevStream(new FakeRegPort(), new TestResendPort(new GvspTestSender()), IPAddress.Loopback, StreamRig.DefaultOpt());
