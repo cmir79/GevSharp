@@ -103,6 +103,10 @@ public class HostileDeviceTests
 
         // 이 프레임이 가질 수 있는 패킷 수(2)를 한참 넘는 id 로 답한다.
         rig.Sender.SendError(1, 200_000, GvcpConst.StatusPacketUnavailable);
+        // 기준 요청 수는 수신기가 그 오류 패킷을 처리한 뒤에 센다. 보낸 직후에 세면 수신 스레드가 오류 패킷을 꺼내기 전에 재요청 마감이
+        // 먼저 돌아 한 번 더 묻는 것이 "오류 뒤의 요청" 으로 잘못 세인다(수신 스레드의 틱을 25 ms 늦추는 주입으로 1 대 2 재현).
+        // 오류 패킷 계수기는 그 패킷을 다루는 첫 줄에서 오르고, 리센드를 끄는 처리는 같은 스레드에서 요청 없이 바로 뒤따른다.
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.ErrorPackets >= 1);
         var requestsAfterError = rig.Resend.RequestCount;
 
         // 더는 묻지 않는다 — 재요청 간격을 여러 번 지나도 요청 수가 늘지 않아야 한다.

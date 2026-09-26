@@ -653,10 +653,12 @@ public class GevStreamTests
         // 침묵 규칙(재요청 간격만큼 조용하면 꼬리를 구멍으로 친다)이 스케줄링 지연에 걸리지 않게 간격을 넉넉히 둔다 — 여기서 보는 것은 유예뿐이다.
         var opt = StreamRig.DefaultOpt();
         // 프레임 전체가 25 ms 안에 나가므로 문턱을 크게 잡아도 "아직 안 온 꼬리는 구멍이 아니다" 라는 성질은 그대로 걸린다.
-        // 문턱이 러너의 선점보다 짧으면 이 테스트는 유예가 아니라 러너의 스케줄링을 재게 된다.
-        opt.PacketTimeoutMs = 1000;
+        // 문턱이 러너의 선점보다 짧으면 이 테스트는 유예가 아니라 러너의 스케줄링을 재게 된다 — 1 s 에서도 스위트 셋을 나란히 돌린
+        // 러너에서 "요청 0" 단정이 한 번 깨졌고, 송신을 프레임 도중 1.1 s 멈추는 주입이 같은 실패(요청 1 건)를 낸다.
+        // 프레임은 마지막 페이로드에서 닫히므로 문턱을 더 올려도 이 시험은 느려지지 않는다.
+        opt.PacketTimeoutMs = 10_000;
         // 보존 시간도 마찬가지 — 러너가 밀려 프레임이 포기되면 "군더더기 요청이 없다" 대신 타임아웃이 난다.
-        opt.FrameRetentionMs = 3000;
+        opt.FrameRetentionMs = 20_000;
         await using var rig = new StreamRig(opt);
         await rig.StartAsync();
 
@@ -668,6 +670,8 @@ public class GevStreamTests
         using var received = await rig.ReceiveAsync();
         Assert.True(received.IsComplete);
         Assert.True(received.Data.Span.SequenceEqual(frame.Data));
+        // 요청 수는 수신기가 보낸 패킷(트레일러까지)을 다 센 뒤에 본다 — 프레임을 받은 순간에는 트레일러가 아직 소켓에 있을 수 있다.
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= rig.Sender.PacketsSent);
         Assert.Equal(0, rig.Resend.RequestCount);
         Assert.Equal(0, rig.Stream.Stats.ResendRequests);
     }
@@ -1314,7 +1318,11 @@ public class GevStreamTests
     [Fact]
     public async Task MalformedTrailerDoesNotPinTheFrameOpen()
     {
-        await using var rig = new StreamRig();
+        var opt = StreamRig.DefaultOpt();
+        // 리더 없이 페이로드만 받은 프레임은 보존 시간이 지나면 불완전으로 닫힌다 — 시험 스레드가 밀려도 리더를 돌려줄 때까지
+        // 열려 있게 넉넉히 둔다. 정상 흐름에서는 리더가 돌아오는 즉시 완성되므로 이 값만큼 기다리지 않는다.
+        opt.FrameRetentionMs = 5000;
+        await using var rig = new StreamRig(opt);
         await rig.StartAsync();
 
         // 첫 프레임으로 버퍼 크기를 알게 한 뒤, 둘째 프레임은 리더 없이 페이로드를 보내고 id 0 짜리 깨진 트레일러를 붙인다.
@@ -1325,17 +1333,25 @@ public class GevStreamTests
             Assert.True(f1.Data.Span.SequenceEqual(first.Data));
         }
 
+        // 깨진 트레일러는 **열려 있는 프레임에** 닿아야 이 시험이 뜻을 가진다. 리센드 답을 붙들지 않으면 송신이 유예(2 ms)보다 늦게
+        // 트레일러에 닿는 순간 리더가 먼저 돌아와 프레임이 닫히고, 깨진 트레일러는 닫힌 블록의 늦은 트레일러로 조용히 지나간다
+        // (15 ms 멈춤으로 재현). 그래서 리더 요청에는 답하지 않다가, 수신기가 깨진 트레일러를 거른 것을 본 뒤에 답한다.
+        rig.Resend.Behaviour = TestResendPort.Mode.Never;
         var second = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 2);
         rig.Sender.Drop.Add((2, 0));
         for (uint id = 1; id <= (uint)second.PacketCount; id++) rig.Sender.SendPacket(second, id, GvspConst.StatusSuccess);
         rig.Sender.SendTrailer(second, packetId: 0);
+
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsIgnored >= 1);
+        Assert.Equal(1, rig.Stream.Stats.FramesCompleted);  // 둘째 프레임은 아직 열려 있다 — 깨진 트레일러를 열린 프레임에서 걸렀다
+        rig.Resend.Behaviour = TestResendPort.Mode.Resend;  // 다음 재요청(재요청 간격 뒤)이 리더를 받아 온다
 
         using var frame = await rig.ReceiveAsync();
         Assert.Equal(2UL, frame.FrameId);
         Assert.True(frame.IsComplete);
         Assert.Equal(second.PacketCount, frame.ExpectedPackets);
         Assert.True(frame.Data.Span.SequenceEqual(second.Data));
-        Assert.True(rig.Stream.Stats.PacketsIgnored >= 1);
+        Assert.Equal(1, rig.Stream.Stats.PacketsIgnored);   // 걸러진 것은 깨진 트레일러 하나뿐이다
         Assert.Equal(0, rig.Stream.Stats.FramesIncomplete);
     }
 
