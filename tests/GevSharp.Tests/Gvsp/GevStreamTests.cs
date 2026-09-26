@@ -476,6 +476,36 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task ReceiverThreadDyingOnItsOwnClearsIsStarted()
+    {
+        // 소켓이 죽어 수신 스레드가 스스로 끝나면 받기는 "닫힘" 으로 끝난다. 그때 IsStarted 가 계속 참이면 그 값으로
+        // "다시 열기" 와 "이미 멈춤" 을 가르는 쪽이 속는다 — 상태가 사실을 말해야 한다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        rig.Sender.SendFrame(1UL, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 1);
+
+        rig.Stream.KillSocketForTest();
+
+        // 이미 큐에 든 장은 그대로 받아 갈 수 있고, 그 다음에 닫힘이 나온다.
+        using (var queued = await rig.ReceiveAsync()) Assert.Equal(1UL, queued.FrameId);
+        await Assert.ThrowsAsync<GevStreamClosedException>(() => rig.Stream.ReceiveAsync(Ct).AsTask().WaitAsync(TimeSpan.FromSeconds(10), Ct));
+        Assert.False(rig.Stream.IsStarted);
+
+        // 스스로 끝난 스트림은 멈춘 것이 아니라 정리를 기다리는 것이다 — 다시 시작할 수는 없고,
+        // 정지를 불러야 장치 전송이 꺼지고 버퍼가 돌아온다.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Stream.StartAsync(Ct));
+        await rig.Stream.StopAsync(Ct);
+        var writes = rig.Regs.Writes;
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 0u), writes);
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset), 0u), writes);
+        Assert.False(rig.Stream.IsStarted);
+        Assert.Equal(opt.BufferCount, rig.Stream.PoolFreeBuffers);
+    }
+
+    [Fact]
     public void ReceiveBeforeStartThrows()
     {
         var stream = new GevStream(new FakeRegPort(), new TestResendPort(new GvspTestSender()), IPAddress.Loopback, StreamRig.DefaultOpt());

@@ -314,6 +314,7 @@ public sealed partial class GevStream
         catch (Exception ex)
         {
             GevLog.Error(_logSrc, "Receiver thread terminated by an unexpected error.", ex);
+            MarkReceiverEnded();
             _queue?.Complete(new GevStreamClosedException("Receiver thread failed: " + ex.Message));
         }
         finally
@@ -322,11 +323,18 @@ public sealed partial class GevStream
             if (!_isStopRequested)
             {
                 // 정지 요청 없이 나왔다면 소켓이 죽은 것이다 — 소비자가 영원히 기다리지 않게 큐를 닫는다(이미 닫혔으면 무시된다).
+                MarkReceiverEnded();
                 _queue?.Complete(new GevStreamClosedException($"Receiver thread stopped: stream socket receive failed ({_receiveExitError})."));
             }
             GevLog.Debug(_logSrc, $"Receiver thread on port {LocalPort} exited.");
         }
     }
+
+    /// <summary>
+    /// 수신 스레드가 정지 요청 없이 끝날 때 상태를 "시작됨" 에서 "스스로 끝남" 으로 내린다. 큐를 닫기 **전에** 불러야
+    /// 닫힘을 받은 소비자가 <see cref="IsStarted"/> 도 거짓으로 본다. 정지가 이미 상태를 가져갔으면 아무것도 바꾸지 않는다.
+    /// </summary>
+    private void MarkReceiverEnded() => Interlocked.CompareExchange(ref _state, StateFaulted, StateStarted);
 
     /// <summary>수신 오류 분류. 계속 돌아도 되면 true, 루프를 끝내야 하면 false.</summary>
     private bool HandleReceiveError(SocketException ex)

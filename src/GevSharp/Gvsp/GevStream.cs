@@ -24,6 +24,11 @@ public sealed partial class GevStream : IAsyncDisposable
     private const int StateStarted = 2;
     private const int StateStopping = 3;
     private const int StateStopped = 4;
+    /// <summary>
+    /// 수신 스레드가 정지 요청 없이 스스로 끝났다(소켓 사망 등). 받기는 이미 "닫힘" 으로 끝나지만 장치 전송 끄기와
+    /// 버퍼 반납은 아직이라 <see cref="StateStopped"/> 와 다르다 — 정지는 이 상태를 살아 있는 스트림처럼 끝까지 정리한다.
+    /// </summary>
+    private const int StateFaulted = 5;
     /// <summary>정지가 수신 스레드를 기다리는 상한. 제어 채널의 같은 상한과 맞춘다.</summary>
     private const int ReceiverJoinMs = 2000;
 
@@ -87,6 +92,16 @@ public sealed partial class GevStream : IAsyncDisposable
 
     public GevStreamStats Stats => _stats;
 
+    /// <summary>
+    /// 스트림이 프레임을 받고 있으면 참 — <see cref="StartAsync"/> 가 성공한 뒤부터, <see cref="StopAsync"/>·<see cref="DisposeAsync"/>
+    /// 가 불리거나 수신 스레드가 스스로 끝날 때(스트림 소켓이 죽는 등)까지.
+    /// <para>
+    /// 수신 스레드가 스스로 끝나면 이 값이 거짓이 되고 <see cref="ReceiveAsync"/> 는 큐에 남은 장을 다 내준 뒤
+    /// <see cref="GevStreamClosedException"/> 으로 끝난다. 그 스트림은 다시 시작할 수 없고, 정리도 아직이다 —
+    /// <see cref="StopAsync"/>(또는 <see cref="DisposeAsync"/>)를 불러야 장치 전송이 꺼지고 버퍼가 돌아온다.
+    /// 장치가 조용해진 것만으로는 수신 스레드가 끝나지 않으므로 그때는 참으로 남는다(<see cref="ReceiveAsync"/> 설명 참고).
+    /// </para>
+    /// </summary>
     public bool IsStarted => Volatile.Read(ref _state) == StateStarted;
 
     /// <summary>프레임을 전달하지 못했을 때 수신 스레드에서 호출된다 — 가볍게 처리해야 한다.</summary>
@@ -109,9 +124,12 @@ public sealed partial class GevStream : IAsyncDisposable
         {
             if (_state != StateNew)
             {
-                throw new InvalidOperationException(_state == StateStarted || _state == StateStarting
-                    ? "Stream is already started."
-                    : "Stream cannot be restarted after it was stopped.");
+                throw new InvalidOperationException(_state switch
+                {
+                    StateStarted or StateStarting => "Stream is already started.",
+                    StateFaulted => "Stream receiver has already ended on its own; a stream cannot be restarted. Stop it and open a new one.",
+                    _ => "Stream cannot be restarted after it was stopped.",
+                });
             }
             _state = StateStarting;
 
@@ -172,8 +190,10 @@ public sealed partial class GevStream : IAsyncDisposable
                     Priority = _opt.ReceiverPriority,
                 };
                 _thread = thread;
+                // 상태는 스레드를 띄우기 **전에** 세운다. 소켓이 곧장 죽으면 수신 스레드가 "시작됨" 을 "스스로 끝남" 으로
+                // 내리는데, 그보다 늦게 여기서 "시작됨" 을 쓰면 죽은 스트림이 시작된 것으로 남는다. 띄우기가 던지면 아래 catch 가 되돌린다.
+                Volatile.Write(ref _state, StateStarted);
                 thread.Start();
-                _state = StateStarted;
                 GevLog.Info(_logSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_opt.ResendEnabled ? "on" : "off")}.");
             }
             catch
@@ -284,7 +304,8 @@ public sealed partial class GevStream : IAsyncDisposable
     }
 
     /// <summary>
-    /// 다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/>.
+    /// 다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/> — 수신 스레드가
+    /// 스스로 끝난 스트림(<see cref="IsStarted"/> 참고)도 큐에 남은 장을 다 내준 뒤 같은 예외로 끝난다.
     /// 받은 프레임은 반드시 Dispose 한다.
     /// <para>
     /// <b>장치가 사라져도 이 대기는 스스로 끝나지 않는다.</b> 장치는 자기가 연 스트림을 모르므로 제어 상실
@@ -538,6 +559,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 그때 <see cref="StopAsync"/> 가 큐에 남은 프레임을 반납하는지는 반드시 지켜야 하는 계약이라 테스트가 필요하다.
     /// </summary>
     internal void SimulateReceiverQueueCompletion(Exception cause) => _queue?.Complete(cause);
+
+    /// <summary>
+    /// 정지 요청 없이 스트림 소켓을 닫는다 — NIC 가 내려가 소켓이 죽은 것과 같은 자리를 만들어, 수신 스레드가
+    /// 스스로 끝나는 실제 경로(수신 오류 → 루프 종료 → 큐 닫기)를 밟게 한다.
+    /// </summary>
+    internal void KillSocketForTest() => _socket?.Close();
 
     /// <summary>조립이 끝나 큐에 든 프레임을 동기로 꺼낸다 — 할당 계측이 비동기 대기의 할당에 섞이지 않게.</summary>
     internal bool TryDrainForTest(out GevFrame frame)

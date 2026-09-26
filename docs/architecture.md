@@ -315,7 +315,10 @@ public sealed class GevStream : IAsyncDisposable
     public int LocalPort { get; }
     public int PacketSize { get; }                            // negotiated SCPS
     public GevStreamStats Stats { get; }                      // live counters (Interlocked), snapshot via Stats.Snapshot()
-    public bool IsStarted { get; }                            // true between a successful StartAsync and StopAsync
+    public bool IsStarted { get; }                            // true from a successful StartAsync until StopAsync/DisposeAsync, or until the
+                                                             // receiver thread ends on its own (stream socket died) — then ReceiveAsync hands
+                                                             // out what is queued and throws GevStreamClosedException; the stream cannot be
+                                                             // restarted, and StopAsync is still needed to turn the device off and return buffers
     public event Action<GevFrameDiag>? FrameDropped;          // Reason is one of four: Incomplete / NoBuffer / Error / Unsupported (called on receiver thread — keep it cheap)
 
     public Task StartAsync(CancellationToken ct = default);   // bind + tune socket, write SCDA/SCP, negotiate SCPS, apply SCPD, start thread. Does NOT send AcquisitionStart.

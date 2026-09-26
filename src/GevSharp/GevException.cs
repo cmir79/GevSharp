@@ -77,7 +77,10 @@ public sealed class GenApiException : GevException
     }
 }
 
-/// <summary>GVSP 스트림이 닫혔거나 시작되지 않은 상태에서 수신을 요청했다.</summary>
+/// <summary>
+/// GVSP 스트림이 닫혔거나 시작되지 않은 상태에서 수신을 요청했다. 닫힘에는 정지·해제 말고도 수신 스레드가 스스로 끝난
+/// 경우(스트림 소켓 사망 등)가 있다 — 그때는 <see cref="GevStream.IsStarted"/> 도 거짓이 되며, 스트림을 정지해 정리한다.
+/// </summary>
 public sealed class GevStreamClosedException : GevException
 {
     public GevStreamClosedException(string message) : base(message) { }
