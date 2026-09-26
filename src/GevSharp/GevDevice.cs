@@ -462,7 +462,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         {
             // 닫기는 오래 붙들지 않는다 — 채널의 재시도 예산 전부가 아니라 짧은 고정 예산만 준다.
             // 놓지 못해도 장치는 자기 하트비트 타임아웃으로 알아서 푼다.
-            var releaseBudgetMs = ShutdownWriteBudgetMs(_opt.GvcpTimeoutMs);
+            // 응답 창은 채널이 쥔 사본에서 — 호출자의 옵션 객체는 열고 난 뒤에도 바뀔 수 있다(0 으로 바꾸면 해제를 시도조차 안 하게 된다).
+            var releaseBudgetMs = ShutdownWriteBudgetMs(Gvcp.Opt.TimeoutMs);
             using var releaseCts = new CancellationTokenSource(releaseBudgetMs);
             try
             {

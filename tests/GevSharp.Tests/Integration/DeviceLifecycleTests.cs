@@ -558,6 +558,13 @@ public class DeviceLifecycleTests
         // 진단에 드러나는 주소(DeviceEndPoint·로그)도 연 장치 그대로다.
         Assert.NotSame(ep, dev.Gvcp.DeviceEndPoint);
         Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
+
+        // getter 로 받은 객체를 바꿔도 같다 — 채널이 응답 대조에 쓰는 사본을 밖으로 내주지 않는다.
+        var handedOut = dev.Gvcp.DeviceEndPoint;
+        handedOut.Port = 1;
+        Assert.Equal(0x0002_0000u, await dev.ReadRegAsync(GvbsAddr.Version));
+        Assert.Equal(foreignBefore, dev.Gvcp.ForeignPacketCount);
+        Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
     }
 
     [Fact]

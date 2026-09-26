@@ -95,8 +95,8 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         // 다시 쓰면(Port·Address 변경) 송신 주소(아래 직렬화 사본)는 그대로인데 응답 대조(HandlePacket)·DeviceEndPoint·로그만
         // 따라 바뀌어 진짜 장치의 응답이 전부 남의 패킷으로 버려진다. 아래는 전부 이 사본에서 끌어낸다.
         device = new IPEndPoint(device.Address, device.Port);
-        DeviceEndPoint = device;
-        _logSrc = $"{LogSrc} {DeviceEndPoint.Address}";
+        _device = device;
+        _logSrc = $"{LogSrc} {_device.Address}";
         // 호출자가 준 인스턴스를 그대로 쥐지 않고 값만 옮겨 온다 — 채널이 세션에 맞춰 상한을 다시 정할 때(SetMaxPendingAckWaitMs)
         // 호출자의 객체를, 나아가 같은 객체로 만든 다른 채널까지 조용히 바꿔 놓지 않기 위해서다.
         // ⚠ GvcpChannelOpt 에 항목을 더하면 여기에도 더한다.
@@ -141,8 +141,14 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     internal Action<Exception?>? OnClosed { get; set; }
 
     public IPEndPoint LocalEndPoint { get; }
-    /// <summary>이 채널이 겨냥하는 장치 끝점 — 생성자에 넘긴 객체의 사본이라, 그 객체를 뒤에 바꿔도 이 채널은 처음 연 장치에 묶여 있다.</summary>
-    public IPEndPoint DeviceEndPoint { get; }
+    /// <summary>
+    /// 이 채널이 겨냥하는 장치 끝점. 부를 때마다 새 사본을 돌려준다 — 생성자에 넘긴 객체도, 여기서 받은 객체도 뒤에 바꿔 봐야
+    /// 이 채널은 처음 연 장치에 묶여 있다(응답 대조는 채널 안의 사본으로 한다).
+    /// </summary>
+    public IPEndPoint DeviceEndPoint => new(_device.Address, _device.Port);
+
+    /// <summary>응답 대조·로그에 쓰는 장치 끝점 — 밖으로 내주지 않는다.</summary>
+    private readonly IPEndPoint _device;
     /// <summary>이 채널이 실제로 쓰는 타이밍 값(생성자에 넘긴 객체의 사본). 진단용으로 읽는다.</summary>
     public GvcpChannelOpt Opt => _opt;
     public bool IsDisposed => _isDisposed;
@@ -209,7 +215,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 if (Interlocked.Read(ref pending.PendingDeadlineMs) > 0)
                 {
                     var expired = new GevTimeoutException(
-                        $"{cmd.Name} to {DeviceEndPoint} was answered with PENDING_ACK but never completed within its {pending.BudgetMs} ms budget; "
+                        $"{cmd.Name} to {_device} was answered with PENDING_ACK but never completed within its {pending.BudgetMs} ms budget; "
                         + "the command is not resent because the device has already taken it");
                     // 장치는 답했다 — 무응답 시한 초과와 형은 같아도 장치 상실로 읽히지 않게 표식을 단다.
                     expired.Data[PendingAckExpiredKey] = true;
@@ -220,7 +226,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                     GevLog.Debug(_logSrc, $"{cmd.Name} req_id {reqId}: no reply within {_opt.TimeoutMs} ms (attempt {attempt}/{attempts})");
             }
 
-            throw new GevTimeoutException($"{cmd.Name} to {DeviceEndPoint} timed out after {attempts} attempt(s) of {_opt.TimeoutMs} ms");
+            throw new GevTimeoutException($"{cmd.Name} to {_device} timed out after {attempts} attempt(s) of {_opt.TimeoutMs} ms");
         }
         finally
         {
@@ -240,7 +246,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
         catch (SocketException ex)
         {
-            throw new GevException($"GVCP send to {DeviceEndPoint} failed: {ex.SocketErrorCode}", ex);
+            throw new GevException($"GVCP send to {_device} failed: {ex.SocketErrorCode}", ex);
         }
     }
 
@@ -351,7 +357,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
         catch (SocketException ex)
         {
-            throw new GevException($"GVCP send to {DeviceEndPoint} failed: {ex.SocketErrorCode}", ex);
+            throw new GevException($"GVCP send to {_device} failed: {ex.SocketErrorCode}", ex);
         }
     }
 
@@ -470,11 +476,11 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     private void HandlePacket(byte[] buf, int n, EndPoint from)
     {
         // 장치는 명령을 받은 그 소켓(주소+포트)에서 응답한다 — 다른 곳에서 온 것은 이 채널의 응답이 아니다.
-        if (from is not IPEndPoint fromIp || !fromIp.Equals(DeviceEndPoint))
+        if (from is not IPEndPoint fromIp || !fromIp.Equals(_device))
         {
             Interlocked.Increment(ref _foreignPacketCount);
             if (GevLog.IsEnabled(GevLogLevel.Trace))
-                GevLog.Trace(LogSrc, $"ignored {n} bytes from {from} (device is {DeviceEndPoint})");
+                GevLog.Trace(LogSrc, $"ignored {n} bytes from {from} (device is {_device})");
             return;
         }
 
