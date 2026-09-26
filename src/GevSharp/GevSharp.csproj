@@ -42,7 +42,8 @@
     <InternalsVisibleTo Include="GevSharp.Tests" />
     <InternalsVisibleTo Include="GevSharp.Sim" />
     <InternalsVisibleTo Include="GevSharp.Net48" />
-    <!-- 평가용 CLI 는 표준 포트가 아닌 장치(시뮬레이터)를 열려고 IPEndPoint 오버로드가 필요하다. -->
+    <!-- 평가용 CLI 가 표준 포트가 아닌 장치(시뮬레이터)에 프로브를 보내려고 내부 GevDiscovery.ProbeAsync(IPEndPoint) 가 필요하다.
+         그 장치를 여는 OpenAsync(IPEndPoint) 는 공개라 이 권한과 무관하다 — CLI 가 쓰는 내부 멤버는 이 프로브 하나뿐이다. -->
     <InternalsVisibleTo Include="GevSharp.Cli" />
   </ItemGroup>
 
