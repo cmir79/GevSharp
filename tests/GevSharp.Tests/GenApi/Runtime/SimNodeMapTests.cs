@@ -352,14 +352,22 @@ public class SimNodeMapTests
         var value = s.Map.GetInteger("GevTimestampValue");
         Assert.Equal(1_000_000_000, await s.Map.GetInteger("GevTimestampTickFrequency").GetAsync());
 
+        // 카운터를 흘려 둔 뒤에 reset 한다 — 열자마자 reset 하면 reset 노드가 아무것도 안 해도(엉뚱한 CommandValue) 아래 범위를 통과한다.
+        await Task.Delay(250);
+        var h1 = Stopwatch.GetTimestamp();
         await reset.ExecuteAsync();
         Assert.Equal(0, await value.GetAsync());   // reset 은 래치하지 않는다
         await Task.Delay(20);
         await latch.ExecuteAsync();
+        var h2 = Stopwatch.GetTimestamp();
         var first = await value.GetAsync();
         // 10 ms .. 20 s — reset 뒤의 틱(1 GHz)이다. 굶주린 러너가 늘리는 것은 대기뿐이라 상한은 눈금만 지킨다.
         Assert.InRange(first, 10_000_000L, 20_000_000_000L);
         Assert.True((ulong)first <= s.Sim.TimestampTicks, "a latched value cannot be ahead of the counter that stamps frames");
+        // reset 이 카운터를 실제로 되돌렸는지: 시뮬레이터는 호스트와 같은 시계로 세므로, reset 을 보내기 직전부터 latch 가 끝날 때까지의
+        // 시간이 래치 값의 상한이다(1 µs 는 ns 환산의 끝자리 여유). reset 이 아무것도 안 하면 앞서 흘린 250 ms 와 열기 시간을 싣고 넘는다.
+        var bracketNs = (long)((h2 - h1) * (1_000_000_000.0 / Stopwatch.Frequency)) + 1_000;
+        Assert.True(first <= bracketNs, $"after GevTimestampControlReset the latched count {first} ns must fit in the {bracketNs} ns since the reset was sent");
 
         // 두 이름 가족은 같은 레지스터를 본다.
         Assert.Equal(first, await s.Map.GetInteger("TimestampLatchValue").GetAsync());

@@ -637,6 +637,37 @@ public class SimGvcpTests
     }
 
     [Fact]
+    public void TimestampReset_RestartsTheRunningCounter()
+    {
+        // 위 시험은 시작 직후에 reset 하므로 reset 이 아무것도 안 해도 통과한다 — 여기서 그 둘을 가른다.
+        // 시뮬레이터는 같은 프로세스라 호스트의 Stopwatch 와 같은 시계로 센다. 그러니 reset 을 보내기 직전(h1)부터 latch 의 ACK 를
+        // 받은 뒤(h2)까지가 reset 뒤 래치 값의 상한이다. 부하가 늘리는 것은 이 괄호뿐이라 이 단정은 굶주린 러너에서도 흔들리지 않는다.
+        // reset 이 아무것도 안 하면 래치 값은 앞서 흘려 둔 시간(아래 ≥ 200 ms)을 싣고 괄호를 넘는다 — 두 왕복만으로 그보다 오래
+        // 걸리는 러너에서는 그 판별이 약해질 뿐 고친 판이 거짓으로 깨지지는 않는다.
+        using var dev = StartDevice();
+        using var c = new RawGvcpClient(dev.GvcpEndPoint);
+
+        Thread.Sleep(250);   // 카운터를 흘려 둔다
+        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // latch — reset 전 값
+        var (_, before) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+        ulong latchedBefore = ((ulong)before[0] << 32) | before[1];
+        // 판별력의 전제: reset 이 없었다면 아래 래치 값은 적어도 이만큼을 싣는다.
+        Assert.True(latchedBefore >= 200_000_000ul, $"the counter ran only {latchedBefore} ns before the reset");
+
+        long h1 = Stopwatch.GetTimestamp();
+        c.WriteRegOk(GvbsAddr.TimestampControl, 1);   // reset
+        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // latch
+        long h2 = Stopwatch.GetTimestamp();
+        var (_, after) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+        ulong latchedAfter = ((ulong)after[0] << 32) | after[1];
+
+        // 1 µs 여유: 양쪽이 틱을 ns 로 바꾸며 버리는 끝자리.
+        ulong bracketNs = (ulong)((h2 - h1) * (1_000_000_000.0 / Stopwatch.Frequency)) + 1_000;
+        Assert.True(latchedAfter <= bracketNs,
+            $"after a reset the latched count {latchedAfter} ns must fit in the {bracketNs} ns between sending the reset and the latch ACK (before the reset: {latchedBefore} ns)");
+    }
+
+    [Fact]
     public void RetransmittedCommand_WithTheSameReqId_IsExecutedAgain()
     {
         // 응답기는 req_id 를 기억하지 않는다 — 같은 req_id 로 다시 온 명령(호스트가 늦은 ACK 를 기다리다 재전송한 것)도
