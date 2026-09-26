@@ -49,6 +49,7 @@ public sealed partial class GevStream
     private int _payloadSizeHint;
     private bool _hasLoggedChunkOverflow;
     private bool _hasLoggedShortLeader;
+    private bool _hasLoggedShortBlock;
 
     private readonly FrameSlot?[] _active = new FrameSlot?[MaxInFlightFrames];
     private readonly FrameSlot[] _freeSlots = new FrameSlot[MaxInFlightFrames];
@@ -81,6 +82,8 @@ public sealed partial class GevStream
         public ushort SkipCode;
         public bool HasLeader;
         public bool HasTrailer;
+        /// <summary>트레일러가 알린 줄 수(0 은 모름). 리더가 트레일러 뒤에 와도 가변 높이 축소를 할 수 있게 남겨 둔다.</summary>
+        public uint TrailerSizeY;
         public FrameMeta Meta;
         /// <summary>이미지 바이트 수. −1 은 미정(청크가 붙는 프레임) — 트레일러가 패킷 수를 정한다.</summary>
         public long ExpectedBytes;
@@ -144,6 +147,7 @@ public sealed partial class GevStream
             SkipCode = 0;
             HasLeader = false;
             HasTrailer = false;
+            TrailerSizeY = 0;
             Meta = default;
             ExpectedBytes = -1;
             DataBytes = 0;
@@ -252,6 +256,7 @@ public sealed partial class GevStream
         _maxPayloadBytes = Math.Min(_opt.MaxPayloadBytes, int.MaxValue - ScratchSlackBytes);
         _hasLoggedPayloadCeiling = false;
         _hasLoggedShortLeader = false;
+        _hasLoggedShortBlock = false;
         _punchIntervalTicks = _opt.FirewallTraversal && _opt.FirewallTraversalIntervalMs > 0
             ? MsToTicks(_opt.FirewallTraversalIntervalMs)
             : 0;
@@ -720,6 +725,9 @@ public sealed partial class GevStream
 
         if (slot.DataBytes == 0) slot.DataBytes = extendedIds ? _dataBytesExt : _dataBytesStd;
 
+        // 리더가 리센드로 트레일러 뒤에 왔으면 트레일러가 먼저 알린 실제 줄 수를 여기서 적용한다 — 버퍼는 리더의 최대 크기로 잡는다.
+        ApplyTrailerHeight(slot);
+
         // 청크가 붙으면 이미지보다 커진다 — 힌트(PayloadSize 옵션)나 지금까지의 최대 크기 중 큰 쪽을 잡는다.
         var needed = hasChunk
             ? Math.Max((int)imageBytes, Math.Max(_payloadSizeHint, _pool.BufferBytes))
@@ -945,14 +953,8 @@ public sealed partial class GevStream
         var n = (int)id - 1;
         slot.EnsureCapacity(n + 2);
 
-        if (view.TryReadTrailer(out var trailer) && slot.HasLeader && slot.ExpectedBytes >= 0
-            && trailer.SizeY > 0 && trailer.SizeY < (uint)slot.Meta.Height)
-        {
-            // 가변 높이: 실제 줄 수만큼만 유효하다.
-            slot.Meta.Height = (int)trailer.SizeY;
-            slot.ExpectedBytes = (long)slot.Meta.Stride * trailer.SizeY + slot.Meta.PaddingY;
-            slot.Meta.PayloadSize = (int)slot.ExpectedBytes;
-        }
+        if (view.TryReadTrailer(out var trailer)) slot.TrailerSizeY = trailer.SizeY;
+        ApplyTrailerHeight(slot);
 
         if (slot.ExpectedPackets != n && GevLog.IsEnabled(GevLogLevel.Debug))
         {
@@ -964,6 +966,20 @@ public sealed partial class GevStream
         slot.IsTailKnown = true;
         slot.IsTailAssumed = false;
         slot.IsScanNeeded = true;
+    }
+
+    /// <summary>
+    /// 가변 높이: 트레일러가 알린 줄 수가 리더보다 적으면 그 줄까지만 유효하다. 리더와 트레일러가 둘 다 있어야 하므로 어느 쪽이 나중에 오든
+    /// 나중 쪽에서 부른다. 크기는 픽셀 포맷 규칙으로 다시 구한다 — 줄 간격 × 줄 수로 구하면 줄이 바이트 경계에서 끝나지 않는 패킹
+    /// (Stride 0)에서 0 이 되고, 패딩 없는 묶음 포맷은 줄에서 끊기지 않으므로 줄 간격의 배수도 아니다.
+    /// </summary>
+    private static void ApplyTrailerHeight(FrameSlot slot)
+    {
+        var sizeY = slot.TrailerSizeY;
+        if (!slot.HasLeader || slot.ExpectedBytes < 0 || sizeY == 0 || sizeY >= (uint)slot.Meta.Height) return;
+        slot.Meta.Height = (int)sizeY;
+        slot.ExpectedBytes = Pfnc.PixelFormatInfo.ImageBytesLong(slot.Meta.PixelFormatCode, slot.Meta.Width, sizeY, slot.Meta.PaddingX, slot.Meta.PaddingY);
+        slot.Meta.PayloadSize = (int)slot.ExpectedBytes;
     }
 
     /// <summary>올인 패킷: 리더 36 바이트, 이미지 바이트, 끝에 트레일러 8 바이트가 한 데이터그램에 들어 있다.</summary>
@@ -1275,6 +1291,14 @@ public sealed partial class GevStream
                     CloseSlot(i);
                     continue;
                 }
+                // 트레일러가 약속한 패킷은 다 왔는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 중간에 끊었다. 더 올 것이 없으므로
+                // 기다리지 않고 불완전으로 닫는다(보존 시간까지 두면 뒤 프레임이 그만큼 막힌다).
+                if (IsCutShort(slot))
+                {
+                    LogCutShort(slot);
+                    CloseSlot(i);
+                    continue;
+                }
                 // 리더만 온 가장 새 프레임은 기다린다 — 노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다.
                 var isLoneLeader = isNewest && slot.HasLeader && slot.ReceivedPayloads == 0 && !slot.HasTrailer;
                 if (!isLoneLeader)
@@ -1305,8 +1329,37 @@ public sealed partial class GevStream
         }
     }
 
+    /// <summary>
+    /// 완성 = 리더가 있고, 예상 패킷을 다 받았고, 리더가 크기를 알렸으면 그 바이트 끝까지 실제로 받았다. 패킷 수만 보면 안 된다 —
+    /// 패킷 수는 트레일러가 정하는데, 블록을 중간에 끊은 장치의 트레일러는 적은 수를 알리므로 안 온 꼬리(풀에서 다시 쓰는 버퍼라
+    /// 이전 프레임의 픽셀이 남아 있다)가 완성으로 나간다. 마지막 패킷은 짧을 수 있어 패킷 수 × 패킷 크기가 아니라 받은 끝으로 본다.
+    /// </summary>
     private static bool IsComplete(FrameSlot slot)
-        => slot.HasLeader && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets;
+        => slot.HasLeader && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
+            && (slot.ExpectedBytes < 0 || slot.ReceivedEnd >= slot.ExpectedBytes);
+
+    /// <summary>트레일러가 약속한 패킷은 다 받았는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 끊었고 더 올 것이 없다.</summary>
+    private static bool IsCutShort(FrameSlot slot)
+        => slot.HasLeader && slot.HasTrailer && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
+            && slot.ExpectedBytes >= 0 && slot.ReceivedEnd < slot.ExpectedBytes;
+
+    /// <summary>
+    /// 끊긴 블록은 스트림당 한 번만 경고한다 — 획득을 멈출 때마다 끊는 장치라면 단발 그랩마다 한 줄씩 쌓인다. 그 뒤로는 불완전 프레임
+    /// 통계·<see cref="FrameDropped"/> 로 세고, 프레임마다의 자세한 줄은 Debug 로 남긴다.
+    /// </summary>
+    private void LogCutShort(FrameSlot slot)
+    {
+        if (!_hasLoggedShortBlock)
+        {
+            _hasLoggedShortBlock = true;
+            GevLog.Warn(_logSrc, $"Block {slot.BlockId}: the trailer ended the block after {slot.ExpectedPackets} payload packet(s) ({slot.ReceivedEnd} bytes) "
+                + $"but the leader announced {slot.ExpectedBytes} bytes; the frame is closed as incomplete. Further occurrences are counted as incomplete frames but not logged.");
+        }
+        else if (GevLog.IsEnabled(GevLogLevel.Debug))
+        {
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: cut short at {slot.ReceivedEnd} of {slot.ExpectedBytes} bytes ({slot.ExpectedPackets} payload packets).");
+        }
+    }
 
     private void CloseSlot(int index)
     {
@@ -1347,6 +1400,12 @@ public sealed partial class GevStream
         }
 
         var expected = slot.ExpectedPackets > 0 ? slot.ExpectedPackets : (int)slot.HighestPacketId;
+        // 트레일러가 리더가 알린 바이트보다 적은 패킷 수로 블록을 닫았으면, 모자란 바이트를 실었어야 할 패킷도 못 받은 패킷이다.
+        if (slot.HasLeader && slot.ExpectedBytes >= 0 && slot.DataBytes > 0)
+        {
+            var needed = (slot.ExpectedBytes + slot.DataBytes - 1) / slot.DataBytes;
+            if (needed > expected && needed < MaxPacketsPerFrame) expected = (int)needed;
+        }
         var missing = Math.Max(0, expected - slot.ReceivedPayloads);
         _stats.IncFramesIncomplete();
         _stats.AddPacketsMissing(missing);
@@ -1380,11 +1439,14 @@ public sealed partial class GevStream
         if (slot.ExpectedBytes < 0) slot.Meta.PayloadSize = (int)Math.Min(slot.ReceivedEnd, slot.Buf!.Data.Length);
     }
 
-    /// <summary>불완전 프레임을 내보내기 전에 못 받은 패킷 자리를 0 으로 비운다 — 이전 프레임의 픽셀이 새어 보이지 않게.</summary>
+    /// <summary>
+    /// 불완전 프레임을 내보내기 전에 못 받은 패킷 자리를 0 으로 비운다 — 이전 프레임의 픽셀이 새어 보이지 않게.
+    /// 트레일러가 약속한 패킷 뒤로도 리더가 알린 크기가 남아 있으면(끊긴 블록) 그 꼬리도 비운다.
+    /// </summary>
     private static void ZeroHoles(FrameSlot slot)
     {
         var data = slot.Buf!.Data;
-        var limit = slot.ExpectedBytes >= 0 ? slot.ExpectedBytes : slot.ReceivedEnd;
+        var limit = slot.ExpectedBytes >= 0 ? Math.Min(slot.ExpectedBytes, data.Length) : slot.ReceivedEnd;
         for (uint id = 1; id <= (uint)slot.ExpectedPackets; id++)
         {
             if (slot.IsReceived(id)) continue;
@@ -1393,6 +1455,8 @@ public sealed partial class GevStream
             var length = (int)Math.Min(slot.DataBytes, limit - offset);
             Array.Clear(data, (int)offset, length);
         }
+        var covered = (long)slot.ExpectedPackets * slot.DataBytes;
+        if (covered < limit) Array.Clear(data, (int)covered, (int)(limit - covered));
     }
 
     private void Enqueue(FrameSlot slot)
