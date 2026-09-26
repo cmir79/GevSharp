@@ -453,7 +453,7 @@ internal sealed class IntSwissKnifeNode : IntegerNodeBase
 
     protected override void BindCore(NodeBinder binder)
     {
-        _scope = new FormulaScope(this, _def, binder);
+        _scope = new FormulaScope(this, _def, binder, FormulaMode.Integer);
         _formula = _scope.Parse(_def.Formula, "Formula");
     }
 
@@ -491,7 +491,7 @@ internal sealed class IntConverterNode : IntegerNodeBase
     {
         if (_def.PValue is null) throw new GenApiException($"IntConverter '{Name}' has no pValue.", Name);
         _pValue = binder.Resolve(_def.PValue, RefKind.Value, "pValue", NodeBinder.Numeric);
-        _scope = new FormulaScope(this, _def, binder);
+        _scope = new FormulaScope(this, _def, binder, FormulaMode.Integer);
         _to = _scope.Parse(_def.FormulaTo, "FormulaTo");
         _from = _scope.Parse(_def.FormulaFrom, "FormulaFrom");
     }

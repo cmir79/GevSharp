@@ -15,6 +15,14 @@ public class FormulaTests
         return Formula.Parse(text).Evaluate(dict);
     }
 
+    /// <summary>실수 노드(SwissKnife·Converter)가 쓰는 실수 규칙으로 평가한다.</summary>
+    private static GenApiValue EvalReal(string text, params (string Name, GenApiValue Value)[] vars)
+    {
+        var dict = new Dictionary<string, GenApiValue>(StringComparer.Ordinal);
+        foreach (var (name, value) in vars) dict[name] = value;
+        return Formula.Parse(text).Evaluate(dict, FormulaMode.Real);
+    }
+
     // ---- 정수 결과: 연산자·우선순위·결합·리터럴·함수 ----
 
     [Theory]
@@ -489,6 +497,82 @@ public class FormulaTests
         var ex = Assert.Throws<GenApiException>(() => Eval("(ROUND(200 * LG(FROM), 0))", ("FROM", 0.0)));
         Assert.Contains("LG is undefined", ex.Message);
         Assert.Contains("position 13", ex.Message);
+    }
+
+    [Fact]
+    public void GainConverterFormulaFromWithIntegerRegister()
+    {
+        // 위 왕복의 TO 는 실수 120.0 이었다 — 실제로는 정수 레지스터 값이 온다. 정수 규칙이면 120/200 = 0 → 1.
+        Assert.Equal(1L, Eval("(10 ** (TO / 200))", ("TO", 120L)).AsInt64);
+        var back = EvalReal("(10 ** (TO / 200))", ("TO", 120L));
+        Assert.Equal(Math.Pow(10, 0.6), back.AsDouble, 1e-12);
+    }
+
+    // ---- 실수 규칙(실수 노드의 수식) ----
+
+    [Theory]
+    [InlineData("7 / 2", 3.5)]
+    [InlineData("-7 / 2", -3.5)]
+    [InlineData("1 / 3 * 3", 1.0)]
+    [InlineData("10 ** ((60 / 10) / 20)", 1.9952623149688795)]
+    [InlineData("2 ** -1", 0.5)]
+    public void RealModeDividesIntegersAsReals(string text, double expected)
+    {
+        var v = EvalReal(text);
+        Assert.True(v.IsDouble || v.AsDouble == expected, $"{text} = {v}");
+        Assert.Equal(expected, v.AsDouble, 15);
+    }
+
+    [Fact]
+    public void RealModeKeepsExactIntegerArithmeticUntilItOverflows()
+    {
+        // 정수끼리의 + - * ** 는 정확하므로 정수로 남는다 — 비교·비트 연산이 뒤따라도 값이 흐트러지지 않는다
+        var exact = EvalReal("A * B + 1", ("A", 3L), ("B", 4L));
+        Assert.True(exact.IsInteger);
+        Assert.Equal(13L, exact.AsInt64);
+
+        // 넘치면 예외 대신 실수로 계속한다. 대조군: 정수 규칙은 같은 식에서 넘침 예외.
+        Assert.Equal(Math.Pow(2, 70), EvalReal("2 ** 70").AsDouble);
+        Assert.Equal(4294967296.0 * 4294967296.0, EvalReal("A * A", ("A", 4294967296L)).AsDouble);
+        Assert.Equal(9223372036854775807.0 + 1.0, EvalReal("A + 1", ("A", long.MaxValue)).AsDouble);
+        Assert.Equal(9223372036854775808.0, EvalReal("-A", ("A", long.MinValue)).AsDouble);
+        Assert.Equal(9223372036854775808.0, EvalReal("ABS(A)", ("A", long.MinValue)).AsDouble);
+        Assert.Contains("overflow", Assert.Throws<GenApiException>(() => Eval("2 ** 70")).Message);
+        Assert.Contains("overflow", Assert.Throws<GenApiException>(() => Eval("A * A", ("A", 4294967296L))).Message);
+    }
+
+    [Theory]
+    [InlineData("(N / 2) & 1", 6L, 1L)]                 // 3.0 → 3
+    [InlineData("(N / 2) & 1", 5L, 0L)]                 // 2.5 → 0 방향 절삭 2 — 정수 나눗셈 뒤 비트 연산과 같은 결과
+    [InlineData("(N / 2) | 0", 7L, 3L)]
+    [InlineData("(N / 4) << 1", 10L, 4L)]               // 2.5 → 2 → 4
+    [InlineData("1 << (N / 2)", 9L, 16L)]               // 시프트 수도 같은 규칙: 4.5 → 4
+    [InlineData("~(N / 2)", 4L, -3L)]
+    public void RealModeBitOperatorsTruncateRealOperands(string text, long n, long expected)
+    {
+        var v = EvalReal(text, ("N", n));
+        Assert.True(v.IsInteger);
+        Assert.Equal(expected, v.AsInt64);
+        // 대조군: 정수 규칙은 나눗셈이 이미 정수라 같은 답이 나온다(음이 아닌 값에서)
+        Assert.Equal(expected, Eval(text, ("N", n)).AsInt64);
+    }
+
+    [Fact]
+    public void RealModeBitOperatorRejectsValuesThatCannotBeIntegers()
+    {
+        var nan = Assert.Throws<GenApiException>(() => EvalReal("A & 1", ("A", double.NaN)));
+        Assert.Contains("NaN", nan.Message);
+        var big = Assert.Throws<GenApiException>(() => EvalReal("A | 0", ("A", 1e30)));
+        Assert.Contains("64-bit", big.Message);
+        // 정수 규칙은 실수 피연산자를 비트 연산에 받지 않는다(그대로)
+        Assert.Contains("requires integer", Assert.Throws<GenApiException>(() => Eval("A & 1", ("A", 2.0))).Message);
+    }
+
+    [Fact]
+    public void RealModeStillRejectsDivisionByZero()
+    {
+        Assert.Contains("zero", Assert.Throws<GenApiException>(() => EvalReal("1 / A", ("A", 0L))).Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("zero", Assert.Throws<GenApiException>(() => EvalReal("0 ** -1")).Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

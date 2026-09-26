@@ -43,13 +43,19 @@ internal sealed class FormulaScope
     }
 
     private readonly NodeBase _owner;
+    private readonly FormulaMode _mode;
     private readonly Dictionary<string, GenApiValue> _constants = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Formula> _expressions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VarRef> _variables = new(StringComparer.Ordinal);
 
-    public FormulaScope(NodeBase owner, IFormulaNodeDef def, NodeBinder binder)
+    /// <param name="mode">
+    /// 이 범위의 모든 수식(본식·Expression·Converter 한계 계산)을 평가하는 규칙 — 실수 노드는 <see cref="FormulaMode.Real"/>,
+    /// 정수 노드는 <see cref="FormulaMode.Integer"/>. 필수 인자로 두어 새 수식 노드가 규칙을 고르지 않고 지나가지 못하게 한다.
+    /// </param>
+    public FormulaScope(NodeBase owner, IFormulaNodeDef def, NodeBinder binder, FormulaMode mode)
     {
         _owner = owner;
+        _mode = mode;
         foreach (var c in def.Constants)
             _constants[c.Name] = c.IntValue is { } iv ? new GenApiValue(iv) : new GenApiValue(c.DoubleValue);
         foreach (var v in def.Variables)
@@ -74,7 +80,7 @@ internal sealed class FormulaScope
 
     /// <summary>수식을 평가한다. extraName 은 Converter 의 FROM/TO 처럼 호출자가 값을 주는 변수.</summary>
     public ValueTask<GenApiValue> EvaluateAsync(Formula formula, string? extraName, GenApiValue extraValue, CancellationToken ct)
-        => formula.EvaluateAsync(name => ResolveAsync(name, extraName, extraValue, 0, ct), ct);
+        => formula.EvaluateAsync(name => ResolveAsync(name, extraName, extraValue, 0, ct), _mode, ct);
 
     private async ValueTask<GenApiValue> ResolveAsync(string name, string? extraName, GenApiValue extraValue, int depth, CancellationToken ct)
     {
@@ -84,7 +90,7 @@ internal sealed class FormulaScope
         {
             if (depth >= MaxExpressionDepth)
                 throw new GenApiException($"Expression '{name}' of node '{_owner.Name}' nests too deeply.", _owner.Name);
-            return await expression.EvaluateAsync(n => ResolveAsync(n, extraName, extraValue, depth + 1, ct), ct).ConfigureAwait(false);
+            return await expression.EvaluateAsync(n => ResolveAsync(n, extraName, extraValue, depth + 1, ct), _mode, ct).ConfigureAwait(false);
         }
         if (_variables.TryGetValue(name, out var variable)) return await ReadVariableAsync(variable, ct).ConfigureAwait(false);
         throw new GenApiException($"Formula variable '{name}' is not defined in node '{_owner.Name}'.", _owner.Name);

@@ -19,6 +19,11 @@ namespace GevSharp.GenApi;
 /// 비교·논리는 정수 1/0, 실수의 비트 연산은 오류. 0 나눗셈·오버플로·초월함수의 정의역 밖(SQRT(-1), LN(0))·모르는 변수/함수·
 /// 문법 오류는 위치(0 기준 문자 인덱스)를 담은 <see cref="GenApiException"/> — 결과를 0 이나 NaN 으로 흘리지 않는다.
 /// </para>
+/// <para>
+/// 위 형 규칙은 이 클래스의 공개 평가 메서드와 정수 노드(IntSwissKnife·IntConverter)의 것이다. 노드맵 안의 실수 노드(SwissKnife·Converter)는
+/// 값이 실수이므로 같은 수식을 실수 규칙으로 평가한다 — <c>/</c>·<c>**</c> 는 정수끼리도 실수 결과, 정수 넘침은 실수로 계속,
+/// 비트·시프트는 실수 피연산자를 0 방향으로 잘라 정수로 계산한다.
+/// </para>
 /// 변수 이름은 대소문자를 구분하며 글자·숫자·'_'·'.' 로 이루어진다. 값은 호출자가 이름으로 공급한다(pVariable → 노드 매핑은 노드 계층 몫).
 /// </summary>
 public sealed class Formula
@@ -60,14 +65,18 @@ public sealed class Formula
     public GenApiValue Evaluate(Func<string, GenApiValue> resolve)
     {
         if (resolve is null) throw new ArgumentNullException(nameof(resolve));
-        return _root.Eval(new FormulaEvalCtx(Text, _vars, resolve));
+        return _root.Eval(new FormulaEvalCtx(Text, _vars, resolve, FormulaMode.Integer));
     }
 
     /// <summary>사전으로 평가. 실제로 쓰이는 변수가 사전에 없으면 위치를 담은 <see cref="GenApiException"/>.</summary>
     public GenApiValue Evaluate(IReadOnlyDictionary<string, GenApiValue> variables)
+        => Evaluate(variables, FormulaMode.Integer);
+
+    /// <summary>사전으로 평가하되 평가 규칙을 고른다.</summary>
+    internal GenApiValue Evaluate(IReadOnlyDictionary<string, GenApiValue> variables, FormulaMode mode)
     {
         if (variables is null) throw new ArgumentNullException(nameof(variables));
-        var ctx = new FormulaEvalCtx(Text, _vars, null);
+        var ctx = new FormulaEvalCtx(Text, _vars, null, mode);
         for (int i = 0; i < _vars.Length; i++)
         {
             if (variables.TryGetValue(_vars[i], out var v)) ctx.SetVariable(i, v);
@@ -80,14 +89,18 @@ public sealed class Formula
     /// 동기로 평가한다. 삼항의 택하지 않은 가지 변수도 해석된다는 점이 동기 평가와 다르다.
     /// </summary>
     public ValueTask<GenApiValue> EvaluateAsync(Func<string, ValueTask<GenApiValue>> resolve, CancellationToken ct = default)
+        => EvaluateAsync(resolve, FormulaMode.Integer, ct);
+
+    /// <summary>비동기 평가하되 평가 규칙을 고른다 — 노드맵의 수식 노드가 자기 종류(정수/실수)에 맞춰 부른다.</summary>
+    internal ValueTask<GenApiValue> EvaluateAsync(Func<string, ValueTask<GenApiValue>> resolve, FormulaMode mode, CancellationToken ct)
     {
         if (resolve is null) throw new ArgumentNullException(nameof(resolve));
-        return EvaluateAsyncCore(resolve, ct);
+        return EvaluateAsyncCore(resolve, mode, ct);
     }
 
-    private async ValueTask<GenApiValue> EvaluateAsyncCore(Func<string, ValueTask<GenApiValue>> resolve, CancellationToken ct)
+    private async ValueTask<GenApiValue> EvaluateAsyncCore(Func<string, ValueTask<GenApiValue>> resolve, FormulaMode mode, CancellationToken ct)
     {
-        var ctx = new FormulaEvalCtx(Text, _vars, null);
+        var ctx = new FormulaEvalCtx(Text, _vars, null, mode);
         for (int i = 0; i < _vars.Length; i++)
         {
             ct.ThrowIfCancellationRequested();

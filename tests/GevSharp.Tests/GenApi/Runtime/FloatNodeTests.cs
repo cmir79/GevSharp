@@ -513,4 +513,84 @@ public class FloatNodeTests
         Assert.Equal("K", ex.NodeName);
         Assert.Contains("NOPE", ex.Message);
     }
+
+    // ---------------------------------------------------------------- 실수 노드의 수식은 실수로 나눈다
+    // 변수는 정수 레지스터에서 온다 — 실제 XML 에서 흔한 모양이고, 피연산자가 둘 다 정수여야 절삭이 드러난다.
+
+    [Fact]
+    public async Task SwissKnife_DividesIntegerRegistersAsReals()
+    {
+        // 프레임률 = 1e6 / 한 프레임의 시간(정수 레지스터). 대조군: 같은 식의 IntSwissKnife 는 정수로 자른다.
+        var port = new MemoryPort();
+        port.U32(0x10, 47619);
+        var body = "<SwissKnife Name=\"Rate\"><pVariable Name=\"N\">R</pVariable><Formula>1000000 / N</Formula></SwissKnife>"
+            + "<IntSwissKnife Name=\"IntRate\"><pVariable Name=\"N\">R</pVariable><Formula>1000000 / N</Formula></IntSwissKnife>"
+            + IntReg("R", "0x10");
+        var map = Bind(body, port);
+
+        Assert.Equal(1_000_000.0 / 47619, await map.GetFloat("Rate").GetAsync());
+        Assert.Equal(21, await map.GetInteger("IntRate").GetAsync());
+    }
+
+    [Fact]
+    public async Task SwissKnife_NestedExpressionDividesAsReal()
+    {
+        var port = new MemoryPort();
+        port.U32(0x10, 5);
+        var body = "<SwissKnife Name=\"K\"><pVariable Name=\"N\">R</pVariable><Expression Name=\"HALF\">N / 2</Expression><Formula>HALF + 0</Formula></SwissKnife>"
+            + IntReg("R", "0x10");
+
+        Assert.Equal(2.5, await Bind(body, port).GetFloat("K").GetAsync());
+    }
+
+    [Fact]
+    public async Task SwissKnife_ShiftStaysIntegerWhileDivisionIsReal()
+    {
+        // 고정소수점 레지스터: 값 / 2^소수부비트. 시프트는 정수로, 그 뒤의 나눗셈은 실수로.
+        var port = new MemoryPort();
+        port.U32(0x10, 32768);
+        port.U32(0x14, 16);
+        var body = "<SwissKnife Name=\"Gamma\"><pVariable Name=\"RAW\">R</pVariable><pVariable Name=\"FRAC\">F</pVariable><Formula>RAW / (1 &lt;&lt; FRAC)</Formula></SwissKnife>"
+            + IntReg("R", "0x10") + IntReg("F", "0x14");
+
+        Assert.Equal(0.5, await Bind(body, port).GetFloat("Gamma").GetAsync());
+    }
+
+    /// <summary>0.1 dB 단위 정수 레지스터 ↔ 선형 이득. 한계값도 같은 변환을 거친다(pMax 사슬과 Converter 자신의 한계).</summary>
+    private const string GainBody =
+        "<Float Name=\"Gain\"><pValue>GainConv</pValue><pMax>GainMaxConv</pMax></Float>"
+        + "<Converter Name=\"GainConv\"><FormulaTo>ROUND(200 * LG(FROM))</FormulaTo><FormulaFrom>10 ** ((TO / 10) / 20)</FormulaFrom><pValue>GainRaw</pValue><Slope>Increasing</Slope></Converter>"
+        + "<Converter Name=\"GainMaxConv\"><FormulaTo>ROUND(200 * LG(FROM))</FormulaTo><FormulaFrom>10 ** ((TO / 10) / 20)</FormulaFrom><pValue>GainMaxRaw</pValue><Slope>Increasing</Slope></Converter>"
+        + "<Integer Name=\"GainRaw\"><pValue>GainReg</pValue><Min>0</Min><Max>240</Max></Integer>"
+        + "<IntReg Name=\"GainReg\"><Address>0x10</Address><Length>4</Length><AccessMode>RW</AccessMode><pPort>Device</pPort><Endianess>BigEndian</Endianess></IntReg>"
+        + "<IntReg Name=\"GainMaxRaw\"><Address>0x14</Address><Length>4</Length><AccessMode>RO</AccessMode><pPort>Device</pPort><Endianess>BigEndian</Endianess></IntReg>";
+
+    [Fact]
+    public async Task Converter_DecibelRegisterReadsAsReal()
+    {
+        var port = new MemoryPort();
+        port.U32(0x10, 60);                                 // 6.0 dB
+        port.U32(0x14, 240);
+        var gain = Bind(GainBody, port).GetFloat("Gain");
+
+        Assert.Equal(Math.Pow(10, 0.3), await gain.GetAsync(), 12);   // 절삭이면 (60/10)/20 = 0 → 1.0
+        Assert.Equal(Math.Pow(10, 1.2), await gain.GetMaxAsync(), 12);
+    }
+
+    [Fact]
+    public async Task Converter_WriteWithinRealLimitsIsAcceptedAndReadsBack()
+    {
+        var port = new MemoryPort();
+        port.U32(0x14, 240);
+        var map = Bind(GainBody, port);
+        var gain = map.GetFloat("Gain");
+
+        await gain.SetAsync(12.0);                          // 한계 10^1.2 = 15.8 안 — 절삭된 한계(10)면 거절된다
+        Assert.Equal(216u, port.U32(0x10));                 // ROUND(200 * LG(12)) = 216
+        Assert.Equal(Math.Pow(10, 1.08), await gain.GetAsync(), 12);
+
+        await map.GetFloat("GainConv").SetAsync(2.0);       // Converter 자신의 한계(대상 Min/Max 를 FormulaFrom 으로)도 같은 규칙
+        Assert.Equal(60u, port.U32(0x10));
+        Assert.Equal(Math.Pow(10, 0.3), await gain.GetAsync(), 12);
+    }
 }
