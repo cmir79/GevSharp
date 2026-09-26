@@ -561,6 +561,25 @@ public class GevXmlLoaderTests
         Assert.Equal("second.xml", doc.FileName);
     }
 
+    [Fact]
+    public async Task TimeoutsFromALiveDeviceOnBothUrlsStayWrapped()
+    {
+        // 두 URL 이 모두 "장치가 답한" 시한 초과로 실패했다 — 형은 같지만 맨 GevTimeoutException 으로 내면 호출자는
+        // 장치 상실로 읽고 멀쩡한 장치를 다시 연결한다. 모은 GevException 안에 실어야 한다.
+        var port = PortWithTwoLocalUrls();
+        port.OnRead = (addr, _) =>
+        {
+            if (addr == GvbsAddr.FirstUrl || addr == GvbsAddr.SecondUrl) throw PendingAckExpired();
+        };
+
+        var ex = await Assert.ThrowsAsync<GevException>(() => GevXmlLoader.LoadAsync(port, null, Ct));
+
+        Assert.IsType<GevTimeoutException>(ex.InnerException);
+        Assert.Contains("First URL", ex.Message);
+        Assert.Contains("Second URL", ex.Message);
+        Assert.Equal(1, port.Reads.Count(r => r.Addr == GvbsAddr.SecondUrl));   // 상실이 아니니 둘째도 시도했다
+    }
+
     // ---- ExtractXml ----
 
     [Fact]

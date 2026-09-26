@@ -518,7 +518,8 @@ alive is not device loss and still falls back: an http download timeout, and a r
 PENDING_ACK but did not finish within the allowed extension (the channel marks that timeout). Otherwise, if every
 attempted URL failed with the same exception type more specific than `GevException`, the first of them is rethrown;
 failures of different kinds (an empty register counts as one) are aggregated into a `GevException` carrying both
-reasons, the last one as `InnerException`.
+reasons, the last one as `InnerException`. Timeouts are left out of that same-type rethrow and always aggregated, so
+a bare `GevTimeoutException` out of `LoadAsync`/`GetXmlAsync` always means device loss (a GVCP request with no reply).
 Cache file name: `{Manufacturer}_{Model}_{DeviceVersion}_{FileName}` sanitized; cache is opt-in.
 
 ### GenApi (`GevSharp.GenApi`)

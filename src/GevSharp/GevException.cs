@@ -16,9 +16,11 @@ public class GevException : Exception
 /// 장치가 그 명령을 실행했을 수 있으니, 호출자가 같은 명령을 다시 보내면 두 번 실행될 수 있다. 장치는 살아 있으므로 카메라 XML 적재는
 /// 이 경우를 장치 상실로 보지 않고 다른 URL 로 넘어간다.</item>
 /// <item>카메라 XML 을 HTTP 로 받다가 <see cref="Xml.GevXmlLoader.HttpTimeoutMs"/> 를 넘겼다(GVCP 와 무관). <c>GevXmlLoader.LoadFromUrlAsync</c> 는
-/// 이 예외를 그대로 던지고, First/Second URL 을 차례로 시도하는 <c>GevXmlLoader.LoadAsync</c>·<see cref="GevDevice.GetXmlAsync"/> 에서는
-/// 두 URL 의 실패를 모은 <see cref="GevException"/> 의 <see cref="Exception.InnerException"/> 으로 실려 올 수 있다.</item>
+/// 이 예외를 그대로 던진다.</item>
 /// </list>
+/// First/Second URL 을 차례로 시도하는 <c>GevXmlLoader.LoadAsync</c>·<see cref="GevDevice.GetXmlAsync"/> 는 둘째·셋째 경우를 감싸지 않은 채
+/// 내지 않는다 — 두 URL 의 실패를 모은 <see cref="GevException"/> 으로 내고, 이 예외는 그 메시지에(마지막 실패였으면
+/// <see cref="Exception.InnerException"/> 으로도) 실린다. 그 둘이 감싸지 않고 던지는 이 예외는 첫째 경우, 곧 장치를 잃은 것뿐이다.
 /// <see cref="GevException"/> 에서 파생한다 — <see cref="TimeoutException"/> 이 아니므로 <c>catch (TimeoutException)</c> 에는 걸리지 않는다.
 /// </summary>
 public sealed class GevTimeoutException : GevException

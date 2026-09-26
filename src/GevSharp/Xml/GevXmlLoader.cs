@@ -50,6 +50,8 @@ public static class GevXmlLoader
     /// 장치가 PENDING_ACK 로 "받아서 실행 중" 이라고 답한 뒤 허락된 연장 안에 끝내지 못한 읽기.
     /// 그 밖에 시도한 URL 이 모두 같은 구체 형(예: 둘 다 <see cref="GevStatusException"/>)으로 실패했으면 첫 실패를 그대로 던지고,
     /// 종류가 다르면(빈 레지스터 포함) 두 사유를 모두 실은 <see cref="GevException"/>(마지막 실패가 InnerException).
+    /// 다만 상대가 살아 있던 시한 초과는 시도한 URL 이 모두 그것으로 실패했어도 모은 <see cref="GevException"/> 으로 낸다 —
+    /// 그래서 이 메서드가 감싸지 않고 던지는 <see cref="GevTimeoutException"/> 은 언제나 장치 상실(응답 없는 GVCP 요청)이다.
     /// 취소는 그대로 전파된다.
     /// </para>
     /// </summary>
@@ -140,7 +142,7 @@ public static class GevXmlLoader
         }
 
         // 시도한 URL 이 모두 같은 구체 형으로 실패했으면 그 형이 곧 답이다 — 첫 실패를 스택까지 그대로 던진다(다른 사유는 경고 로그에 있다).
-        // 형이 GevException 그 자체면 두 사유를 합쳐도 형이 같으므로 합친 쪽을 낸다.
+        // 형이 GevException 그 자체면 두 사유를 합쳐도 형이 같으므로 합친 쪽을 낸다. 시한 초과도 합친 쪽이다(IsSameSpecificKind).
         if (!hadEmptyRegister && IsSameSpecificKind(errors))
             ExceptionDispatchInfo.Capture(errors[0]).Throw();
 
@@ -164,11 +166,14 @@ public static class GevXmlLoader
                 && ex.Data[GvcpChannel.PendingAckExpiredKey] is not true);
 
     // 예외가 하나 이상이고 전부 GevException 보다 구체적인 같은 형인지.
+    // 시한 초과는 같은 형이어도 맨몸으로 내지 않는다 — 이 메서드가 감싸지 않고 던지는 GevTimeoutException 은 호출자에게
+    // "장치를 잃었다(다시 연결)" 는 뜻이다. 상실인 시한 초과는 그 자리에서 이미 던졌으므로 여기 모인 것은 상대가 살아 있던
+    // 시한 초과(http 서버 무응답, PENDING_ACK 연장 소진)뿐이고, 그것이 맨몸으로 나가면 멀쩡한 장치를 다시 연결하게 만든다.
     private static bool IsSameSpecificKind(List<Exception> errors)
     {
         if (errors.Count == 0) return false;
         var type = errors[0].GetType();
-        if (type == typeof(GevException)) return false;
+        if (type == typeof(GevException) || type == typeof(GevTimeoutException)) return false;
         foreach (var e in errors)
         {
             if (e.GetType() != type) return false;
