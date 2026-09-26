@@ -128,6 +128,11 @@ public class GevStreamTests
         // 다섯 프레임을 받기 전에 다 보내므로 풀은 그보다 커야 한다(작으면 다섯째가 NoBuffer 로 버려진다 — 그건 다른 테스트가 본다).
         var opt = StreamRig.DefaultOpt();
         opt.BufferCount = 8;
+        // 침묵 규칙(재요청 간격만큼 조용하면 아직 안 온 꼬리도 구멍으로 친다)과 보존 시간은 여기서 보는 것이 아니다. 기본값 20 ms 로는
+        // 러너가 송신 쪽을 프레임 도중 그만큼만 멈춰도 짐작한 꼬리를 물어 ResendRequests 가 0 이 아니게 된다(프레임마다 30 ms 멈추는 주입으로 재현).
+        // 프레임은 마지막 페이로드에서 닫히므로 문턱을 넉넉히 둬도 이 시험은 느려지지 않는다.
+        opt.PacketTimeoutMs = 2000;
+        opt.FrameRetentionMs = 5000;
         await using var rig = new StreamRig(opt);
         rig.Sender.ExtendedIds = extendedIds;
         await rig.StartAsync();
@@ -157,6 +162,9 @@ public class GevStreamTests
             Assert.True(frame.Data.Span.SequenceEqual(sent[i].Data));
         }
 
+        // 프레임은 마지막 페이로드에서 닫혀 큐에 들므로, 다섯째를 받은 순간 그 블록의 트레일러는 아직 소켓에 있을 수 있다.
+        // 계수기는 수신기가 보낸 패킷을 다 센 뒤에 본다 — 그 전에 찍으면 수신 스레드가 잠깐 밀린 것만으로 25 대 24 로 깨진다.
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= rig.Sender.PacketsSent);
         var snap = rig.Stream.Stats.Snapshot();
         Assert.Equal(5, snap.FramesCompleted);
         Assert.Equal(5, snap.FramesDelivered);
