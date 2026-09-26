@@ -1906,8 +1906,8 @@ public class GevStreamLogTests
     public async Task CutBlockWarningNamesTheLikelyCauseFromTheShortfall(bool isSubPacketShortfall)
     {
         // 모자란 양이 원인을 가른다. 한 패킷에 못 미치게 모자라면 우리가 리더에서 계산한 크기가 장치와 어긋난 것이고,
-        // 패킷 단위로 모자라면 장치가 블록을 일찍 끝낸 것이다(정지 직후 다시 건 연속 취득에서 모든 장이 그렇게 끝난 것이 관측됐다 —
-        // 하류 실측). 뒤의 경우를 "크기 불일치" 로 안내하면 현장이 엉뚱한 곳을 판다.
+        // 패킷 단위로 모자라면 장치가 블록을 일찍 끝낸 것이다(정지 직후 다시 건 연속 취득의 일부 회차에서 모든 장이 그렇게 끝난 것이
+        // 관측됐다 — 하류 실측). 뒤의 경우를 "크기 불일치" 로 안내하면 현장이 엉뚱한 곳을 판다.
         var logged = await CaptureAsync(async () =>
         {
             await using var rig = new StreamRig();
