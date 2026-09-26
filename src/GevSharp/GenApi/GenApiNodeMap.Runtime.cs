@@ -13,6 +13,7 @@ namespace GevSharp.GenApi;
 /// 무효화: 노드 X 가 쓰이면 X 를 p* 로 참조하는 노드, X 를 pInvalidator 로 지목한 노드, X 가 셀렉터일 때 pSelected 대상 — 그리고 그들에게서
 /// 같은 규칙으로 닿는 노드 전부 — 의 캐시를 버린다(값 사슬 아래의 레지스터 캐시까지, pIndex 슬롯 전부 포함). 쓰인 레지스터 자신의 캐시는
 /// Cachable 정책이 정한다(WriteThrough 는 쓴 값을 남긴다). <see cref="INode.Invalidate"/> 는 쓰기 없이 같은 전파를 하되 자기 자신도 버린다.
+/// 쓰기가 예외로 끝나면 장치가 값을 받았는지 모르므로(명령은 응답 전에 이미 나간다) <see cref="INode.Invalidate"/> 와 같이 자기 자신까지 버린다.
 /// </para>
 /// <para>
 /// 쓰기 그림자(<see cref="WriteShadow"/>): 포트에 쓴 바이트를 주소별로 기억해 쓰기 전용 레지스터의 읽기-수정-쓰기 바탕값으로 쓴다.
@@ -99,6 +100,24 @@ public partial class GenApiNodeMap
             if (!ReferenceEquals(c, core)) c.DropIfOverlaps(address, data.Length);
         }
     }
+
+    /// <summary>
+    /// 레지스터 쓰기가 실패했다 — 장치가 그 바이트를 받았는지 모르므로 주소가 겹치는 다른 노드의 캐시를 버린다.
+    /// 그림자는 그대로 둔다(<see cref="RegisterCore.WriteAsync"/> 참고).
+    /// </summary>
+    internal void OnRegisterWriteFailed(RegisterCore core, ulong address, int length)
+    {
+        foreach (var c in _cores)
+        {
+            if (!ReferenceEquals(c, core)) c.DropIfOverlaps(address, length);
+        }
+    }
+
+    /// <summary>
+    /// 노드 쓰기가 도중에 실패했다 — 값 사슬 어디까지 장치에 닿았는지 모르므로 성공 때(<see cref="OnWritten"/>)와 달리 노드 자신과
+    /// 값 사슬까지 포함해 의존 닫힘 전체를 버린다(<see cref="InvalidateNode"/> 와 같다). 틀려도 비용은 다음 읽기뿐이다.
+    /// </summary>
+    internal void OnWriteFailed(NodeBase node) => InvalidateNode(node);
 
     /// <summary><see cref="INode.Invalidate"/> — 노드 자신과 값 사슬, 그리고 의존 닫힘 전체의 캐시를 버린다.</summary>
     internal void InvalidateNode(NodeBase node)

@@ -301,7 +301,8 @@ public sealed class GevStream : IAsyncDisposable
                                                              // then **drain the queue and Dispose every frame still in it** — skipping that
                                                              // leaves those pool buffers held forever — and complete pending receives
                                                              // with GevStreamClosedException
-    public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);
+    public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);  // waits until a frame, the token, or StopAsync/DisposeAsync —
+                                                             // NOT until the device goes away (see "Stream lifetime" below)
     public bool TryReceive(out GevFrame? frame);
     public ValueTask DisposeAsync();
 }
@@ -513,9 +514,22 @@ Formula layer (`GenApi/Formula`): `Formula.Parse(string) → Formula` (immutable
 `Formula.Evaluate(Func<string, GenApiValue> resolve) → GenApiValue` where `GenApiValue` is an
 int64/double union. Grammar: `+ - * / % ** & | ^ ~ << >> && || ! < > <= >= = == <> != ?:`, parentheses,
 decimal / hex (`0x`) / float literals, `PI`/`E`, functions `SIN COS TAN ASIN ACOS ATAN ABS EXP LN LG SQRT
-TRUNC FLOOR CEIL ROUND SGN NEG`. Precedence follows C. Integer ⊕ integer stays integer (`/` truncates,
-`**` integer when exponent ≥ 0); any double promotes. Division by zero and invalid operations throw
-`GenApiException` — never return 0 silently. Parse depth is bounded; variable names are identifiers
+TRUNC FLOOR CEIL ROUND SGN NEG`. Precedence follows C. Two evaluation rules, chosen by the node that owns
+the formula (`FormulaMode`, a required argument of `FormulaScope`):
+- *Integer* — `IntSwissKnife`, `IntConverter`, inline address formulas, and the public `Formula.Evaluate`:
+  integer ⊕ integer stays integer (`/` truncates, `**` integer when exponent ≥ 0, overflow throws); any
+  double promotes; bitwise operators reject doubles.
+- *Real* — `SwissKnife` and `Converter` (the formula, its `Expression`s and the Converter limit mapping):
+  the value is a float, so `/` gives a real result even between integers (`1000000 / N`,
+  `10 ** ((TO / 10) / 20)` with an integer register `TO`). `+ - *` and `**` with a non-negative exponent stay
+  exact integers between integers but continue in double instead of throwing on overflow. Bitwise operators,
+  shifts and `%` truncate double operands toward zero, so `(N / 2) & 1` and `(N / 2) % 2` give what integer
+  division followed by that operator gave (either sign, while the operands fit 2^53); NaN/out-of-range throws.
+
+Division by zero and invalid operations throw `GenApiException` — never return 0 silently. That includes
+`**`: a zero base with a negative exponent throws in both rules, and an undefined real result (a negative base
+with a fractional exponent) throws instead of returning NaN. A magnitude beyond `double` stays ±Infinity like
+any other double arithmetic; the Converter limit mapping reads such an endpoint as an open end. Parse depth is bounded; variable names are identifiers
 (letters, digits, `_`, `.`) and are resolved by the caller from `<pVariable Name="X">Node</pVariable>`.
 
 Runtime layer (`GenApi/Runtime`): concrete node classes implementing the public interfaces over the
@@ -575,6 +589,12 @@ GenApi runtime — implementation notes where the behaviour is more specific tha
   Registers that share bytes without a graph edge (StructReg entries, alias registers) are found by address
   overlap and dropped. `INode.Invalidate()` uses the same closure but includes the node itself and its whole
   value chain.
+- A write that **throws** is treated as "the device may hold the new value": a GVCP command leaves before its
+  acknowledge is awaited, so a lost reply, a timeout after PENDING_ACK or a cancelled wait all arrive here with
+  the device already changed. The register drops its own cache and every overlapping one, and the node drops
+  the same closure as `INode.Invalidate()`, then the exception propagates. The exception type is not
+  inspected — if the device refused or the command never left, the cost is one extra read. The write shadow is
+  left as it was: there is no way to record "unknown", and clearing it would zero sibling fields for certain.
 - Write-only registers cannot be read for a read-modify-write, so the node map keeps a write shadow — the
   bytes it last wrote at each address — and uses it as the base: a field written through one
   `MaskedIntReg`/`StructEntry` survives the next write of a sibling field. Bytes never written read as 0.
@@ -632,6 +652,11 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
   (pinned by `GevDeviceTests`). Two consequences the caller should know: `DisposeAsync` does not wait for
   the handler, so it can still run after `Close()` returns, and an exception from the handler is swallowed
   and logged rather than propagated.
+- **Stream lifetime is independent of the device.** `GevDevice` does not keep the streams it opened, so
+  neither `ControlLost` nor `DisposeAsync` on the device stops them: the receiver thread keeps listening,
+  `IsStarted` stays true, and a `ReceiveAsync` waiting for a frame from a device that went silent never
+  returns on its own. Pass a cancellation token, or call `StopAsync` on the stream from the `ControlLost`
+  handler (and before disposing the device). Pinned by `DeviceLifecycleTests.Stream_OutlivesItsDevice_*`.
 
 ## Testing strategy
 

@@ -111,7 +111,11 @@ public sealed class GevFrame : IDisposable
     /// <summary><see cref="Data"/> 안의 유효 바이트 수.</summary>
     public int PayloadSize { get; }
 
-    /// <summary>모든 페이로드 패킷이 모였는지. false 는 <see cref="GevStreamOpt.DeliverIncompleteFrames"/> 가 켜졌을 때만 온다.</summary>
+    /// <summary>
+    /// 모든 페이로드가 모였는지 — 예상 패킷을 다 받았고, 리더가 크기를 알린 프레임이면 그 바이트 끝까지 실제로 채워졌다.
+    /// 장치가 블록을 중간에 끊어(낮은 id 의 트레일러) 패킷 수는 맞아도 바이트가 모자라면 거짓이다.
+    /// false 는 <see cref="GevStreamOpt.DeliverIncompleteFrames"/> 가 켜졌을 때만 온다(못 받은 자리는 0).
+    /// </summary>
     public bool IsComplete { get; }
 
     /// <summary>이미지 뒤에 청크 데이터가 붙어 있는지(리더의 bit14 또는 extended chunk 타입). 청크는 해석하지 않고 바이트만 실어 준다.</summary>

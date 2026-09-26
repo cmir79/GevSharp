@@ -2,6 +2,8 @@
 
 Derived from a code-level survey (2026-09-02) of six public .NET/C implementations. Each item below is a
 place where an existing implementation broke in practice; GevSharp treats them as acceptance criteria.
+R27–R29 were added on 2026-09-26 from defects found in this library itself; they belong here for the same
+reason — each is a value that looked normal while being wrong.
 
 The status table at the end records where each requirement lives and what would fail if it were removed.
 It is verified by deleting the behaviour and running the suite, not by reading names — "implemented" and
@@ -35,10 +37,14 @@ It is verified by deleting the behaviour and running the suite, not by reading n
 | R24 | Repository-wide CRLF via `.gitattributes`; no mixed line endings. | Mixed endings turned one-line edits into whole-file diffs. |
 | R25 | Cached camera XML is opt-in and written to a caller-chosen directory with a stable name. | XML copies piled up next to the executable on every connect. |
 | R26 | Register access from GenApi is async end-to-end; no sync-over-async. | Thread-pool starvation under load. |
+| R27 | Float formula nodes (SwissKnife, Converter) divide as reals even when both operands come from integer registers. | Found in this library (2026-09-26): a frame-rate SwissKnife read 21 Hz exactly, a dB gain read 1.0 for every raw value below 200 and its truncated pMax rejected valid writes. |
+| R28 | A register write that throws after the command may have left (lost reply, timeout, cancelled wait) drops the caches it would have updated or invalidated; the next read asks the device. | Found in this library (2026-09-26): after a lost reply to AcquisitionStop the cached "acquiring" value kept AcquisitionMode locked without asking the device. |
+| R29 | A frame is complete only when every byte the leader announced was received — the trailer's packet count alone is not enough. | Found in this library (2026-09-26): a block cut short by an early trailer was delivered `IsComplete = true` with the previous frame's pixels in the unreceived tail. |
 
 ## Status
 
-Verified 2026-09-03 against the tree at that time. `met` = implemented **and** a named test fails when the
+Verified 2026-09-03 against the tree at that time (R27–R29: 2026-09-26, each named test run against the tree
+before its fix and seen failing). `met` = implemented **and** a named test fails when the
 behaviour is deleted. `met-untested` = implemented, but deleting it leaves the suite green — the requirement
 holds today and nothing would notice a regression. `partial` = some cases guarded, others not.
 
@@ -70,6 +76,9 @@ holds today and nothing would notice a regression. `partial` = some cases guarde
 | R24 | met | `.gitattributes:2` | `RepositoryPolicyTests.EveryTrackedTextFileIsStoredWithLfAndCheckedOutAsCrlf` asserts every tracked text file is `i/lf` (binaries `i/-text` are exempt) — the index judgment, not a byte count, because a stray CR can fold in the clean filter and still reach the commit; mutation-checked: staging a file with a doubled CR shows `i/mixed` and fails it |
 | R25 | met | `GevDeviceOpt.XmlCacheDir` (null = off), `Xml/GevXmlLoader.cs:119-137,169-177,420-442` | `GevXmlLoaderTests.NoCacheDirMeansNothingIsWritten`, `CacheFileNameIsSanitizedAndStable`, `CacheMissWritesFileAndHitSkipsDeviceXmlRead` |
 | R26 | met | `IGevPort` has no sync surface; `RegisterCore.cs:147,180` await the port | `RepositoryPolicyTests.TheLibraryNeverBlocksOnAnAsyncResult` scans every library source for `.Result`, `.Wait()`, `GetAwaiter().GetResult()`, `Task.WaitAll/WaitAny` and `RunSynchronously()` (`Task.Run` is allowed — moving a blocking join or socket wait off the caller is not the same thing) — mutation-checked: planting one `.Result` fails it |
+| R27 | met (2026-09-26) | `GenApi/Formula/FormulaOps.cs` (`FormulaMode.Real` — `Divide`, `Pow`, overflow fallback, `BitOperand`), `Runtime/FormulaScope.cs` (mode is a required argument), `FloatNodes.cs` (SwissKnife/Converter pass `Real`) | `FloatNodeTests.SwissKnife_DividesIntegerRegistersAsReals` (with an IntSwissKnife control that still truncates), `SwissKnife_NestedExpressionDividesAsReal`, `SwissKnife_ShiftStaysIntegerWhileDivisionIsReal`, `Converter_DecibelRegisterReadsAsReal`, `Converter_WriteWithinRealLimitsIsAcceptedAndReadsBack`, `FormulaTests.RealMode*` — all five node tests failed on the tree before the fix |
+| R28 | met (2026-09-26) | `Runtime/RegisterCore.cs` (`WriteAsync` catch), `GenApiNodeMap.Runtime.cs` (`OnRegisterWriteFailed`, `OnWriteFailed`), the eight node write paths | `CacheInvalidationTests.WriteFailedAfterSend_NextReadAsksTheDevice`, `_DropsDependentCaches`, `_LockPredicateAsksTheDeviceAgain` (failed before the fix), `_WriteOnlyShadowKeepsSiblingBits`; `GevStreamTests.ScpWriteFailingAfterSendIsStillReset` for the stream-channel port |
+| R29 | met (2026-09-26) | `GevStream.Receiver.cs` (`IsComplete`, `IsCutShort`, `ApplyTrailerHeight`, `ZeroHoles`) | `GevStreamTests.BlockCutShortByAnEarlyTrailerIsIncompleteNotStale` (dirties the pool buffer first so a stale tail is visible), `BlockCutInsideAPacketZeroesTheGapAfterTheShortLastPayload`, `BlockCutShortIsDroppedWhenIncompleteFramesAreNotDelivered`, `LeaderRecoveredAfterAShorterTrailerStillShrinksTheFrame`, `VariableHeightOfABitPackedFormatKeepsItsPayloadSize` — all failed before the fix |
 
 The four *policy* requirements — "no commercial dependency", "no vendor XML", "CRLF", "no sync-over-async" —
 are properties of the repository rather than runtime behaviours, so they are guarded by

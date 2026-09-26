@@ -349,4 +349,101 @@ public class CacheInvalidationTests
         await map.GetInteger("K").GetAsync();
         Assert.Equal(settled, port.ReadCount);              // 경합이 끝나면 캐시 하나로 수렴
     }
+
+    // ---------------------------------------------------------------- 보낸 뒤 실패한 쓰기
+
+    /// <summary>장치는 값을 받았는데 응답이 유실됐다 — 시한 초과(PENDING_ACK 뒤 포함)나 응답 대기 중 취소가 이 모양이다.</summary>
+    private static Exception LostReply(ulong address, byte[] data)
+        => new GevTimeoutException($"reply to the write at 0x{address:X} was lost");
+
+    [Fact]
+    public async Task WriteFailedAfterSend_NextReadAsksTheDevice()
+    {
+        var port = new MemoryPort();
+        port.U32(0x10, 5);
+        var r = Bind(IntReg("R", "0x10"), port).GetInteger("R");
+
+        Assert.Equal(5, await r.GetAsync());
+        await r.SetAsync(7);
+        Assert.Equal(7, await r.GetAsync());
+        Assert.Equal(1, port.ReadsAt(0x10));                // 대조군: 성공한 쓰기는 캐시에 남아 다시 묻지 않는다
+
+        port.FailAfterWrite = LostReply;
+        await Assert.ThrowsAsync<GevTimeoutException>(() => r.SetAsync(9).AsTask());
+        port.FailAfterWrite = null;
+
+        Assert.Equal(9, await r.GetAsync());                // 옛 캐시(7)가 아니라 장치가 든 값
+        Assert.Equal(2, port.ReadsAt(0x10));
+    }
+
+    [Fact]
+    public async Task WriteFailedAfterSend_DropsDependentCaches()
+    {
+        // 쓰기가 실패해도 장치가 받았을 수 있으면, 그 쓰기가 무효화했어야 할 캐시(pInvalidator 청취자)도 믿을 수 없다
+        var port = new MemoryPort();
+        port.U32(0x20, 1);
+        var body = IntReg("R", "0x10") + IntReg("Dep", "0x20", "<pInvalidator>R</pInvalidator>");
+        var map = Bind(body, port);
+        var dep = map.GetInteger("Dep");
+
+        Assert.Equal(1, await dep.GetAsync());
+        await map.GetInteger("R").SetAsync(1);
+        Assert.Equal(1, await dep.GetAsync());
+        Assert.Equal(2, port.ReadsAt(0x20));                // 대조군: 성공한 쓰기는 청취자 캐시를 버린다
+
+        port.AfterWrite = (a, _) => { if (a == 0x10) port.U32(0x20, 2); };   // R 을 쓰면 장치가 Dep 을 바꾼다
+        port.FailAfterWrite = LostReply;
+        await Assert.ThrowsAsync<GevTimeoutException>(() => map.GetInteger("R").SetAsync(2).AsTask());
+        port.FailAfterWrite = null;
+
+        Assert.Equal(2, await dep.GetAsync());
+        Assert.Equal(3, port.ReadsAt(0x20));
+    }
+
+    [Fact]
+    public async Task WriteFailedAfterSend_LockPredicateAsksTheDeviceAgain()
+    {
+        // 획득 중이면 모드를 잠그는 흔한 모양: 시작/정지 명령이 같은 레지스터에 1/0 을 쓰고, 잠금 술어가 그 레지스터를 읽는다.
+        // 정지의 응답만 유실되면 캐시가 "획득 중" 으로 남아 장치에 묻지도 않고 모드 쓰기를 잠김으로 거절하던 경로다.
+        var port = new MemoryPort();
+        var body = IntReg("AcqEnabledReg", "0xA000")
+            + "<IntSwissKnife Name=\"IsAcquiring\"><pVariable Name=\"ACQEN\">AcqEnabledReg</pVariable><Formula>ACQEN = 1</Formula></IntSwissKnife>"
+            + "<Command Name=\"AcquisitionStart\"><pValue>AcqEnabledReg</pValue><CommandValue>1</CommandValue></Command>"
+            + "<Command Name=\"AcquisitionStop\"><pValue>AcqEnabledReg</pValue><CommandValue>0</CommandValue></Command>"
+            + "<Enumeration Name=\"AcquisitionMode\"><pIsLocked>IsAcquiring</pIsLocked>"
+            + "<EnumEntry Name=\"Continuous\"><Value>1</Value></EnumEntry><EnumEntry Name=\"SingleFrame\"><Value>2</Value></EnumEntry>"
+            + "<pValue>AcquisitionModeReg</pValue></Enumeration>"
+            + IntReg("AcquisitionModeReg", "0xA028");
+        var map = Bind(body, port);
+        var mode = map.GetEnumeration("AcquisitionMode");
+
+        await map.GetCommand("AcquisitionStart").ExecuteAsync();
+        var locked = await Assert.ThrowsAsync<GenApiException>(() => mode.SetAsync("Continuous").AsTask());
+        Assert.Contains("locked", locked.Message);          // 대조군: 잠금 술어는 살아 있다
+
+        port.FailAfterWrite = LostReply;
+        await Assert.ThrowsAsync<GevTimeoutException>(() => map.GetCommand("AcquisitionStop").ExecuteAsync().AsTask());
+        port.FailAfterWrite = null;
+        Assert.Equal(0u, port.U32(0xA000));                 // 장치는 멈췄다
+
+        await mode.SetAsync("Continuous");                  // 캐시의 "획득 중" 이 아니라 장치에 다시 묻고 풀린다
+        Assert.Equal(1u, port.U32(0xA028));
+    }
+
+    [Fact]
+    public async Task WriteFailedAfterSend_WriteOnlyShadowKeepsSiblingBits()
+    {
+        // 쓰기 전용 레지스터의 그림자는 실패한 쓰기로 지우지 않는다 — 지우면 형제 필드의 비트가 0 이 되어 다음 쓰기가 확실히 틀린다
+        var port = new MemoryPort();
+        var body = MaskedIntReg("A", "0x2000", "<LSB>31</LSB><MSB>16</MSB>", access: "WO") + MaskedIntReg("B", "0x2000", "<LSB>15</LSB><MSB>0</MSB>", access: "WO");
+        var map = Bind(body, port);
+
+        await map.GetInteger("A").SetAsync(0x1234);
+        port.FailAfterWrite = LostReply;
+        await Assert.ThrowsAsync<GevTimeoutException>(() => map.GetInteger("B").SetAsync(0xABCD).AsTask());
+        port.FailAfterWrite = null;
+
+        await map.GetInteger("B").SetAsync(0xABCD);         // 호출자가 다시 쓰면
+        Assert.Equal(0xABCD1234u, port.U32(0x2000));        // A 의 비트가 남아 있다
+    }
 }

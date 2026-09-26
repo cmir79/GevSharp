@@ -32,14 +32,18 @@ internal sealed class FormulaEvalCtx
     private readonly bool[] _isResolved;
     private readonly Func<string, GenApiValue>? _resolve;
 
-    public FormulaEvalCtx(string text, string[] names, Func<string, GenApiValue>? resolve)
+    public FormulaEvalCtx(string text, string[] names, Func<string, GenApiValue>? resolve, FormulaMode mode)
     {
         _text = text;
         _names = names;
         _values = names.Length == 0 ? Array.Empty<GenApiValue>() : new GenApiValue[names.Length];
         _isResolved = names.Length == 0 ? Array.Empty<bool>() : new bool[names.Length];
         _resolve = resolve;
+        IsReal = mode == FormulaMode.Real;
     }
+
+    /// <summary><see cref="FormulaMode.Real"/> 로 평가하는지 — 연산자마다 <see cref="FormulaOps"/> 에 그대로 넘긴다.</summary>
+    public bool IsReal { get; }
 
     public FormulaErrSite Site(int pos) => new(_text, pos);
 
@@ -121,9 +125,9 @@ internal sealed class FormulaUnaryNode : FormulaNode
         var v = _operand.Eval(ctx);
         return _op switch
         {
-            FormulaUnOp.Neg => FormulaOps.Negate(v, ctx.Site(Pos)),
+            FormulaUnOp.Neg => FormulaOps.Negate(v, ctx.Site(Pos), ctx.IsReal),
             FormulaUnOp.LogNot => GenApiValue.FromBoolean(!v.IsNonZero),
-            FormulaUnOp.BitNot => FormulaOps.BitNot(v, ctx.Site(Pos)),
+            FormulaUnOp.BitNot => FormulaOps.BitNot(v, ctx.Site(Pos), ctx.IsReal),
             _ => throw new ArgumentOutOfRangeException(nameof(_op)),
         };
     }
@@ -157,19 +161,20 @@ internal sealed class FormulaBinaryNode : FormulaNode
         var l = _left.Eval(ctx);
         var r = _right.Eval(ctx);
         var site = ctx.Site(Pos);
+        var isReal = ctx.IsReal;
         return _op switch
         {
-            FormulaBinOp.Add => FormulaOps.Add(l, r, site),
-            FormulaBinOp.Sub => FormulaOps.Subtract(l, r, site),
-            FormulaBinOp.Mul => FormulaOps.Multiply(l, r, site),
-            FormulaBinOp.Div => FormulaOps.Divide(l, r, site),
-            FormulaBinOp.Mod => FormulaOps.Modulo(l, r, site),
-            FormulaBinOp.Pow => FormulaOps.Pow(l, r, site),
-            FormulaBinOp.BitAnd => FormulaOps.BitAnd(l, r, site),
-            FormulaBinOp.BitOr => FormulaOps.BitOr(l, r, site),
-            FormulaBinOp.BitXor => FormulaOps.BitXor(l, r, site),
-            FormulaBinOp.Shl => FormulaOps.ShiftLeft(l, r, site),
-            FormulaBinOp.Shr => FormulaOps.ShiftRight(l, r, site),
+            FormulaBinOp.Add => FormulaOps.Add(l, r, site, isReal),
+            FormulaBinOp.Sub => FormulaOps.Subtract(l, r, site, isReal),
+            FormulaBinOp.Mul => FormulaOps.Multiply(l, r, site, isReal),
+            FormulaBinOp.Div => FormulaOps.Divide(l, r, site, isReal),
+            FormulaBinOp.Mod => FormulaOps.Modulo(l, r, site, isReal),
+            FormulaBinOp.Pow => FormulaOps.Pow(l, r, site, isReal),
+            FormulaBinOp.BitAnd => FormulaOps.BitAnd(l, r, site, isReal),
+            FormulaBinOp.BitOr => FormulaOps.BitOr(l, r, site, isReal),
+            FormulaBinOp.BitXor => FormulaOps.BitXor(l, r, site, isReal),
+            FormulaBinOp.Shl => FormulaOps.ShiftLeft(l, r, site, isReal),
+            FormulaBinOp.Shr => FormulaOps.ShiftRight(l, r, site, isReal),
             FormulaBinOp.Eq or FormulaBinOp.Ne or FormulaBinOp.Lt or FormulaBinOp.Le or FormulaBinOp.Gt or FormulaBinOp.Ge
                 => FormulaOps.Compare(_op, l, r),
             _ => throw new ArgumentOutOfRangeException(nameof(_op)),
@@ -215,7 +220,7 @@ internal sealed class FormulaFuncNode : FormulaNode
     {
         var x = _arg.Eval(ctx);
         return _arg2 is null
-            ? FormulaOps.Call(_func, x, ctx.Site(Pos))
+            ? FormulaOps.Call(_func, x, ctx.Site(Pos), ctx.IsReal)
             : FormulaOps.Call(_func, x, _arg2.Eval(ctx), ctx.Site(Pos));
     }
 }

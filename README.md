@@ -70,9 +70,13 @@ await stream.StartAsync();
 await dev.SetTlParamsLockedAsync(true);
 await nodes.GetCommand("AcquisitionStart").ExecuteAsync();
 
+// The stream does not stop when the device is lost or disposed, and a wait for a frame from a silent
+// device never ends on its own: pass a token, or StopAsync the stream from the ControlLost handler.
+using var cts = new CancellationTokenSource();
 for (var i = 0; i < 10; i++)
 {
-    using var frame = await stream.ReceiveAsync();           // complete frames only
+    cts.CancelAfter(TimeSpan.FromSeconds(2));                // per-frame deadline
+    using var frame = await stream.ReceiveAsync(cts.Token);  // complete frames only
     Console.WriteLine($"{frame.FrameId}: {frame.Width}x{frame.Height} "
         + $"{PixelFormatInfo.Name(frame.PixelFormatCode)} stride={frame.Stride}");
 }

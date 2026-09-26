@@ -43,7 +43,15 @@ internal abstract class FloatNodeBase : NodeBase, IFloat
     internal async ValueTask WriteDoubleAsync(double value, CancellationToken ct)
     {
         await ValidateAsync(value, ct).ConfigureAwait(false);
-        await WriteCoreAsync(value, ct).ConfigureAwait(false);
+        try
+        {
+            await WriteCoreAsync(value, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 
@@ -334,7 +342,10 @@ internal sealed class FloatRegNode : FloatNodeBase
     public override ValueTask<double?> GetIncAsync(CancellationToken ct = default) => new((double?)null);
 }
 
-/// <summary>&lt;SwissKnife&gt; — 실수 수식. 읽기 전용.</summary>
+/// <summary>
+/// &lt;SwissKnife&gt; — 실수 수식. 읽기 전용. 변수가 정수 레지스터에서 와도 실수 규칙(<see cref="FormulaMode.Real"/>)으로 평가한다 —
+/// 정수끼리의 나눗셈을 자르면 <c>1000000 / N</c> 같은 프레임률이 정수로 떨어지고 dB 변환은 한 구간이 통째로 1.0 이 된다.
+/// </summary>
 internal sealed class SwissKnifeNode : FloatNodeBase
 {
     private readonly SwissKnifeDef _def;
@@ -350,7 +361,7 @@ internal sealed class SwissKnifeNode : FloatNodeBase
 
     protected override void BindCore(NodeBinder binder)
     {
-        _scope = new FormulaScope(this, _def, binder);
+        _scope = new FormulaScope(this, _def, binder, FormulaMode.Real);
         _formula = _scope.Parse(_def.Formula, "Formula");
     }
 
@@ -368,6 +379,7 @@ internal sealed class SwissKnifeNode : FloatNodeBase
 /// <summary>
 /// &lt;Converter&gt; — pValue 노드와의 실수 양방향 변환. 읽기는 FormulaFrom(TO = 대상 값), 쓰기는 FormulaTo(FROM = 호스트 값);
 /// 대상이 정수 노드면 쓰기 결과를 반올림해 넣는다. Min/Max 는 Slope 로 정하고 Inc 는 없다.
+/// 두 방향 수식과 한계 계산 모두 실수 규칙(<see cref="FormulaMode.Real"/>)으로 평가한다 — TO 는 대개 정수 레지스터 값이다.
 /// </summary>
 internal sealed class ConverterNode : FloatNodeBase
 {
@@ -388,7 +400,7 @@ internal sealed class ConverterNode : FloatNodeBase
     {
         if (_def.PValue is null) throw new GenApiException($"Converter '{Name}' has no pValue.", Name);
         _pValue = binder.Resolve(_def.PValue, RefKind.Value, "pValue", NodeBinder.Numeric);
-        _scope = new FormulaScope(this, _def, binder);
+        _scope = new FormulaScope(this, _def, binder, FormulaMode.Real);
         _to = _scope.Parse(_def.FormulaTo, "FormulaTo");
         _from = _scope.Parse(_def.FormulaFrom, "FormulaFrom");
     }

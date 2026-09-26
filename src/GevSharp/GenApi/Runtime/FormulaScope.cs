@@ -6,8 +6,10 @@ namespace GevSharp.GenApi.Runtime;
 /// 수식 노드(SwissKnife/IntSwissKnife/Converter/IntConverter)의 변수 범위 — pVariable·Constant·Expression 을 이름으로 묶고
 /// 수식을 비동기로 평가한다. 수식은 바인딩 시점에 한 번만 파싱한다.
 /// <para>
-/// 평가는 <see cref="Formula.EvaluateAsync"/> 로 한다: 수식이 나열한 변수를 전부(택하지 않은 삼항 가지의 것까지) 먼저 읽고
-/// 동기로 계산한다. 변수 하나의 읽기 실패가 곧 수식 실패라 결과가 결정적이고, 레지스터 왕복이 변수 순서대로 한 번씩만 일어난다.
+/// 평가는 <see cref="Formula.EvaluateAsync(Func{string, ValueTask{GenApiValue}}, FormulaMode, CancellationToken)"/> 로 한다:
+/// 수식이 나열한 변수를 전부(택하지 않은 삼항 가지의 것까지) 먼저 읽고 동기로 계산한다. 변수 하나의 읽기 실패가 곧 수식 실패라
+/// 결과가 결정적이고, 레지스터 왕복이 변수 순서대로 한 번씩만 일어난다. 평가 규칙(<see cref="FormulaMode"/>)은 소유 노드의
+/// 종류가 정하며 이 범위의 모든 수식(본식·Expression·Converter 한계 계산)에 같이 쓰인다.
 /// </para>
 /// <para>
 /// pVariable 의 Name 은 수식 안의 변수 이름 그대로이며, 점 접미사로 무엇을 읽을지 정한다:
@@ -43,13 +45,19 @@ internal sealed class FormulaScope
     }
 
     private readonly NodeBase _owner;
+    private readonly FormulaMode _mode;
     private readonly Dictionary<string, GenApiValue> _constants = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Formula> _expressions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VarRef> _variables = new(StringComparer.Ordinal);
 
-    public FormulaScope(NodeBase owner, IFormulaNodeDef def, NodeBinder binder)
+    /// <summary>
+    /// 평가 규칙은 필수 인자다 — 실수 노드는 <see cref="FormulaMode.Real"/>, 정수 노드는 <see cref="FormulaMode.Integer"/>.
+    /// 기본값을 두지 않아 새 수식 노드가 규칙을 고르지 않고 지나가지 못하게 한다.
+    /// </summary>
+    public FormulaScope(NodeBase owner, IFormulaNodeDef def, NodeBinder binder, FormulaMode mode)
     {
         _owner = owner;
+        _mode = mode;
         foreach (var c in def.Constants)
             _constants[c.Name] = c.IntValue is { } iv ? new GenApiValue(iv) : new GenApiValue(c.DoubleValue);
         foreach (var v in def.Variables)
@@ -74,7 +82,7 @@ internal sealed class FormulaScope
 
     /// <summary>수식을 평가한다. extraName 은 Converter 의 FROM/TO 처럼 호출자가 값을 주는 변수.</summary>
     public ValueTask<GenApiValue> EvaluateAsync(Formula formula, string? extraName, GenApiValue extraValue, CancellationToken ct)
-        => formula.EvaluateAsync(name => ResolveAsync(name, extraName, extraValue, 0, ct), ct);
+        => formula.EvaluateAsync(name => ResolveAsync(name, extraName, extraValue, 0, ct), _mode, ct);
 
     private async ValueTask<GenApiValue> ResolveAsync(string name, string? extraName, GenApiValue extraValue, int depth, CancellationToken ct)
     {
@@ -84,7 +92,7 @@ internal sealed class FormulaScope
         {
             if (depth >= MaxExpressionDepth)
                 throw new GenApiException($"Expression '{name}' of node '{_owner.Name}' nests too deeply.", _owner.Name);
-            return await expression.EvaluateAsync(n => ResolveAsync(n, extraName, extraValue, depth + 1, ct), ct).ConfigureAwait(false);
+            return await expression.EvaluateAsync(n => ResolveAsync(n, extraName, extraValue, depth + 1, ct), _mode, ct).ConfigureAwait(false);
         }
         if (_variables.TryGetValue(name, out var variable)) return await ReadVariableAsync(variable, ct).ConfigureAwait(false);
         throw new GenApiException($"Formula variable '{name}' is not defined in node '{_owner.Name}'.", _owner.Name);
@@ -203,12 +211,18 @@ internal sealed class FormulaScope
         }
     }
 
-    /// <summary>대상 한계값 한쪽을 FormulaFrom 으로 옮긴 값. 선언되지 않은 한계면 수식을 평가하지 않고 열린 끝(null)으로 둔다.</summary>
+    /// <summary>
+    /// 대상 한계값 한쪽을 FormulaFrom 으로 옮긴 값. 선언되지 않은 한계면 수식을 평가하지 않고 열린 끝(null)으로 둔다.
+    /// 옮긴 값이 실수 범위를 넘으면(대상의 큰 한계를 지수 변환에 넣은 경우 — 4 바이트 레지스터 최대를 dB 로 읽는 식) 그것도 열린 끝이다:
+    /// 무한대를 한계값으로 내놓으면 "한계 없음" 을 뜻하는 값이 둘이 되고, 예외로 막으면 그 노드의 쓰기가 통째로 막힌다.
+    /// </summary>
     private async ValueTask<GenApiValue?> EndpointAsync(NodeBase target, LimitKind kind, Formula formulaFrom, CancellationToken ct)
     {
         var limit = await target.ReadLimitAsync(kind, ct).ConfigureAwait(false);
         if (IsOpenEnd(limit, kind)) return null;
-        return await EvaluateAsync(formulaFrom, "TO", limit, ct).ConfigureAwait(false);
+        var mapped = await EvaluateAsync(formulaFrom, "TO", limit, ct).ConfigureAwait(false);
+        if (mapped.IsDouble && (double.IsInfinity(mapped.AsDouble) || double.IsNaN(mapped.AsDouble))) return null;
+        return mapped;
     }
 
     /// <summary>한계값이 "선언 안 됨" 을 뜻하는 극단인지 — 정수 노드는 long 의 양끝, 실수 노드는 double 의 양끝(무한대 포함).</summary>

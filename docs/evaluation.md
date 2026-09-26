@@ -263,6 +263,16 @@ the "no byte stride" signal, and the sidecar records it. Widening to 2592 puts i
 branch: `PayloadSize` 248,832, `Stride` 3888, 0 incomplete. Both branches were exercised against hardware,
 not only against the simulator.
 
+**Odd pixel total (2026-09-26).** Every geometry above has an even `width x height`, so `w*h*12/8` is a whole
+number. At 2591 x 1943 Mono12Packed (5,034,313 pixels, odd) the device's `PayloadSize` is **7,551,470** =
+`ceil(p x 1.5)` — the lone last pixel takes two bytes — while the receiver's continuous-run rule still rounds to
+a whole group and expects **7,551,471**, one byte more. Frames nevertheless complete: 10 frames streamed, 11
+completed, 0 incomplete, because the device's last packet carries at least that many bytes and the copy is
+clamped at the expected size. This matters since frame completion also requires every byte the leader implies
+(R29): a device that sent exactly its own `PayloadSize` with no padding in the last packet would have every such
+frame closed as incomplete, with the one-time warning naming both sizes. Not observed on this camera; the rule
+is left as is until a device shows it, and the warning is what would surface it.
+
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of
 bytes and there is no line padding there is no stride at all, and saying so is part of the fix:
@@ -514,12 +524,16 @@ which stayed at zero here.
 This entry is reported from a deployment rather than measured on the bench, so it has no table. An
 assembly-line inspection station runs two of these cameras (2062x1544, 30 ms exposure, 14 fps)
 through the CvInspect adapter, with no vendor SDK installed on the machine; the only change from the
-station's earlier vendor-SDK configuration was the transport selection. Both cameras are found by
-serial number, the colour comes out right with nothing pinned on the host — no Bayer pattern
-override, no mirror or offset written by the host, the camera's declared pixel format taken as is —
-and the station's inspection verdicts on its ten taught parts match those recorded before the change.
+station's earlier vendor-SDK configuration was the transport selection. Each camera hangs on its own
+host NIC and subnet, so the two never share a port — unlike the eight-hour run above — and no
+inter-packet delay is needed. Both cameras are found by serial number, the colour comes out right
+with nothing pinned on the host — no Bayer pattern override, no mirror or offset written by the
+host, the camera's declared pixel format taken as is — and the station's inspection verdicts on its
+ten taught parts match those recorded before the change.
 
 What it settles: a second vendor's colour camera works on the declared pattern, as the Basler colour
 camera above did on the bench, so both vendors are now covered in monochrome and in colour. What it
-does not: this is a functional check, not a soak. No packet or frame statistics were collected, the
-endurance figures remain the monochrome pair's, and the firmware version is not yet recorded.
+does not: this is a functional check, not a soak. No packet or frame statistics were collected and
+the endurance figures remain the monochrome pair's. Firmware is 3.6.2.9 on both cameras, read with
+one discovery broadcast (`discover`) while the inspection program was running — discovery does not
+open the camera, so the line did not stop for it.

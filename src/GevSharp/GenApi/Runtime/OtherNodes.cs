@@ -56,7 +56,15 @@ internal sealed class StringRegNode : NodeBase, IString
             throw new GenApiException($"String of {bytes.Length} bytes does not fit node '{Name}' (max {len} bytes).", Name);
         var buf = new byte[len];
         Buffer.BlockCopy(bytes, 0, buf, 0, bytes.Length);
-        await _core.WriteAsync(buf, ct).ConfigureAwait(false);
+        try
+        {
+            await _core.WriteAsync(buf, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 }
@@ -103,8 +111,16 @@ internal sealed class StringNode : NodeBase, IString
 
     internal override async ValueTask WriteStringAsync(string value, CancellationToken ct)
     {
-        if (_pValue is not null) await _pValue.WriteStringAsync(value, ct).ConfigureAwait(false);
-        else Volatile.Write(ref _local, value);
+        try
+        {
+            if (_pValue is not null) await _pValue.WriteStringAsync(value, ct).ConfigureAwait(false);
+            else Volatile.Write(ref _local, value);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 }
@@ -154,10 +170,18 @@ internal sealed class BooleanNode : NodeBase, IBoolean
 
     internal async ValueTask WriteBoolAsync(bool value, CancellationToken ct)
     {
-        if (_pValue is not null)
-            await _pValue.WriteValueAsync(new GenApiValue(value ? _def.OnValue : _def.OffValue), ct).ConfigureAwait(false);
-        else
-            Volatile.Write(ref _local, value ? 1 : 0);
+        try
+        {
+            if (_pValue is not null)
+                await _pValue.WriteValueAsync(new GenApiValue(value ? _def.OnValue : _def.OffValue), ct).ConfigureAwait(false);
+            else
+                Volatile.Write(ref _local, value ? 1 : 0);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 
@@ -340,8 +364,16 @@ internal sealed class EnumerationNode : NodeBase, IEnumeration
     internal async ValueTask WriteInt64Async(long value, CancellationToken ct)
     {
         if (await FindByValueAsync(value, ct).ConfigureAwait(false) is null) throw NoEntryFor(value);
-        if (_pValue is not null) await _pValue.WriteValueAsync(new GenApiValue(value), ct).ConfigureAwait(false);
-        else Interlocked.Exchange(ref _local, value);
+        try
+        {
+            if (_pValue is not null) await _pValue.WriteValueAsync(new GenApiValue(value), ct).ConfigureAwait(false);
+            else Interlocked.Exchange(ref _local, value);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 
@@ -421,8 +453,16 @@ internal sealed class CommandNode : NodeBase, ICommand
     {
         await EnsureWritableAsync(ct).ConfigureAwait(false);
         var value = await CommandValueAsync(ct).ConfigureAwait(false);
-        if (_pValue is not null) await _pValue.WriteValueAsync(new GenApiValue(value), ct).ConfigureAwait(false);
-        else Interlocked.Exchange(ref _local, value);
+        try
+        {
+            if (_pValue is not null) await _pValue.WriteValueAsync(new GenApiValue(value), ct).ConfigureAwait(false);
+            else Interlocked.Exchange(ref _local, value);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 
@@ -482,7 +522,15 @@ internal sealed class RegisterNode : NodeBase, IRegister
     public async ValueTask SetAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         await EnsureWritableAsync(ct).ConfigureAwait(false);
-        await _core.WriteAsync(data.ToArray(), ct).ConfigureAwait(false);
+        try
+        {
+            await _core.WriteAsync(data.ToArray(), ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 }

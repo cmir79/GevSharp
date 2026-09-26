@@ -407,4 +407,29 @@ public class DeviceLifecycleTests
         Assert.Equal(0, sim.WriteRegCount);
         Assert.Equal(0, sim.WriteMemCount);
     }
+
+    // ---------------------------------------------------------------- stream vs. device lifetime
+
+    [Fact]
+    public async Task Stream_OutlivesItsDevice_WaitingReceiveEndsOnlyByTokenOrStop()
+    {
+        // 문서가 약속하는 계약을 못 박는다: 장치는 자기가 연 스트림을 모른다. 장치를 닫아도(제어 상실도 같은 길) 스트림은
+        // 시작된 채 남고, 프레임을 기다리는 ReceiveAsync 는 스스로 끝나지 않는다 — 토큰이나 StopAsync 만이 푼다.
+        await using var rig = await SimRig.StartAsync();
+        await using var stream = await rig.OpenStreamAsync();
+        await rig.Device.DisposeAsync();
+
+        Assert.False(rig.Device.IsOpen);
+        Assert.True(stream.IsStarted);
+        using (var cts = new CancellationTokenSource(300))
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stream.ReceiveAsync(cts.Token).AsTask());
+        }
+
+        var waiting = stream.ReceiveAsync().AsTask();
+        await Task.Delay(100);
+        Assert.False(waiting.IsCompleted);
+        await stream.StopAsync();                           // 장치에 SCP = 0 을 못 써도(닫힘) 로컬 정리는 끝까지 간다
+        await Assert.ThrowsAsync<GevStreamClosedException>(() => waiting);
+    }
 }

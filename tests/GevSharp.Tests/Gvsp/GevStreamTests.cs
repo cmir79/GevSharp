@@ -524,6 +524,23 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task ScpWriteFailingAfterSendIsStillReset()
+    {
+        // SCP 쓰기 자체의 응답이 유실됐다 — 장치는 포트를 받았을 수 있으므로 닫힌 포트로 쏘지 않게 되돌려야 한다
+        await using var rig = new StreamRig();
+        var scp = GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset);
+        rig.Regs.OnWrite = (addr, value) =>
+        {
+            if (addr == scp && value != 0) throw new GevTimeoutException("WRITEREG reply was lost");
+        };
+
+        await Assert.ThrowsAsync<GevTimeoutException>(() => rig.Stream.StartAsync(Ct));
+        Assert.False(rig.Stream.IsStarted);
+        var writes = rig.Regs.Writes;
+        Assert.Equal((scp, 0u), writes[writes.Length - 1]);
+    }
+
+    [Fact]
     public async Task SlowSenderDoesNotTriggerSpuriousResends()
     {
         // 침묵 규칙(재요청 간격만큼 조용하면 꼬리를 구멍으로 친다)이 스케줄링 지연에 걸리지 않게 간격을 넉넉히 둔다 — 여기서 보는 것은 유예뿐이다.
@@ -1200,6 +1217,147 @@ public class GevStreamTests
         Assert.Equal(3, frame.ExpectedPackets);
         Assert.True(frame.Data.Span.SequenceEqual(sent.Data));
         Assert.Equal(0, rig.Stream.Stats.ResendRequests);
+    }
+
+    /// <summary>
+    /// 풀 버퍼 하나를 정상 프레임으로 한 번 채워 둔 스트림 — 다음 프레임이 같은 버퍼를 받으므로, 덜 온 자리에 이전 프레임의
+    /// 바이트가 남아 있으면 눈에 보인다(새 버퍼는 0 이라 그 오염이 가려진다).
+    /// </summary>
+    private static async Task<(StreamRig Rig, GvspTestSender.SynthFrame Previous)> StartWithDirtyBufferAsync(bool deliverIncomplete)
+    {
+        var opt = StreamRig.DefaultOpt();
+        opt.BufferCount = 1;
+        opt.DeliverIncompleteFrames = deliverIncomplete;
+        var rig = new StreamRig(opt);
+        await rig.StartAsync();
+        var previous = rig.Sender.SendFrame(1, 64, 100, Mono8, seed: 0xAA);
+        using (var f = await rig.ReceiveAsync()) Assert.True(f.IsComplete);
+        return (rig, previous);
+    }
+
+    [Fact]
+    public async Task BlockCutShortByAnEarlyTrailerIsIncompleteNotStale()
+    {
+        // 장치가 블록을 중간에 끊고(정지 순간 등) 낮은 id 의 트레일러를 보냈다. 트레일러의 패킷 수만 믿으면 "다 받았다" 가 되어,
+        // 리더가 알린 바이트 중 안 온 꼬리에 이전 프레임의 픽셀이 남은 채 완성으로 나간다.
+        var (rig, previous) = await StartWithDirtyBufferAsync(deliverIncomplete: true);
+        await using (rig)
+        {
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            Assert.Equal(5, cut.PacketCount);
+            var d = cut.DataBytesPerPacket;
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 1, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 2, GvspConst.StatusSuccess);
+            rig.Sender.SendTrailer(cut, 3);      // 높이는 리더 그대로 — 가변 높이 축소가 아니다
+
+            using var frame = await rig.ReceiveAsync();
+            Assert.Equal(2UL, frame.FrameId);
+            Assert.True(frame.Data.Span.Slice(0, 2 * d).SequenceEqual(cut.Data.AsSpan(0, 2 * d)));
+            var tail = frame.Data.Span.Slice(2 * d, cut.Data.Length - 2 * d);
+            // 검사기가 살아 있는지: 고치기 전에는 이 꼬리가 이전 프레임 바이트다
+            Assert.False(tail.SequenceEqual(previous.Data.AsSpan(2 * d, cut.Data.Length - 2 * d)), "tail still holds the previous frame");
+            Assert.True(tail.SequenceEqual(new byte[tail.Length]), "unreceived tail must be zeroed");
+            Assert.False(frame.IsComplete);
+            Assert.Equal(5, frame.ExpectedPackets);
+            Assert.Equal(3, frame.MissingPackets);
+
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(GevFrameDropReason.Incomplete, diag.Reason);
+            Assert.Equal(3, diag.MissingPackets);
+            Assert.Equal(1, rig.Stream.Stats.FramesCompleted);
+            Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        }
+    }
+
+    [Fact]
+    public async Task BlockCutInsideAPacketZeroesTheGapAfterTheShortLastPayload()
+    {
+        // 끊긴 블록의 마지막 페이로드가 짧다(패킷 가운데서 끊겼다). 그 패킷 자리의 나머지는 장치가 쓰지 않았으므로
+        // 트레일러가 약속한 패킷 수 × 패킷 크기가 아니라 실제로 받은 끝부터 비워야 이전 프레임 바이트가 남지 않는다.
+        var (rig, previous) = await StartWithDirtyBufferAsync(deliverIncomplete: true);
+        await using (rig)
+        {
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            var d = cut.DataBytesPerPacket;
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 1, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 2, GvspConst.StatusSuccess);
+            rig.Sender.SendPayloadWithArbitraryId(2, 3, 100);   // 셋째 패킷은 100 바이트에서 끊겼다
+            rig.Sender.SendTrailer(cut, 4);
+
+            using var frame = await rig.ReceiveAsync();
+            Assert.False(frame.IsComplete);
+            var receivedEnd = 2 * d + 100;
+            var gap = frame.Data.Span.Slice(receivedEnd, 3 * d - receivedEnd);
+            Assert.False(gap.SequenceEqual(previous.Data.AsSpan(receivedEnd, gap.Length)), "gap still holds the previous frame");
+            Assert.True(frame.Data.Span.Slice(receivedEnd, cut.Data.Length - receivedEnd).SequenceEqual(new byte[cut.Data.Length - receivedEnd]));
+        }
+    }
+
+    [Fact]
+    public async Task BlockCutShortIsDroppedWhenIncompleteFramesAreNotDelivered()
+    {
+        // 기본 설정(불완전 프레임 안 받음)에서는 끊긴 블록이 나가지 않고, 뒤 프레임을 보존 시간만큼 막지도 않는다.
+        var (rig, _) = await StartWithDirtyBufferAsync(deliverIncomplete: false);
+        await using (rig)
+        {
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 1, GvspConst.StatusSuccess);
+            rig.Sender.SendTrailer(cut, 2);
+
+            var next = rig.Sender.SendFrame(3, 64, 100, Mono8, seed: 0x33);
+            using var frame = await rig.ReceiveAsync();
+            Assert.Equal(3UL, frame.FrameId);
+            Assert.True(frame.IsComplete);
+            Assert.True(frame.Data.Span.SequenceEqual(next.Data));
+            Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        }
+    }
+
+    [Fact]
+    public async Task LeaderRecoveredAfterAShorterTrailerStillShrinksTheFrame()
+    {
+        // 가변 높이 프레임의 리더가 유실돼 리센드로 트레일러 뒤에 왔다. 트레일러가 알린 실제 줄 수를 리더를 적용할 때도 써야
+        // 리더의 최대 줄 수로 크기를 잡아 덜 온 것처럼(또는 이전 픽셀이 남은 채) 닫지 않는다.
+        var (rig, _) = await StartWithDirtyBufferAsync(deliverIncomplete: false);
+        await using (rig)
+        {
+            var sent = rig.Sender.BuildFrame(2, 64, 50, Mono8, seed: 0x22);
+            sent.LeaderHeight = 100;
+            rig.Sender.Drop.Add((2, 0));
+            rig.Sender.SendFrame(sent);
+
+            using var frame = await rig.ReceiveAsync();
+            Assert.Equal(2UL, frame.FrameId);
+            Assert.True(frame.IsComplete);
+            Assert.Equal(50, frame.Height);
+            Assert.Equal(sent.Data.Length, frame.PayloadSize);
+            Assert.True(frame.Data.Span.SequenceEqual(sent.Data));
+            Assert.True(rig.Stream.Stats.ResendRequests > 0);   // 리더는 정말 리센드로 왔다
+        }
+    }
+
+    [Fact]
+    public async Task VariableHeightOfABitPackedFormatKeepsItsPayloadSize()
+    {
+        // 줄이 바이트 경계에서 끝나지 않는 패킹(Mono12p 홀수 폭)은 줄 간격이 없어 Stride 가 0 이다 — 줄 간격 × 줄 수로
+        // 크기를 다시 계산하면 0 이 된다. 픽셀 포맷 규칙으로 실제 줄 수의 바이트를 구해야 한다.
+        const uint Mono12p = 0x010C0047;
+        await using var rig = new StreamRig();
+        await rig.StartAsync();
+
+        var sent = rig.Sender.BuildFrame(1, 63, 50, Mono12p, seed: 5);
+        sent.LeaderHeight = 100;
+        rig.Sender.SendFrame(sent);
+
+        using var frame = await rig.ReceiveAsync();
+        Assert.True(frame.IsComplete);
+        Assert.Equal(0, frame.Stride);
+        Assert.Equal(50, frame.Height);
+        Assert.Equal(sent.Data.Length, frame.PayloadSize);
+        Assert.True(frame.Data.Span.SequenceEqual(sent.Data));
     }
 
     [Fact]

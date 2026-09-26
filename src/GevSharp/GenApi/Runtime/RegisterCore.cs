@@ -231,7 +231,16 @@ internal sealed class RegisterCore
         return buf;
     }
 
-    /// <summary>레지스터에 쓴다. 길이는 레지스터 길이와 같아야 한다. 캐시 정책을 적용하고, 쓴 바이트를 노드맵에 알려 그림자에 남기고 겹치는 다른 노드의 캐시를 버리게 한다.</summary>
+    /// <summary>
+    /// 레지스터에 쓴다. 길이는 레지스터 길이와 같아야 한다. 캐시 정책을 적용하고, 쓴 바이트를 노드맵에 알려 그림자에 남기고 겹치는 다른 노드의 캐시를 버리게 한다.
+    /// <para>
+    /// 포트 쓰기가 실패하면 장치가 새 값을 받았는지 알 수 없다 — 명령은 응답을 기다리기 전에 이미 나가므로, 응답 유실·시한 초과·대기 중 취소는
+    /// 장치가 값을 바꾼 채로 여기 온다. 그래서 어떤 예외든 이 레지스터와 주소가 겹치는 캐시를 버리고 다시 던진다(다음 읽기가 장치에 묻는다).
+    /// 예외 종류로 가르지 않는다 — 장치가 거절했거나 보내기 전에 실패했다면 버린 값이 옳았을 뿐이고, 비용은 다음 읽기 한 번이다.
+    /// 그림자는 건드리지 않는다: "모름" 을 적을 자리가 없고, 지우면 형제 필드의 비트가 0 이 되어 다음 쓰기가 확실히 틀린다.
+    /// 옛 그림자는 틀릴 수 있을 뿐이고, 호출자가 다시 쓰면 바로잡힌다.
+    /// </para>
+    /// </summary>
     public async ValueTask WriteAsync(byte[] data, CancellationToken ct)
     {
         ThrowIfChunkPort();
@@ -240,7 +249,16 @@ internal sealed class RegisterCore
         if (data.Length != len)
             throw new GenApiException($"Register '{_owner.Name}' expects {len} bytes, got {data.Length}.", _owner.Name);
 
-        await Port.WriteAsync(addr, data, ct).ConfigureAwait(false);
+        try
+        {
+            await Port.WriteAsync(addr, data, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            DropCache();
+            _owner.Map.OnRegisterWriteFailed(this, addr, data.Length);
+            throw;
+        }
         lock (_lock)
         {
             if (IsCacheable && _set.Cachable == Cachable.WriteThrough)
