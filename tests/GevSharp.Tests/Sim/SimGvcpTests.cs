@@ -598,6 +598,36 @@ public class SimGvcpTests
     }
 
     [Fact]
+    public void RetransmittedCommand_WithTheSameReqId_IsExecutedAgain()
+    {
+        // 응답기는 req_id 를 기억하지 않는다 — 같은 req_id 로 다시 온 명령(호스트가 늦은 ACK 를 기다리다 재전송한 것)도
+        // 새 명령처럼 다시 실행한다. 자기 소거 명령이면 효과가 두 번 난다. 문서(sim-register-map.md)가 적는 이 동작을 래치로 못 박는다:
+        // 두 번째 실행은 더 늦은 카운터를 싣는다.
+        using var dev = StartDevice();
+        using var c = new RawGvcpClient(dev.GvcpEndPoint);
+        const ushort reqId = 0x1234;
+        var latch = RawGvcpClient.BuildCmd(GvcpConst.WriteRegCmd, GvcpConst.FlagAckRequired, reqId,
+            RawGvcpClient.WriteRegPayload((GvbsAddr.TimestampControl, 2)));
+        int writesBefore = dev.WriteRegCount;
+
+        c.SendRaw(latch);
+        var first = c.Receive() ?? throw new TimeoutException("no reply to the first send");
+        Assert.Equal(reqId, first.ReqId);
+        Assert.Equal(GvcpConst.StatusSuccess, first.Status);
+        var (_, a) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+
+        Thread.Sleep(5);
+        c.SendRaw(latch);   // 같은 바이트, 같은 req_id
+        var second = c.Receive() ?? throw new TimeoutException("no reply to the retransmission");
+        Assert.Equal(reqId, second.ReqId);
+        Assert.Equal(GvcpConst.StatusSuccess, second.Status);
+        var (_, b) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+
+        Assert.Equal(writesBefore + 2, dev.WriteRegCount);
+        Assert.True((((ulong)b[0] << 32) | b[1]) > (((ulong)a[0] << 32) | a[1]), "the retransmitted latch must run again and capture a later count");
+    }
+
+    [Fact]
     public void Ctor_RejectsNonIPv4BindAddress()
     {
         var ex = Assert.Throws<ArgumentException>(() => new SimDevice(new SimDeviceOpt { BindAddress = IPAddress.IPv6Loopback }));

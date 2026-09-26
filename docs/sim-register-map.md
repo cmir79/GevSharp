@@ -146,6 +146,11 @@ the receiver reports `Stride` 0).
 
 - One server thread; commands are processed one at a time in arrival order. Every reply echoes `req_id`.
   `ack_required = 0` → no reply (the command is still executed). Replies come from the GVCP socket.
+- **No duplicate suppression.** The responder keeps no memory of `req_id`: a retransmitted command (same
+  bytes, same `req_id`) is executed again, and a self-clearing one (AcquisitionStart, TriggerSoftware,
+  UserSetLoad, TimestampControl) acts twice. The library resends with the same `req_id` when an ACK has not
+  arrived within `GvcpTimeoutMs`, so a round trip slower than that window runs the command twice — e.g. a
+  second SingleFrame start and one frame too many. Pinned by `SimGvcpTests.RetransmittedCommand_*`.
 - **DISCOVERY** → 248-byte `DISCOVERY_ACK`. Only unicast to `GvcpEndPoint` is answered, on whatever port the
   socket has. Broadcast DISCOVERY is never seen: the socket is bound to `BindAddress` (a unicast address), and a
   unicast-bound UDP socket does not receive datagrams sent to a broadcast address. `GvcpPort = 3956` only makes
@@ -190,6 +195,20 @@ the receiver reports `Stride` 0).
   counted in `MalformedCount`; `LastError` describes the last problem in English. The receive buffer is
   65536 bytes, so every legal UDP datagram fits; should the socket ever report an oversize datagram
   (`MessageSize`) it is counted as malformed on every platform rather than as a socket error.
+
+## Host timing for tests against the simulator
+
+The simulator answers at once, but a loaded CI runner does not schedule anyone at once. `GevDeviceOpt`'s
+defaults are production values — `GvcpTimeoutMs` 500 with `GvcpRetries` 3, and `HeartbeatTimeoutMs` 3000,
+which makes the heartbeat period 1000 ms — and on a starved runner both have failed against the simulator,
+as recorded in `tests/GevSharp.Tests/Integration/SimRig.cs`: a loopback round trip took longer than a 1 s GVCP
+window, so the WRITEREG was resent and executed twice (see "No duplicate suppression" above), and a 1 s period
+against a 3 s device timeout lost control. `SimRig.DefaultDeviceOpt()` therefore uses `GvcpTimeoutMs` 3000
+with one retry, and `HeartbeatTimeoutMs` 10 000 with a 500 ms period; tests that exercise expiry set their own
+values. A downstream suite that drives the simulator should widen the same two settings rather than inherit the
+production defaults — otherwise its flaky failures look like its own bugs (an extra frame after a single grab,
+a spurious `ControlLost`). Widening costs nothing on the normal path: these are budgets for a missing reply,
+not expected response times.
 
 ## GVSP behaviour
 
