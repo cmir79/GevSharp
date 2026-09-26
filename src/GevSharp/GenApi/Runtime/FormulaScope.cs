@@ -6,8 +6,10 @@ namespace GevSharp.GenApi.Runtime;
 /// 수식 노드(SwissKnife/IntSwissKnife/Converter/IntConverter)의 변수 범위 — pVariable·Constant·Expression 을 이름으로 묶고
 /// 수식을 비동기로 평가한다. 수식은 바인딩 시점에 한 번만 파싱한다.
 /// <para>
-/// 평가는 <see cref="Formula.EvaluateAsync"/> 로 한다: 수식이 나열한 변수를 전부(택하지 않은 삼항 가지의 것까지) 먼저 읽고
-/// 동기로 계산한다. 변수 하나의 읽기 실패가 곧 수식 실패라 결과가 결정적이고, 레지스터 왕복이 변수 순서대로 한 번씩만 일어난다.
+/// 평가는 <see cref="Formula.EvaluateAsync(Func{string, ValueTask{GenApiValue}}, FormulaMode, CancellationToken)"/> 로 한다:
+/// 수식이 나열한 변수를 전부(택하지 않은 삼항 가지의 것까지) 먼저 읽고 동기로 계산한다. 변수 하나의 읽기 실패가 곧 수식 실패라
+/// 결과가 결정적이고, 레지스터 왕복이 변수 순서대로 한 번씩만 일어난다. 평가 규칙(<see cref="FormulaMode"/>)은 소유 노드의
+/// 종류가 정하며 이 범위의 모든 수식(본식·Expression·Converter 한계 계산)에 같이 쓰인다.
 /// </para>
 /// <para>
 /// pVariable 의 Name 은 수식 안의 변수 이름 그대로이며, 점 접미사로 무엇을 읽을지 정한다:
@@ -48,10 +50,10 @@ internal sealed class FormulaScope
     private readonly Dictionary<string, Formula> _expressions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VarRef> _variables = new(StringComparer.Ordinal);
 
-    /// <param name="mode">
-    /// 이 범위의 모든 수식(본식·Expression·Converter 한계 계산)을 평가하는 규칙 — 실수 노드는 <see cref="FormulaMode.Real"/>,
-    /// 정수 노드는 <see cref="FormulaMode.Integer"/>. 필수 인자로 두어 새 수식 노드가 규칙을 고르지 않고 지나가지 못하게 한다.
-    /// </param>
+    /// <summary>
+    /// 평가 규칙은 필수 인자다 — 실수 노드는 <see cref="FormulaMode.Real"/>, 정수 노드는 <see cref="FormulaMode.Integer"/>.
+    /// 기본값을 두지 않아 새 수식 노드가 규칙을 고르지 않고 지나가지 못하게 한다.
+    /// </summary>
     public FormulaScope(NodeBase owner, IFormulaNodeDef def, NodeBinder binder, FormulaMode mode)
     {
         _owner = owner;
