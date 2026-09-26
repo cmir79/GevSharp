@@ -1271,6 +1271,31 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task BlockCutInsideAPacketZeroesTheGapAfterTheShortLastPayload()
+    {
+        // 끊긴 블록의 마지막 페이로드가 짧다(패킷 가운데서 끊겼다). 그 패킷 자리의 나머지는 장치가 쓰지 않았으므로
+        // 트레일러가 약속한 패킷 수 × 패킷 크기가 아니라 실제로 받은 끝부터 비워야 이전 프레임 바이트가 남지 않는다.
+        var (rig, previous) = await StartWithDirtyBufferAsync(deliverIncomplete: true);
+        await using (rig)
+        {
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            var d = cut.DataBytesPerPacket;
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 1, GvspConst.StatusSuccess);
+            rig.Sender.SendPacket(cut, 2, GvspConst.StatusSuccess);
+            rig.Sender.SendPayloadWithArbitraryId(2, 3, 100);   // 셋째 패킷은 100 바이트에서 끊겼다
+            rig.Sender.SendTrailer(cut, 4);
+
+            using var frame = await rig.ReceiveAsync();
+            Assert.False(frame.IsComplete);
+            var receivedEnd = 2 * d + 100;
+            var gap = frame.Data.Span.Slice(receivedEnd, 3 * d - receivedEnd);
+            Assert.False(gap.SequenceEqual(previous.Data.AsSpan(receivedEnd, gap.Length)), "gap still holds the previous frame");
+            Assert.True(frame.Data.Span.Slice(receivedEnd, cut.Data.Length - receivedEnd).SequenceEqual(new byte[cut.Data.Length - receivedEnd]));
+        }
+    }
+
+    [Fact]
     public async Task BlockCutShortIsDroppedWhenIncompleteFramesAreNotDelivered()
     {
         // 기본 설정(불완전 프레임 안 받음)에서는 끊긴 블록이 나가지 않고, 뒤 프레임을 보존 시간만큼 막지도 않는다.

@@ -1441,7 +1441,8 @@ public sealed partial class GevStream
 
     /// <summary>
     /// 불완전 프레임을 내보내기 전에 못 받은 패킷 자리를 0 으로 비운다 — 이전 프레임의 픽셀이 새어 보이지 않게.
-    /// 트레일러가 약속한 패킷 뒤로도 리더가 알린 크기가 남아 있으면(끊긴 블록) 그 꼬리도 비운다.
+    /// 트레일러가 약속한 패킷 뒤로도 리더가 알린 크기가 남아 있으면(끊긴 블록) 그 꼬리도 비운다. 꼬리는 실제로 받은 끝부터 비운다 —
+    /// 끊긴 블록의 마지막 패킷이 짧으면 그 패킷 자리의 나머지도 장치가 쓰지 않은 바이트다.
     /// </summary>
     private static void ZeroHoles(FrameSlot slot)
     {
@@ -1455,8 +1456,8 @@ public sealed partial class GevStream
             var length = (int)Math.Min(slot.DataBytes, limit - offset);
             Array.Clear(data, (int)offset, length);
         }
-        var covered = (long)slot.ExpectedPackets * slot.DataBytes;
-        if (covered < limit) Array.Clear(data, (int)covered, (int)(limit - covered));
+        var tailStart = Math.Min((long)slot.ExpectedPackets * slot.DataBytes, slot.ReceivedEnd);
+        if (tailStart < limit) Array.Clear(data, (int)tailStart, (int)(limit - tailStart));
     }
 
     private void Enqueue(FrameSlot slot)
