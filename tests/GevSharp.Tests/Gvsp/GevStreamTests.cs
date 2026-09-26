@@ -524,6 +524,23 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task ScpWriteFailingAfterSendIsStillReset()
+    {
+        // SCP 쓰기 자체의 응답이 유실됐다 — 장치는 포트를 받았을 수 있으므로 닫힌 포트로 쏘지 않게 되돌려야 한다
+        await using var rig = new StreamRig();
+        var scp = GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset);
+        rig.Regs.OnWrite = (addr, value) =>
+        {
+            if (addr == scp && value != 0) throw new GevTimeoutException("WRITEREG reply was lost");
+        };
+
+        await Assert.ThrowsAsync<GevTimeoutException>(() => rig.Stream.StartAsync(Ct));
+        Assert.False(rig.Stream.IsStarted);
+        var writes = rig.Regs.Writes;
+        Assert.Equal((scp, 0u), writes[writes.Length - 1]);
+    }
+
+    [Fact]
     public async Task SlowSenderDoesNotTriggerSpuriousResends()
     {
         // 침묵 규칙(재요청 간격만큼 조용하면 꼬리를 구멍으로 친다)이 스케줄링 지연에 걸리지 않게 간격을 넉넉히 둔다 — 여기서 보는 것은 유예뿐이다.

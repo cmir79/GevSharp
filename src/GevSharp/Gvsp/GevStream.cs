@@ -130,8 +130,10 @@ public sealed partial class GevStream : IAsyncDisposable
 
                 // 장치가 테스트 패킷을 보낼 목적지를 먼저 알려 준다.
                 await WriteRegAsync(GvbsAddr.ScdaOffset, ToUInt32(_localAddress), ct).ConfigureAwait(false);
-                await WriteRegAsync(GvbsAddr.ScpOffset, (uint)LocalPort, ct).ConfigureAwait(false);
+                // 표시는 보내기 **전에** 한다 — 명령은 응답을 기다리기 전에 나가므로, 응답 유실·시한 초과·대기 중 취소로 이 쓰기가
+                // 실패해도 장치는 포트를 받았을 수 있다. 안 받았다면 아래 되돌리기가 0 을 한 번 더 쓸 뿐이다.
                 hasWrittenScp = true;
+                await WriteRegAsync(GvbsAddr.ScpOffset, (uint)LocalPort, ct).ConfigureAwait(false);
 
                 await PunchFirewallAsync(socket, ct).ConfigureAwait(false);
 

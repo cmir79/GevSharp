@@ -44,7 +44,15 @@ internal abstract class IntegerNodeBase : NodeBase, IInteger
     internal async ValueTask WriteInt64Async(long value, CancellationToken ct)
     {
         await ValidateAsync(value, ct).ConfigureAwait(false);
-        await WriteCoreAsync(value, ct).ConfigureAwait(false);
+        try
+        {
+            await WriteCoreAsync(value, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 

@@ -43,7 +43,15 @@ internal abstract class FloatNodeBase : NodeBase, IFloat
     internal async ValueTask WriteDoubleAsync(double value, CancellationToken ct)
     {
         await ValidateAsync(value, ct).ConfigureAwait(false);
-        await WriteCoreAsync(value, ct).ConfigureAwait(false);
+        try
+        {
+            await WriteCoreAsync(value, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            Map.OnWriteFailed(this);
+            throw;
+        }
         Map.OnWritten(this);
     }
 

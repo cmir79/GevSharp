@@ -27,6 +27,12 @@ internal sealed class MemoryPort : IGevPort
     /// <summary>읽기 직전에 불린다 — 장치가 스스로 바꾸는 레지스터(폴링 대상)를 흉내 낼 때.</summary>
     public Action<ulong, int>? BeforeRead { get; set; }
 
+    /// <summary>
+    /// 쓰기를 메모리에 반영한 **뒤** 던질 예외 — 장치는 명령을 받아 값을 바꿨는데 응답이 유실된 경우(시한 초과·취소)를 흉내 낸다.
+    /// null 을 돌려주면 정상 완료다.
+    /// </summary>
+    public Func<ulong, byte[], Exception?>? FailAfterWrite { get; set; }
+
     /// <summary>주소 범위에 대한 읽기 횟수.</summary>
     public int ReadsAt(ulong address)
     {
@@ -86,6 +92,7 @@ internal sealed class MemoryPort : IGevPort
             Writes.Add(new Access(address, (byte[])copy.Clone()));
         }
         AfterWrite?.Invoke(address, copy);
+        if (FailAfterWrite?.Invoke(address, copy) is { } fault) throw fault;
         return default;
     }
 
