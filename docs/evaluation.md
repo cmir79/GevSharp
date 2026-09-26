@@ -273,6 +273,14 @@ clamped at the expected size. This matters since frame completion also requires 
 frame closed as incomplete, with the one-time warning naming both sizes. Not observed on this camera; the rule
 is left as is until a device shows it, and the warning is what would surface it.
 
+**Blocks at acquisition stop (2026-09-26, reported through the CvInspect adapter — not a CLI harness run).** The
+same R29 check closes a block that a device cuts short with an early trailer. On this camera it did not happen:
+the consumer ran GevSharp 0.4.1 through its adapter with single grabs, live bursts, 1 ms-timeout grabs that stop
+acquisition while a frame is in flight, and cancellations 0–3 ms after the call — the stream stopped with 84
+completed, 0 incomplete, and the late frames were the whole blocks, discarded by the next grab's drain. So this
+Basler finishes the block it is sending when stopped; a cut block is still covered only by loopback tests, and
+whether other models cut is unmeasured. Figures are the consumer's; see its records for the run.
+
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of
 bytes and there is no line padding there is no stride at all, and saying so is part of the fix:
