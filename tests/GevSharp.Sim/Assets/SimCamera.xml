@@ -238,7 +238,8 @@
     </IntReg>
 
     <Integer Name="OffsetX" NameSpace="Standard">
-      <ToolTip>Horizontal offset of the region of interest</ToolTip>
+      <ToolTip>Horizontal offset of the region of interest; locked while acquiring</ToolTip>
+      <pIsLocked>AcquisitionActive</pIsLocked>
       <Streamable>Yes</Streamable>
       <pValue>OffsetXReg</pValue>
       <Min>0</Min>
@@ -256,7 +257,8 @@
     </IntReg>
 
     <Integer Name="OffsetY" NameSpace="Standard">
-      <ToolTip>Vertical offset of the region of interest</ToolTip>
+      <ToolTip>Vertical offset of the region of interest; locked while acquiring</ToolTip>
+      <pIsLocked>AcquisitionActive</pIsLocked>
       <Streamable>Yes</Streamable>
       <pValue>OffsetYReg</pValue>
       <Min>0</Min>
@@ -343,7 +345,8 @@
     </IntReg>
 
     <Boolean Name="ReverseX" NameSpace="Standard">
-      <ToolTip>Horizontal flip flag (register round-trip only; the simulator pattern is not mirrored)</ToolTip>
+      <ToolTip>Horizontal flip flag (register round-trip only; the simulator pattern is not mirrored); locked while acquiring</ToolTip>
+      <pIsLocked>AcquisitionActive</pIsLocked>
       <Streamable>Yes</Streamable>
       <pValue>ReverseXReg</pValue>
       <OnValue>1</OnValue>
@@ -380,7 +383,8 @@
     </Category>
 
     <Enumeration Name="AcquisitionMode" NameSpace="Standard">
-      <ToolTip>Continuous, SingleFrame or MultiFrame</ToolTip>
+      <ToolTip>Continuous, SingleFrame or MultiFrame; locked while acquiring</ToolTip>
+      <pIsLocked>AcquisitionActive</pIsLocked>
       <Streamable>Yes</Streamable>
       <EnumEntry Name="EnumEntry_AcquisitionMode_Continuous" NameSpace="Standard">
         <Value>0</Value>
@@ -445,7 +449,7 @@
     </IntReg>
 
     <Integer Name="AcquisitionActive" NameSpace="Custom">
-      <ToolTip>1 while the device is acquiring; used as the lock predicate of Width, Height and PixelFormat</ToolTip>
+      <ToolTip>1 while the device is acquiring; the lock predicate of AcquisitionMode, Width, Height, OffsetX, OffsetY, PixelFormat and ReverseX</ToolTip>
       <Visibility>Guru</Visibility>
       <pValue>AcquisitionActiveReg</pValue>
       <Representation>Boolean</Representation>

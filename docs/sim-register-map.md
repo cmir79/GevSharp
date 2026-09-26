@@ -98,23 +98,23 @@ reset the counter instead.
 |---|---|---|---|---|---|
 | `0x10000` | Width | RW | `Opt.Width` (640) | frame width in pixels | `Width` (Integer Min 8, pMax WidthMax, Inc 4, pIsLocked AcquisitionActive) → `WidthReg` |
 | `0x10004` | Height | RW | `Opt.Height` (480) | frame height in pixels | `Height` (Integer Min 8, pMax HeightMax, Inc 2, pIsLocked) → `HeightReg` |
-| `0x10008` | OffsetX | RW | 0 | copied into the leader | `OffsetX` (Integer 0..4088 Inc 4) → `OffsetXReg` |
-| `0x1000C` | OffsetY | RW | 0 | copied into the leader | `OffsetY` (Integer 0..4094 Inc 2) → `OffsetYReg` |
+| `0x10008` | OffsetX | RW | 0 | copied into the leader | `OffsetX` (Integer 0..4088 Inc 4, pIsLocked) → `OffsetXReg` |
+| `0x1000C` | OffsetY | RW | 0 | copied into the leader | `OffsetY` (Integer 0..4094 Inc 2, pIsLocked) → `OffsetYReg` |
 | `0x10010` | PixelFormat | RW | `Opt.PixelFormat` (Mono8 `0x01080001`) | PFNC code; bits 23..16 give bits per pixel for the frame size | `PixelFormat` (Enumeration: Mono8, Mono10, Mono12, Mono16, BayerRG8, RGB8; pIsLocked) → `PixelFormatReg` |
 | `0x10014` | ExposureTimeRaw | RW | 10 000 000 (10 ms) | exposure in timestamp ticks; no effect on timing | `ExposureTimeRaw` (Integer 1000..2e9) → `ExposureTimeRawReg`; `ExposureTime` (Converter, µs: `FormulaFrom = TO * 1000000.0 / TICKFREQ`, `FormulaTo = FROM * TICKFREQ / 1000000`, TICKFREQ = TimestampTickFrequency) |
 | `0x10018` | GainSelector | RW | 0 | index 0..2 into the GainRaw block | `GainSelector` (Enumeration AnalogAll/DigitalAll/DigitalRed, pSelected Gain, GainRaw) → `GainSelectorReg` |
 | `0x1001C` + 4·n | GainRaw[n], n = 0..2 | RW | 0 | 0.1 dB units | `GainRaw` (Integer 0..1023) → `GainRawReg` (Address 0x1001C, `pIndex Offset=4` GainSelectorReg); `Gain` (Converter dB: `FormulaFrom = TO / 10.0`, `FormulaTo = FROM * 10`) |
 | `0x10028` | TriggerControl | RW | 0 | integer bit 0 = TriggerMode (1 = On), bits 7..4 = TriggerSource (0 Software, 1 Line0, 2 Line1) | StructReg → `TriggerModeReg` (Bit 31), `TriggerSourceReg` (LSB 27 / MSB 24); `TriggerMode` (Enumeration Off/On), `TriggerSource` (Enumeration, pIsAvailable TriggerModeIsOn) |
-| `0x1002C` | AcquisitionMode | RW | 0 | 0 Continuous, 1 SingleFrame, 2 MultiFrame | `AcquisitionMode` (Enumeration) → `AcquisitionModeReg` |
+| `0x1002C` | AcquisitionMode | RW | 0 | 0 Continuous, 1 SingleFrame, 2 MultiFrame | `AcquisitionMode` (Enumeration, pIsLocked) → `AcquisitionModeReg` |
 | `0x10030` | AcquisitionStart | SC | 0 | 1 starts the sender thread | `AcquisitionStart` (Command value 1, PollingTime 10) → `AcquisitionStartReg` (NoCache) |
 | `0x10034` | AcquisitionStop | SC | 0 | 1 stops the sender and waits for it | `AcquisitionStop` (Command value 1, PollingTime 10) → `AcquisitionStopReg` (NoCache) |
-| `0x10038` | AcquisitionStatus | RO | 0 | 1 while the sender thread runs | `AcquisitionActive` (Integer, Guru) → `AcquisitionActiveReg` (NoCache); the pIsLocked predicate of Width/Height/PixelFormat |
+| `0x10038` | AcquisitionStatus | RO | 0 | 1 while the sender thread runs | `AcquisitionActive` (Integer, Guru) → `AcquisitionActiveReg` (NoCache); the pIsLocked predicate of AcquisitionMode, Width, Height, OffsetX, OffsetY, PixelFormat and ReverseX |
 | `0x1003C` | AcquisitionFrameRate | RW | `Opt.FrameRateHz` (30) as IEEE-754 binary32 big-endian | frame period in free-running mode; NaN/0/negative → 1 Hz | `AcquisitionFrameRate` (Float 1..1000 Hz) → `AcquisitionFrameRateReg` (FloatReg 4) |
 | `0x10040` | TestPattern | RW | 1 | 0 Off (all zero), 1 DiagonalRamp, 2 FrameCounter | `TestPattern` (Enumeration) → `TestPatternReg` |
 | `0x10044` | UserSetSelector | RW | 0 | 0 Default, 1 UserSet1 (both load the same defaults) | `UserSetSelector` (Enumeration, pSelected UserSetLoad) → `UserSetSelectorReg` |
 | `0x10048` | UserSetLoad | SC | 0 | 1 restores the feature page | `UserSetLoad` (Command value 1, PollingTime 10) → `UserSetLoadReg` (NoCache) |
 | `0x1004C` | AcquisitionFrameCount | RW | 1 | frames per start in MultiFrame mode | `AcquisitionFrameCount` (Integer 1..65535, pIsAvailable AcquisitionModeIsMultiFrame) → `AcquisitionFrameCountReg` |
-| `0x10050` | ReverseX | RW | 0 | 0/1; the pattern is not mirrored | `ReverseX` (Boolean) → `ReverseXReg` |
+| `0x10050` | ReverseX | RW | 0 | 0/1; the pattern is not mirrored | `ReverseX` (Boolean, pIsLocked) → `ReverseXReg` |
 | `0x10054` | WidthMax | RO | 4096 | — | `WidthMax` (Integer) → `WidthMaxReg` |
 | `0x10058` | HeightMax | RO | 4096 | — | `HeightMax` (Integer) → `HeightMaxReg` |
 | `0x1005C` | FrameCounter | RO | 0 | frames sent since construction | — |
@@ -219,8 +219,14 @@ the receiver reports `Stride` 0).
 - Unicast discovery only — broadcast DISCOVERY never reaches the unicast-bound socket, whatever `GvcpPort`
   is. `BindAddress` must be IPv4 (the constructor throws `ArgumentException` otherwise).
 - One stream channel, no message channel, no events, no actions, no chunk data, no manifest table.
-- Width/Height/PixelFormat are not refused while acquiring — the lock lives in the XML (`pIsLocked`); a
-  change takes effect from the next frame.
+- The acquisition lock lives in the XML only. `AcquisitionMode`, `Width`, `Height`, `OffsetX`, `OffsetY`,
+  `PixelFormat` and `ReverseX` carry `pIsLocked = AcquisitionActive`, so a node-map write while the sender runs
+  fails with a "locked" `GenApiException`, as on cameras that lock these features during acquisition. A raw
+  WRITEREG/WRITEMEM to the same registers is not refused (tests that drive `SimFeatureAddr` directly rely on
+  that); a format change made that way takes effect from the next frame. The lock follows `AcquisitionStatus`,
+  which drops as soon as a SingleFrame/MultiFrame run has sent its frames — the lock ends there, not at the
+  next `AcquisitionStop`. `TriggerMode`/`TriggerSource` are left unlocked: cameras differ there (some lock
+  them while acquiring, some only while `TLParamsLocked` is set), so the simulator does not pick one.
 - The device does not stop streaming when control is lost; SCP stays as written.
 - FORCEIP does not rebind sockets. `DiscoveryAckDelay`, `GvcpConfig`, SCPS bits 30/29 are stored but unused.
 - SCPD timing and the frame period are best effort on a general-purpose OS. A test may bound them only with a

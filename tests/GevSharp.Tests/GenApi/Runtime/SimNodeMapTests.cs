@@ -271,6 +271,46 @@ public class SimNodeMapTests
     }
 
     [Fact]
+    public async Task AcquisitionStart_LocksAcquisitionModeAndImageFormatUntilStop()
+    {
+        // 실제 카메라는 획득이 도는 동안 모드와 이미지 형식(ROI 위치·반전 포함)을 잠근다 — 하류가 AcquisitionStop 을
+        // 빠뜨려 다음 연속 획득으로 못 넘어가는 결함을, 시뮬레이터에서도 같은 거절로 드러내기 위한 잠금이다.
+        await using var s = await Session.OpenAsync();
+        var mode = s.Map.GetEnumeration("AcquisitionMode");
+        var offsetX = s.Map.GetInteger("OffsetX");
+        var offsetY = s.Map.GetInteger("OffsetY");
+        var reverseX = s.Map.GetBoolean("ReverseX");
+        Assert.False(await mode.IsLockedAsync());
+
+        Assert.True(await s.Device.SetTlParamsLockedAsync(true));
+        await s.Map.GetCommand("AcquisitionStart").ExecuteAsync();
+        await WaitUntilAsync(() => s.Sim.IsAcquiring);
+
+        var ex = await Assert.ThrowsAsync<GenApiException>(() => mode.SetAsync("SingleFrame").AsTask());
+        Assert.Contains("locked", ex.Message);
+        Assert.Equal(SimFeatureAddr.AcquisitionModeContinuous, s.Sim.Registers.ReadU32(SimFeatureAddr.AcquisitionMode));
+        Assert.Equal("Continuous", await mode.GetAsync());   // 잠김은 쓰기만 막는다
+        Assert.Equal(AccessMode.ReadOnly, await mode.GetAccessModeAsync());
+        await Assert.ThrowsAsync<GenApiException>(() => offsetX.SetAsync(4).AsTask());
+        await Assert.ThrowsAsync<GenApiException>(() => offsetY.SetAsync(2).AsTask());
+        await Assert.ThrowsAsync<GenApiException>(() => reverseX.SetAsync(true).AsTask());
+        Assert.Equal(0u, s.Sim.Registers.ReadU32(SimFeatureAddr.OffsetX));
+        Assert.Equal(0u, s.Sim.Registers.ReadU32(SimFeatureAddr.ReverseX));
+
+        await s.Map.GetCommand("AcquisitionStop").ExecuteAsync();
+        await WaitUntilAsync(() => !s.Sim.IsAcquiring);
+        Assert.True(await s.Device.SetTlParamsLockedAsync(false));
+
+        Assert.False(await mode.IsLockedAsync());
+        await mode.SetAsync("SingleFrame");
+        Assert.Equal(SimFeatureAddr.AcquisitionModeSingleFrame, s.Sim.Registers.ReadU32(SimFeatureAddr.AcquisitionMode));
+        await offsetX.SetAsync(4);
+        await reverseX.SetAsync(true);
+        Assert.Equal(4u, s.Sim.Registers.ReadU32(SimFeatureAddr.OffsetX));
+        Assert.Equal(1u, s.Sim.Registers.ReadU32(SimFeatureAddr.ReverseX));
+    }
+
+    [Fact]
     public async Task GevSCPSPacketSize_MaskedWritePreservesFlagBits()
     {
         await using var s = await Session.OpenAsync();
