@@ -265,6 +265,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/>.
     /// 받은 프레임은 반드시 Dispose 한다.
     /// <para>
+    /// <b>장치가 사라져도 이 대기는 스스로 끝나지 않는다.</b> 장치는 자기가 연 스트림을 모르므로 제어 상실
+    /// (<see cref="GevDevice.ControlLost"/>)이나 장치 Dispose 가 스트림을 멈추지 않고, 말없는 장치를 향한 수신은 계속 기다린다.
+    /// 토큰을 주거나, 제어 상실 처리에서(그리고 장치를 닫기 전에) <see cref="StopAsync"/> 를 불러 푼다 — 그러면
+    /// <see cref="GevStreamClosedException"/> 으로 끝난다.
+    /// </para>
+    /// <para>
     /// <b>돌려주는 것은 큐의 머리이지 방금 찍힌 장이 아니다.</b> 완성된 프레임은 받아 갈 때까지 큐에 남으므로,
     /// 받는 쪽이 잠시 쉬었다면 다시 부르는 순간 그 사이에 쌓인 것부터 나온다. 장치 쪽 취득만 멈춘 경우도
     /// 마찬가지다 — 취득을 멈춰도 이 스트림은 살아 있고 큐도 그대로다. <see cref="StopAsync"/> 는 큐를 비우지만

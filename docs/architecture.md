@@ -301,7 +301,8 @@ public sealed class GevStream : IAsyncDisposable
                                                              // then **drain the queue and Dispose every frame still in it** — skipping that
                                                              // leaves those pool buffers held forever — and complete pending receives
                                                              // with GevStreamClosedException
-    public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);
+    public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);  // waits until a frame, the token, or StopAsync/DisposeAsync —
+                                                             // NOT until the device goes away (see "Stream lifetime" below)
     public bool TryReceive(out GevFrame? frame);
     public ValueTask DisposeAsync();
 }
@@ -632,6 +633,11 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
   (pinned by `GevDeviceTests`). Two consequences the caller should know: `DisposeAsync` does not wait for
   the handler, so it can still run after `Close()` returns, and an exception from the handler is swallowed
   and logged rather than propagated.
+- **Stream lifetime is independent of the device.** `GevDevice` does not keep the streams it opened, so
+  neither `ControlLost` nor `DisposeAsync` on the device stops them: the receiver thread keeps listening,
+  `IsStarted` stays true, and a `ReceiveAsync` waiting for a frame from a device that went silent never
+  returns on its own. Pass a cancellation token, or call `StopAsync` on the stream from the `ControlLost`
+  handler (and before disposing the device). Pinned by `DeviceLifecycleTests.Stream_OutlivesItsDevice_*`.
 
 ## Testing strategy
 
