@@ -607,7 +607,13 @@ GenApi runtime — implementation notes where the behaviour is more specific tha
   written bytes; WriteAround/NoCache drop), and a chain walk stops at the written node so it is not undone.
   Registers that share bytes without a graph edge (StructReg entries, alias registers) are found by address
   overlap and dropped. `INode.Invalidate()` uses the same closure but includes the node itself and its whole
-  value chain.
+  value chain. A node *declared* stale — the node `Invalidate()` is called on (or whose write threw), a
+  `pInvalidator` listener, a `pSelected` target — also has its chain walked through formula inputs: the value
+  `pVariable`s of a SwissKnife/IntSwissKnife/Converter/IntConverter, so a value that an IntSwissKnife assembles
+  from two cacheable latch registers is re-read. A node reached only as a dependent is stale because of the input
+  that led there, which is dropped on its own; its other formula inputs stay cached. `.Entry.` variables are
+  bind-time constants and `.Min`/`.Max`/`.Inc` variables read limits, so neither is part of the value chain (like
+  `pMin`/`pMax`/`pInc`).
 - A write that **throws** is treated as "the device may hold the new value": a GVCP command leaves before its
   acknowledge is awaited, so a lost reply, a timeout after PENDING_ACK or a cancelled wait all arrive here with
   the device already changed. The register drops its own cache and every overlapping one, and the node drops

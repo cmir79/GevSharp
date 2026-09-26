@@ -67,7 +67,10 @@ public interface INode
     ValueTask<bool> IsLockedAsync(CancellationToken ct = default);
     ValueTask<AccessMode> GetAccessModeAsync(CancellationToken ct = default);
 
-    /// <summary>이 노드와 이 노드에 의존하는 노드들의 캐시를 버린다.</summary>
+    /// <summary>
+    /// 이 노드와 이 노드에 의존하는 노드들의 캐시를 버린다. 이 노드의 값 사슬(pValue → … → 레지스터, 수식 노드의 값 pVariable 입력 포함)까지
+    /// 내려가므로 다음 읽기는 그 레지스터를 장치에서 다시 읽는다.
+    /// </summary>
     void Invalidate();
 }
 

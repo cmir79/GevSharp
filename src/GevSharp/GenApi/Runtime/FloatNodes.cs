@@ -365,6 +365,8 @@ internal sealed class SwissKnifeNode : FloatNodeBase
         _formula = _scope.Parse(_def.Formula, "Formula");
     }
 
+    internal override void CollectFormulaInputs(List<NodeBase> into) => _scope.CollectVariableTargets(into);
+
     internal override async ValueTask<double> ReadDoubleAsync(CancellationToken ct)
         => (await _scope.EvaluateAsync(_formula, null, default, ct).ConfigureAwait(false)).AsDouble;
 
@@ -404,6 +406,8 @@ internal sealed class ConverterNode : FloatNodeBase
         _to = _scope.Parse(_def.FormulaTo, "FormulaTo");
         _from = _scope.Parse(_def.FormulaFrom, "FormulaFrom");
     }
+
+    internal override void CollectFormulaInputs(List<NodeBase> into) => _scope.CollectVariableTargets(into);
 
     internal override async ValueTask<double> ReadDoubleAsync(CancellationToken ct)
     {

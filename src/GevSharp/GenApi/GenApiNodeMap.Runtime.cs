@@ -11,8 +11,9 @@ namespace GevSharp.GenApi;
 /// </para>
 /// <para>
 /// 무효화: 노드 X 가 쓰이면 X 를 p* 로 참조하는 노드, X 를 pInvalidator 로 지목한 노드, X 가 셀렉터일 때 pSelected 대상 — 그리고 그들에게서
-/// 같은 규칙으로 닿는 노드 전부 — 의 캐시를 버린다(값 사슬 아래의 레지스터 캐시까지, pIndex 슬롯 전부 포함). 쓰인 레지스터 자신의 캐시는
-/// Cachable 정책이 정한다(WriteThrough 는 쓴 값을 남긴다). <see cref="INode.Invalidate"/> 는 쓰기 없이 같은 전파를 하되 자기 자신도 버린다.
+/// 같은 규칙으로 닿는 노드 전부 — 의 캐시를 버린다(값 사슬 아래의 레지스터 캐시까지, pIndex 슬롯 전부 포함). 낡았다고 선언된 노드
+/// (무효화 대상·pInvalidator 청취자·pSelected 대상)는 수식 노드의 pVariable 입력까지 내려가 버리고, 의존으로만 닿은 노드는 그 입력에서 멈춘다.
+/// 쓰인 레지스터 자신의 캐시는 Cachable 정책이 정한다(WriteThrough 는 쓴 값을 남긴다). <see cref="INode.Invalidate"/> 는 쓰기 없이 같은 전파를 하되 자기 자신도 버린다.
 /// 쓰기가 예외로 끝나면 장치가 값을 받았는지 모르므로(명령은 응답 전에 이미 나간다) <see cref="INode.Invalidate"/> 와 같이 자기 자신까지 버린다.
 /// </para>
 /// <para>
@@ -82,9 +83,9 @@ public partial class GenApiNodeMap
     internal void OnWritten(NodeBase node)
     {
         var closure = Closure(node);
-        foreach (var n in closure)
+        foreach (var (n, isDeclared) in closure)
         {
-            if (!ReferenceEquals(n, node)) NodeBase.DropCacheChain(n, node);
+            if (!ReferenceEquals(n, node)) NodeBase.DropCacheChain(n, node, throughFormulas: isDeclared);
         }
     }
 
@@ -119,36 +120,43 @@ public partial class GenApiNodeMap
     /// </summary>
     internal void OnWriteFailed(NodeBase node) => InvalidateNode(node);
 
-    /// <summary><see cref="INode.Invalidate"/> — 노드 자신과 값 사슬, 그리고 의존 닫힘 전체의 캐시를 버린다.</summary>
+    /// <summary><see cref="INode.Invalidate"/> — 노드 자신과 값 사슬(수식 노드의 pVariable 입력 포함), 그리고 의존 닫힘 전체의 캐시를 버린다.</summary>
     internal void InvalidateNode(NodeBase node)
     {
-        foreach (var n in Closure(node)) NodeBase.DropCacheChain(n);
+        foreach (var (n, isDeclared) in Closure(node)) NodeBase.DropCacheChain(n, throughFormulas: isDeclared);
     }
 
     /// <summary>
     /// 무효화 닫힘: 시작 노드에서 의존 노드(p* 참조의 역방향)·pInvalidator 청취자·pSelected 대상을 따라 닿는 모든 노드(시작 노드 포함).
     /// 셀렉터의 역방향(pSelecting)은 따르지 않는다 — 선택된 피처를 써도 셀렉터는 그대로다.
+    /// <para>
+    /// 노드마다 "낡았다고 선언됐는지" 를 함께 돌려준다 — 시작 노드, pInvalidator 청취자, pSelected 대상은 참(값 자체가 바뀌었다고
+    /// 선언됐으니 수식 입력까지 버린다), 의존으로만 닿은 노드는 거짓(낡은 입력 때문에 낡은 것이라 그 입력만 버려지면 된다).
+    /// 두 길로 닿으면 참이 이긴다.
+    /// </para>
     /// </summary>
-    private static List<NodeBase> Closure(NodeBase start)
+    private static List<(NodeBase Node, bool IsDeclared)> Closure(NodeBase start)
     {
-        var visited = new HashSet<NodeBase>(NodeReferenceComparer.Instance) { start };
-        var result = new List<NodeBase> { start };
+        var index = new Dictionary<NodeBase, int>(NodeReferenceComparer.Instance) { [start] = 0 };
+        var result = new List<(NodeBase Node, bool IsDeclared)> { (start, true) };
         for (var i = 0; i < result.Count; i++)
         {
-            var n = result[i];
-            foreach (var d in n.Dependents)
-            {
-                if (visited.Add(d)) result.Add(d);
-            }
-            foreach (var l in n.InvalidatorListeners)
-            {
-                if (visited.Add(l)) result.Add(l);
-            }
-            foreach (var s in n.Selected)
-            {
-                if (visited.Add(s)) result.Add(s);
-            }
+            var n = result[i].Node;
+            foreach (var d in n.Dependents) Visit(d, false);
+            foreach (var l in n.InvalidatorListeners) Visit(l, true);
+            foreach (var s in n.Selected) Visit(s, true);
         }
         return result;
+
+        void Visit(NodeBase node, bool isDeclared)
+        {
+            if (index.TryGetValue(node, out var at))
+            {
+                if (isDeclared && !result[at].IsDeclared) result[at] = (node, true);
+                return;
+            }
+            index[node] = result.Count;
+            result.Add((node, isDeclared));
+        }
     }
 }

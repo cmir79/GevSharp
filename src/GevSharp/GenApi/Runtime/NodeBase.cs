@@ -118,6 +118,13 @@ internal abstract class NodeBase : INode
         if (ValueTarget is { } t) into.Add(t);
     }
 
+    /// <summary>
+    /// 수식 노드(SwissKnife/IntSwissKnife/Converter/IntConverter)가 값을 계산하려고 읽는 pVariable 대상들 — 수식 노드가 아니면 없다.
+    /// <see cref="CollectValueTargets"/> 와 따로 두는 까닭: 이 노드가 스스로 낡았을 때만 입력 전부를 버리고, 입력 하나가 낡아
+    /// 의존으로 닿았을 때는 나머지 입력을 그대로 믿는다(<see cref="DropCacheChain"/>).
+    /// </summary>
+    internal virtual void CollectFormulaInputs(List<NodeBase> into) { }
+
     /// <summary>지금 값을 위임하는 노드 — pIndex 선택처럼 읽어야 정해지는 경우가 있어 비동기다. 값 출처가 없으면 null(던지지 않는다).</summary>
     internal virtual ValueTask<NodeBase?> GetAccessTargetAsync(CancellationToken ct) => new(ValueTarget);
 
@@ -267,8 +274,14 @@ internal abstract class NodeBase : INode
     /// 노드 자신과 값 사슬(pValue/pValueDefault/pValueIndexed → … → 레지스터)의 캐시를 버린다 — 의존 노드로의 전파는 없다.
     /// stopAt 에 닿으면 그 아래로는 내려가지 않는다(방금 쓰인 노드 — 그 캐시는 쓰기 정책이 정했다). 순환은 바인딩에서 막히지만
     /// 방문 집합으로 한 번 더 지킨다.
+    /// <para>
+    /// throughFormulas 가 참이면 수식 노드의 pVariable 입력(<see cref="CollectFormulaInputs"/>)까지 내려간다 — 이 노드 자체가 낡았다고
+    /// 선언된 경우(무효화 대상, pInvalidator 청취자, pSelected 대상)다. 래치 뒤의 두 레지스터를 IntSwissKnife 로 합쳐 읽는 값처럼
+    /// 값이 수식 입력에서만 오는 노드는 그래야 새로 읽힌다. 입력 하나가 낡아 의존으로 닿은 노드는 거짓으로 부른다 —
+    /// 낡은 입력은 따로 버려지고 나머지 입력은 믿을 수 있다.
+    /// </para>
     /// </summary>
-    internal static void DropCacheChain(NodeBase? node, NodeBase? stopAt = null)
+    internal static void DropCacheChain(NodeBase? node, NodeBase? stopAt = null, bool throughFormulas = true)
     {
         if (node is null || ReferenceEquals(node, stopAt)) return;
         var queue = new List<NodeBase> { node };
@@ -280,6 +293,7 @@ internal abstract class NodeBase : INode
             n.DropOwnCache();
             targets.Clear();
             n.CollectValueTargets(targets);
+            if (throughFormulas) n.CollectFormulaInputs(targets);
             foreach (var t in targets)
             {
                 if (!ReferenceEquals(t, stopAt) && visited.Add(t)) queue.Add(t);

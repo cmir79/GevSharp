@@ -80,6 +80,19 @@ internal sealed class FormulaScope
         }
     }
 
+    /// <summary>
+    /// 값으로 읽는 pVariable 대상 노드 전부(접미사 없음·<c>.Value</c>) — 무효화가 수식 노드 아래로 내려갈 때 쓴다.
+    /// <c>.Entry.</c> 는 바인딩 때 굳은 상수라 넣지 않는다. <c>.Min</c>/<c>.Max</c>/<c>.Inc</c> 도 넣지 않는다 — 그 변수는 대상의 값이 아니라
+    /// 한계를 읽으므로 대상의 값 사슬을 버려도 새로워지지 않는다(한계 간선은 pMin/pMax 처럼 값 사슬 밖이다).
+    /// </summary>
+    public void CollectVariableTargets(List<NodeBase> into)
+    {
+        foreach (var v in _variables.Values)
+        {
+            if (v.Suffix == VarSuffix.Value) into.Add(v.Node);
+        }
+    }
+
     /// <summary>수식을 평가한다. extraName 은 Converter 의 FROM/TO 처럼 호출자가 값을 주는 변수.</summary>
     public ValueTask<GenApiValue> EvaluateAsync(Formula formula, string? extraName, GenApiValue extraValue, CancellationToken ct)
         => formula.EvaluateAsync(name => ResolveAsync(name, extraName, extraValue, 0, ct), _mode, ct);
