@@ -32,6 +32,13 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     /// <summary>닫을 때 CCP = 0 쓰기에 주는 최대 시간 — 채널 재시도 예산 전부를 닫기에 쓰지 않는다.</summary>
     internal const int CcpReleaseMaxMs = 2000;
 
+    /// <summary>
+    /// 끝내는 자리의 쓰기(장치 닫기의 CCP = 0, 스트림 정지의 SCP = 0·SCDA = 0)에 주는 고정 예산 — 응답 창 두 개(재전송 한 번의 여유),
+    /// 많아야 <see cref="CcpReleaseMaxMs"/>. 호출자의 토큰에도 재시도 횟수에도 기대지 않는다: 채널 예산에 기대면 말없는 장치 앞에서 정리가
+    /// (1 + GvcpRetries) × 응답 창만큼 붙들리고, 재시도가 끝없으면(GvcpRetries = int.MaxValue) 돌아오지 않는다.
+    /// </summary>
+    internal static int ShutdownWriteBudgetMs(int gvcpTimeoutMs) => (int)Math.Min((long)gvcpTimeoutMs * 2, CcpReleaseMaxMs);
+
     private const int StateOpening = 0;
     private const int StateOpen = 1;
     private const int StateControlLost = 2;
@@ -455,7 +462,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         {
             // 닫기는 오래 붙들지 않는다 — 채널의 재시도 예산 전부가 아니라 짧은 고정 예산만 준다.
             // 놓지 못해도 장치는 자기 하트비트 타임아웃으로 알아서 푼다.
-            var releaseBudgetMs = (int)Math.Min((long)_opt.GvcpTimeoutMs * 2, CcpReleaseMaxMs);
+            var releaseBudgetMs = ShutdownWriteBudgetMs(_opt.GvcpTimeoutMs);
             using var releaseCts = new CancellationTokenSource(releaseBudgetMs);
             try
             {

@@ -337,7 +337,11 @@ public sealed class GevStream : IAsyncDisposable
                                                              // leaves those pool buffers held forever — and complete pending receives
                                                              // with GevStreamClosedException. The token aborts no step: a cancelled (even
                                                              // pre-cancelled) token still turns the device off, runs the whole local
-                                                             // cleanup and returns normally — a half-stopped stream is worse than either
+                                                             // cleanup and returns normally — a half-stopped stream is worse than either.
+                                                             // The two writes share one fixed budget of their own (2 × GvcpTimeoutMs, at most
+                                                             // 2 s) that depends on neither the token nor GvcpRetries, so a device that stopped
+                                                             // answering costs at most that (then a Warn, and local cleanup goes on); the join
+                                                             // is capped at 2 s. A failed start resets SCP within the same budget
     public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);  // waits until a frame, the token, or StopAsync/DisposeAsync —
                                                              // NOT until the device goes away (see "Stream lifetime" below)
     public bool TryReceive(out GevFrame? frame);

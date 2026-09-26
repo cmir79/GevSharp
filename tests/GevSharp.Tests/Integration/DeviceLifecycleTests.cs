@@ -609,4 +609,61 @@ public class DeviceLifecycleTests
         await stream.StopAsync();                           // 장치에 SCP = 0 을 못 써도(닫힘) 로컬 정리는 끝까지 간다
         await Assert.ThrowsAsync<GevStreamClosedException>(() => waiting);
     }
+
+    [Theory]
+    [InlineData(20, 300)]               // 셧다운이 짧은 시한을 준다
+    [InlineData(20, 0)]                 // 시한이 이미 지난 토큰
+    [InlineData(int.MaxValue, 0)]       // 끝없이 재시도하는 채널 — 채널 예산에 기대면 정지가 영영 돌아오지 않는다
+    public async Task Stream_StopAgainstASilentDevice_EndsWithinItsOwnWriteBudget(int gvcpRetries, int callerTokenMs)
+    {
+        // 스트림이 도는 중에 장치가 GVCP 에 답하지 않게 됐다(케이블이 빠졌거나 전원이 나갔다). 셧다운은 스트림을 멈추고 장치를 닫는다.
+        // 정지는 호출자의 토큰과 무관하게 장치 전송 끄기(SCP = 0, SCDA = 0)를 시도하는데, 그 두 쓰기가 채널의 재시도 예산 전부
+        // (쓰기 둘 × (1 + GvcpRetries) × GvcpTimeoutMs, 그 앞에 재시도 중인 하트비트 뒤의 줄서기까지)를 쓰면 호출자는 정지를 끊을
+        // 길이 없다. 두 쓰기는 호출자의 토큰에도 GvcpRetries 에도 기대지 않는 고정 예산 하나를 따로 받아야 한다.
+        const int gvcpTimeoutMs = 500;
+        var rig = await SimRig.StartAsync(device: o =>
+        {
+            o.GvcpTimeoutMs = gvcpTimeoutMs;
+            o.GvcpRetries = gvcpRetries;
+        });
+        var streamOpt = SimRig.DefaultStreamOpt();
+        var stream = await rig.OpenStreamAsync(streamOpt);
+        var budgetMs = GevDevice.ShutdownWriteBudgetMs(gvcpTimeoutMs);
+        Task? stop = null;
+        try
+        {
+            rig.Sim.Stop();
+
+            using var cts = new CancellationTokenSource();
+            if (callerTokenMs > 0) cts.CancelAfter(callerTokenMs);
+            else cts.Cancel();
+
+            var sw = Stopwatch.StartNew();
+            stop = stream.StopAsync(cts.Token);
+            // 회귀가 나도 시험이 매달리지 않게 기다림에만 상한을 둔다 — 정지 자체를 끊는 것이 아니다.
+            var done = await Task.WhenAny(stop, Task.Delay(30_000));
+            sw.Stop();
+
+            Assert.True(ReferenceEquals(done, stop),
+                $"StopAsync did not return within 30 s against a silent device (GvcpRetries {gvcpRetries}); GevStream.cs StopAsync must bound the SCP/SCDA writes with its own budget");
+            await stop;                                     // 정지는 정상으로 돌아온다 — 취소 예외도 쓰기 실패도 밖으로 내지 않는다
+            // 예산 뒤에 남는 일은 소켓 닫기·수신 스레드 합류·큐 비우기뿐이라 즉시 끝난다. 상한은 예산에 과부하 여유를 얹은 값이고,
+            // 채널 예산에 기대던 판(쓰기 둘 × 21 회 × 500 ms ≈ 21 s, 재시도가 끝없으면 무한)과는 한참 떨어져 있다.
+            const int limitMs = 5000;
+            Assert.True(sw.ElapsedMilliseconds < limitMs,
+                $"StopAsync took {sw.ElapsedMilliseconds} ms against a silent device (write budget {budgetMs} ms, GvcpRetries {gvcpRetries}, caller token {callerTokenMs} ms)");
+            // 대조군: 장치가 정말 말이 없었다면 SCP 쓰기가 예산을 다 써야 한다. 이보다 빨리 끝났다면 장치가 답했거나 쓰기를 건너뛴 것이라
+            // 위 상한은 아무것도 재지 않은 셈이다.
+            Assert.True(sw.ElapsedMilliseconds >= budgetMs - 50,
+                $"StopAsync took only {sw.ElapsedMilliseconds} ms; with a silent device the SCP write should have used the {budgetMs} ms budget");
+            Assert.False(stream.IsStarted);
+            Assert.Equal(streamOpt.BufferCount, stream.PoolFreeBuffers);
+        }
+        finally
+        {
+            // 장치를 먼저 닫는다 — 정지가 채널 안에 걸려 있다면 채널을 닫아야 풀린다. 끝나지 않은 정지는 기다리지 않는다.
+            await rig.DisposeAsync();
+            if (stop is { IsCompleted: true }) await stream.DisposeAsync();
+        }
+    }
 }

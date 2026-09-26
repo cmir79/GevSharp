@@ -46,6 +46,8 @@ public sealed partial class GevStream : IAsyncDisposable
     private readonly string _logSrc;
     private readonly GevStreamOpt _opt;
     private readonly int _channel;
+    /// <summary>정지(와 실패한 시작의 되돌리기)에서 장치 전송을 끄는 쓰기에 주는 고정 예산(ms) — 호출자의 토큰·채널 재시도와 무관하다.</summary>
+    private readonly int _shutdownWriteBudgetMs;
     private readonly GevFramePool _pool;
     private readonly GevStreamStats _stats = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
@@ -64,7 +66,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// <param name="opt">수신 옵션. null 이면 기본값. 값 범위가 어긋나면 <see cref="ArgumentOutOfRangeException"/>.</param>
     /// <param name="streamChannel">스트림 채널 번호(0 부터).</param>
     /// <param name="deviceAddress">장치 IPv4 — 방화벽 통과용 한 바이트를 보낼 목적지. null 이면 그 단계를 건너뛴다.</param>
-    internal GevStream(IGevPort regs, IGvcpResendPort resend, IPAddress localAddress, GevStreamOpt? opt, int streamChannel = 0, IPAddress? deviceAddress = null)
+    /// <param name="shutdownWriteBudgetMs">
+    /// 정지의 SCP = 0·SCDA = 0(과 실패한 시작의 SCP = 0)이 합쳐서 쓸 수 있는 시간. 장치가 열 때는 <see cref="GevDevice.ShutdownWriteBudgetMs"/> 를 넘기고,
+    /// 포트 위에 바로 만든 스트림은 그 상한(<see cref="GevDevice.CcpReleaseMaxMs"/>)을 받는다.
+    /// </param>
+    internal GevStream(IGevPort regs, IGvcpResendPort resend, IPAddress localAddress, GevStreamOpt? opt, int streamChannel = 0, IPAddress? deviceAddress = null,
+        int shutdownWriteBudgetMs = GevDevice.CcpReleaseMaxMs)
     {
         _regs = regs ?? throw new ArgumentNullException(nameof(regs));
         _resend = resend ?? throw new ArgumentNullException(nameof(resend));
@@ -76,6 +83,8 @@ public sealed partial class GevStream : IAsyncDisposable
             throw new ArgumentException("Local address must be an IPv4 address.", nameof(localAddress));
         }
         if (streamChannel < 0 || streamChannel > 511) throw new ArgumentOutOfRangeException(nameof(streamChannel));
+        if (shutdownWriteBudgetMs <= 0) throw new ArgumentOutOfRangeException(nameof(shutdownWriteBudgetMs));
+        _shutdownWriteBudgetMs = shutdownWriteBudgetMs;
 
         _opt = opt ?? new GevStreamOpt();
         _opt.Validate();
@@ -211,8 +220,10 @@ public sealed partial class GevStream : IAsyncDisposable
                 if (hasWrittenScp)
                 {
                     // 장치가 닫힌 포트로 쏘지 않게 최선을 다해 되돌린다 — 여기서의 실패는 원래 예외를 가리지 않는다.
-                    try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, CancellationToken.None).ConfigureAwait(false); }
-                    catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to reset SCP after a failed start.", ex); }
+                    // 정지와 같은 고정 예산에 묶는다: 시작이 실패한 까닭이 말없는 장치라면 채널 예산 전부를 한 번 더 쓰게 되고,
+                    // 그동안 겹친 정지는 자물쇠 앞에서 함께 기다린다.
+                    using var budget = new CancellationTokenSource(_shutdownWriteBudgetMs);
+                    await WriteZeroForShutdownAsync(GvbsAddr.ScpOffset, "SCP", "after a failed start", budget.Token).ConfigureAwait(false);
                 }
                 _queue?.Complete(new GevStreamClosedException("Stream failed to start."));
                 _state = StateStopped;
@@ -236,8 +247,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 셧다운을 취소 처리로 감싼 호출자는 그 예외 때문에 뒤따르는 정리(장치 닫기 등)를 건너뛰게 되는데, 정작 정지는 끝나 있다.
     /// </para>
     /// <para>
-    /// 기다리는 자리마다 상한이 따로 있다: 겹친 시작·정지가 끝나기를(그쪽도 아래 상한에 묶인다), 레지스터 쓰기는 제어 채널의
-    /// 시한·재시도를, 수신 스레드 합류는 2 초를 넘지 않는다.
+    /// 대신 기다리는 자리마다 상한이 따로 있다. 장치 전송 끄기는 두 쓰기를 합쳐 고정 예산 하나 — 응답 창(<see cref="GevDeviceOpt.GvcpTimeoutMs"/>)
+    /// 두 개, 많아야 2 초 — 안에서 끝난다. 이 예산은 호출자의 토큰에도 <see cref="GevDeviceOpt.GvcpRetries"/> 에도 기대지 않으므로,
+    /// 장치가 답하지 않게 된 뒤에도(재시도가 끝없는 설정에서도) 정지는 그만큼만 쓰고 돌아온다. 예산이 다하면 경고를 남기고
+    /// 로컬 정리로 넘어간다 — 그때 장치는 옛 SCP·SCDA 를 그대로 들고 있다. 수신 스레드 합류는 2 초를 넘지 않는다.
+    /// 겹친 시작이 자물쇠를 쥐고 있으면 그 시작이 끝나기를 먼저 기다리며, 그 시간은 시작에 준 토큰과 제어 채널의 시한·재시도가 정한다
+    /// (실패한 시작의 SCP 되돌리기는 위와 같은 고정 예산이다).
     /// </para>
     /// </summary>
     /// <param name="ct">어떤 단계도 끊지 않는다(위 설명). 취소돼 있어도 정지를 끝까지 하고 정상으로 돌아온다.</param>
@@ -266,10 +281,14 @@ public sealed partial class GevStream : IAsyncDisposable
 
             // 장치 전송 끄기는 호출자의 토큰과 무관하게 시도한다(실패한 시작의 되돌리기와 같다). 토큰을 넘기면 SCP 쓰기 도중의
             // 취소가 "SCP 쓰기 실패" 로 기록되고, 이미 취소된 토큰을 받은 SCDA 쓰기는 보내지도 못한 채 끝난다.
-            try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCP = 0 while stopping the stream.", ex); }
-            try { await WriteRegAsync(GvbsAddr.ScdaOffset, 0, CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCDA = 0 while stopping the stream.", ex); }
+            // 그렇다고 채널의 재시도 예산 전부를 쓰지도 않는다 — 두 쓰기가 합쳐서 고정 예산 하나를 받는다. 채널 예산에 기대면 말없는
+            // 장치 앞에서 정지가 쓰기 둘 × (1 + GvcpRetries) × 응답 창만큼(재시도 중인 하트비트 뒤의 줄서기까지) 붙들리는데 호출자는
+            // 그것을 끊을 길이 없고, 재시도가 끝없으면 정지가 돌아오지 않는다(응답 창 500 ms·재시도 20 회에서 30 초 안에 돌아오지 않았다).
+            using (var budget = new CancellationTokenSource(_shutdownWriteBudgetMs))
+            {
+                await WriteZeroForShutdownAsync(GvbsAddr.ScpOffset, "SCP", "while stopping the stream", budget.Token).ConfigureAwait(false);
+                await WriteZeroForShutdownAsync(GvbsAddr.ScdaOffset, "SCDA", "while stopping the stream", budget.Token).ConfigureAwait(false);
+            }
 
             var socket = _socket;
             _socket = null;
@@ -605,6 +624,32 @@ public sealed partial class GevStream : IAsyncDisposable
         var scratch = _scratch ?? throw new InvalidOperationException("The receiver has not been initialised.");
         Buffer.BlockCopy(packet, 0, scratch, 0, length);
         OnPacket(length, System.Diagnostics.Stopwatch.GetTimestamp());
+    }
+
+    /// <summary>
+    /// 정지(와 실패한 시작의 되돌리기)에서 장치 전송을 끄는 0 쓰기 하나. <paramref name="budget"/> 은 호출자의 토큰이 아니라 그 자리에서 만든
+    /// 고정 예산이다. 실패는 로그만 남기고 삼킨다 — 로컬 정리는 이 결과와 무관하게 끝까지 가야 한다.
+    /// 앞선 쓰기가 예산을 다 썼으면 보내지 않고 그렇다고 적는다(이미 취소된 토큰으로 부르면 채널은 보내지도 않고 취소로 끝난다).
+    /// </summary>
+    private async Task WriteZeroForShutdownAsync(uint offset, string register, string during, CancellationToken budget)
+    {
+        if (budget.IsCancellationRequested)
+        {
+            GevLog.Warn(_logSrc, $"Skipped writing {register} = 0 {during}: the {_shutdownWriteBudgetMs} ms budget for turning the device's transmission off was already spent.");
+            return;
+        }
+        try
+        {
+            await WriteRegAsync(offset, 0, budget).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            GevLog.Warn(_logSrc, $"Writing {register} = 0 {during} got no answer within the {_shutdownWriteBudgetMs} ms budget; giving up so the local cleanup is not held.");
+        }
+        catch (Exception ex)
+        {
+            GevLog.Warn(_logSrc, $"Failed to write {register} = 0 {during}.", ex);
+        }
     }
 
     private ValueTask WriteRegAsync(uint offset, uint value, CancellationToken ct)
