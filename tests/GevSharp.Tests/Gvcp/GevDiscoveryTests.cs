@@ -318,7 +318,8 @@ public class GevDiscoveryTests
         var gw = IPAddress.Parse("192.168.1.1");
 
         await Assert.ThrowsAsync<ArgumentNullException>(() => GevDiscovery.ForceIpAsync(null!, ip, mask, gw));
-        await Assert.ThrowsAsync<GevException>(() => GevDiscovery.ForceIpAsync(mac, ip, mask, gw, new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>() }));
+        var noIface = await Assert.ThrowsAsync<GevException>(() => GevDiscovery.ForceIpAsync(mac, ip, mask, gw, new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>() }));
+        Assert.Contains("GevDiscoveryOpt.Interfaces is an empty list", noIface.Message);   // 탐색과 같은 까닭을 밝힌다
         await Assert.ThrowsAsync<GevException>(() => GevDiscovery.ForceIpAsync(mac, IPAddress.IPv6Loopback, mask, gw, new GevDiscoveryOpt { Interfaces = new[] { IPAddress.Loopback } }));
 
         // 루프백 인터페이스로는 브로드캐스트가 막힐 수 있다 — 보내졌거나 "보낼 길이 없다"로 끝나야 하고, 어느 쪽이든 멈추지 않는다.

@@ -46,7 +46,24 @@ public static class GevDiscovery
     private const int RxMaxConsecutiveFailures = 8;
     private static int s_reqIdCounter;
 
-    /// <summary>모든(또는 지정한) 인터페이스에 DISCOVERY_CMD 를 브로드캐스트하고 창 동안 응답을 모아 MAC 으로 중복을 제거한다.</summary>
+    /// <summary>
+    /// 모든(또는 지정한) 인터페이스에 DISCOVERY_CMD 를 브로드캐스트하고 창(<see cref="GevDiscoveryOpt.TimeoutMs"/>) 동안 응답을 모아
+    /// MAC 으로 중복을 제거한다.
+    /// </summary>
+    /// <remarks>
+    /// 빈 목록은 "창 동안 아무도 답하지 않았다" 만 뜻하지 않는다.
+    /// <list type="bullet">
+    /// <item>보낼 인터페이스가 없으면 창을 열지 않고 곧바로 빈 목록을 돌려준다 — <see cref="GevDiscoveryOpt.Interfaces"/> 가 빈 목록이거나,
+    /// null 인데 루프백 말고 동작 중(Up)인 IPv4 인터페이스가 없거나(꺼진 어댑터, 케이블이 빠진 카메라 NIC 처럼 링크가 없는 어댑터는
+    /// Up 이 아니다), 인터페이스 목록을 읽지 못한 경우다.</item>
+    /// <item>인터페이스는 있었지만 어느 것에서도 DISCOVERY_CMD 가 나가지 못해도 빈 목록이다 — 소켓을 묶지 못했거나 보낼 대상이
+    /// 없으면 곧바로, 전송이 전부 실패했으면 창이 끝난 뒤에 돌아온다.</item>
+    /// </list>
+    /// 어느 경우든 까닭을 <see cref="GevLog"/> 에 Warn 으로 남긴다. 빈 결과를 "장치 없음" 과 가려야 하는 호출자는 Warn 을 받는 싱크를 붙인다.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="GevDiscoveryOpt.TimeoutMs"/> 가 0 이하이거나 <see cref="GevDiscoveryOpt.Repeat"/> 가 1 미만.</exception>
+    /// <exception cref="GevException"><see cref="GevDiscoveryOpt.Interfaces"/> 에 IPv4 가 아닌 주소가 있다.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static async Task<IReadOnlyList<GevDeviceInfo>> DiscoverAsync(GevDiscoveryOpt? opt = null, CancellationToken ct = default)
     {
         opt ??= new GevDiscoveryOpt();
@@ -54,25 +71,41 @@ public static class GevDiscovery
         if (opt.Repeat < 1) throw new ArgumentOutOfRangeException(nameof(opt), "Repeat must be at least 1");
         var repeat = opt.Repeat;
 
-        var ifaces = SelectInterfaces(opt.Interfaces);
+        var ifaces = SelectInterfaces(opt.Interfaces, out var noIfaceReason);
         if (ifaces.Count == 0)
         {
-            GevLog.Warn(LogSrc, "no usable IPv4 interface for discovery");
+            // 예외로 바꾸지 않고 빈 목록을 돌려준다 — 호출자(샘플·앱)는 빈 목록을 "찾은 장치 없음" 으로 다룬다. 대신 그 빈 목록이
+            // 창을 기다린 결과가 아니라는 것과 까닭을 경고로 밝힌다.
+            GevLog.Warn(LogSrc, $"discovery not sent: {noIfaceReason}; returning an empty list without waiting for the {opt.TimeoutMs} ms window");
             return Array.Empty<GevDeviceInfo>();
         }
 
         var reqId = GvcpChannel.NextReqId(ref s_reqIdCounter);
         var packet = GvcpCmd.Discovery(allowBroadcastAck: true).ToArray(reqId);
 
-        var tasks = new Task<List<GevDeviceInfo>>[ifaces.Count];
+        var tasks = new Task<(List<GevDeviceInfo> Found, int Sent)>[ifaces.Count];
         for (var i = 0; i < ifaces.Count; i++)
             tasks[i] = DiscoverOnInterfaceAsync(ifaces[i], packet, opt, repeat, ct);
         var perInterface = await Task.WhenAll(tasks).ConfigureAwait(false);
 
         var all = new List<GevDeviceInfo>();
-        foreach (var list in perInterface) all.AddRange(list);
+        var sentIfaces = 0;
+        foreach (var (found, sent) in perInterface)
+        {
+            all.AddRange(found);
+            if (sent > 0) sentIfaces++;
+        }
         var result = Dedupe(all);
-        GevLog.Info(LogSrc, $"discovery finished: {result.Count} device(s) from {all.Count} reply(ies) on {ifaces.Count} interface(s)");
+        if (sentIfaces == 0)
+        {
+            // 인터페이스마다 까닭(대상 없음·바인드 실패·전송 실패)은 이미 경고했다. 요약까지 "탐색을 마쳤다" 로 남기면
+            // 빈 결과가 "아무도 답하지 않았다" 로 읽힌다.
+            GevLog.Warn(LogSrc, $"no DISCOVERY_CMD was sent on any of {ifaces.Count} interface(s) (see the warnings above); the empty result does not mean that no device answered");
+        }
+        else
+        {
+            GevLog.Info(LogSrc, $"discovery finished: {result.Count} device(s) from {all.Count} reply(ies) on {sentIfaces} of {ifaces.Count} interface(s)");
+        }
         return result;
     }
 
@@ -102,14 +135,16 @@ public static class GevDiscovery
         return targets;
     }
 
-    private static async Task<List<GevDeviceInfo>> DiscoverOnInterfaceAsync(GevNet.IfInfo iface, byte[] packet, GevDiscoveryOpt opt, int repeat, CancellationToken ct)
+    /// <summary>한 인터페이스에서 탐색한다. Sent 는 실제로 나간 DISCOVERY_CMD 수 — 0 이면 이 인터페이스에서는 탐색이 일어나지 않았다(까닭은 경고로 남겼다).</summary>
+    private static async Task<(List<GevDeviceInfo> Found, int Sent)> DiscoverOnInterfaceAsync(GevNet.IfInfo iface, byte[] packet, GevDiscoveryOpt opt, int repeat, CancellationToken ct)
     {
         var found = new List<GevDeviceInfo>();
+        var sent = 0;
         var targets = BuildTargets(iface, opt);
         if (targets.Count == 0)
         {
             GevLog.Warn(LogSrc, $"{iface}: no discovery target (both broadcast modes disabled or mask unknown)");
-            return found;
+            return (found, sent);
         }
 
         // 소켓은 만드는 순간 OS 핸들을 쥔다 — 바인드·옵션 설정이 실패해도 여기서 닫지 않으면 핸들이 GC 종료자가 돌 때까지 남아,
@@ -127,7 +162,7 @@ public static class GevDiscovery
         {
             client?.Dispose();
             GevLog.Warn(LogSrc, $"{iface}: cannot bind a discovery socket ({ex.SocketErrorCode})", ex);
-            return found;
+            return (found, sent);
         }
         catch
         {
@@ -166,6 +201,7 @@ public static class GevDiscovery
                         try
                         {
                             await client.SendAsync(packet, packet.Length, target).ConfigureAwait(false);
+                            sent++;
                         }
                         catch (SocketException ex)
                         {
@@ -188,7 +224,7 @@ public static class GevDiscovery
                 await receiveTask.ConfigureAwait(false);
             }
         }
-        return found;
+        return (found, sent);
     }
 
     /// <summary>
@@ -350,9 +386,9 @@ public static class GevDiscovery
 
         var cmd = GvcpCmd.ForceIp(mac, ip, subnet, gateway, allowBroadcastAck: true);
         var packet = cmd.ToArray(GvcpChannel.NextReqId(ref s_reqIdCounter));
-        var ifaces = SelectInterfaces(opt.Interfaces);
+        var ifaces = SelectInterfaces(opt.Interfaces, out var noIfaceReason);
         if (ifaces.Count == 0)
-            throw new GevException("no usable IPv4 interface to send FORCEIP");
+            throw new GevException($"no usable IPv4 interface to send FORCEIP: {noIfaceReason}");
 
         var sent = 0;
         foreach (var iface in ifaces)
@@ -400,12 +436,23 @@ public static class GevDiscovery
 
     // ------------------------------------------------------------------ interfaces
 
-    /// <summary>null 이면 동작 중인 비루프백 IPv4 인터페이스 전부. 지정된 주소는 마스크를 찾아 붙이고, 모르는 주소는 마스크 없이 쓴다.</summary>
-    private static List<GevNet.IfInfo> SelectInterfaces(IReadOnlyList<IPAddress>? explicitAddresses)
+    /// <summary>
+    /// null 이면 동작 중인 비루프백 IPv4 인터페이스 전부. 지정된 주소는 마스크를 찾아 붙이고, 모르는 주소는 마스크 없이 쓴다.
+    /// 지정한 주소는 하나마다 항목 하나가 되므로 목록이 비는 것은 지정 목록이 비었거나 자동 선택에서 고를 것이 없을 때뿐이다 —
+    /// <paramref name="emptyReason"/> 에 그 까닭(로그용 영어 문장)을 담는다. 목록이 비지 않았으면 쓰지 않는다.
+    /// </summary>
+    private static List<GevNet.IfInfo> SelectInterfaces(IReadOnlyList<IPAddress>? explicitAddresses, out string emptyReason)
     {
         if (explicitAddresses is null)
-            return GevNet.GetIpv4Interfaces(includeLoopback: false);
+        {
+            var up = GevNet.GetIpv4Interfaces(includeLoopback: false, out var enumerated);
+            emptyReason = enumerated
+                ? "no network interface other than loopback is up with an IPv4 address (a disabled adapter, or one without link such as an unplugged camera NIC, is not up)"
+                : "the host's network interfaces could not be enumerated";
+            return up;
+        }
 
+        emptyReason = "GevDiscoveryOpt.Interfaces is an empty list";
         var known = GevNet.GetIpv4Interfaces(includeLoopback: true);
         var list = new List<GevNet.IfInfo>(explicitAddresses.Count);
         foreach (var addr in explicitAddresses)

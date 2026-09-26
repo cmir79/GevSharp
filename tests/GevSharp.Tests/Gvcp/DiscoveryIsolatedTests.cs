@@ -9,8 +9,9 @@ using GevSharp.Tests.GenApi.Model;
 namespace GevSharp.Tests.Gvcp;
 
 /// <summary>
-/// 프로세스 전역(열린 핸들 수)을 재는 탐색 테스트 — 다른 테스트가 나란히 돌며 소켓·스레드를 여닫으면 수가 흔들리므로
-/// 다른 어떤 컬렉션과도 나란히 돌지 않는 격리 컬렉션에 둔다. 여기 있는 탐색은 전부 창을 열기 전에 끝나는 길만 탄다.
+/// 프로세스 전역(로그 싱크·열린 핸들 수)을 보는 탐색 테스트 — 다른 테스트가 나란히 돌면 로그가 섞이고 핸들 수가 흔들리므로
+/// 다른 어떤 컬렉션과도 나란히 돌지 않는 격리 컬렉션에 둔다. 여기 있는 탐색은 전부 창을 열기 전에 끝나는 길만 탄다 —
+/// 싱크를 쥔 채 네트워크를 기다리지 않는다.
 /// </summary>
 [Collection(GevLogSinkCollection.Name)]
 public class DiscoveryIsolatedTests
@@ -40,6 +41,58 @@ public class DiscoveryIsolatedTests
         }
         const string fdDir = "/proc/self/fd";
         return Directory.Exists(fdDir) ? Directory.GetFileSystemEntries(fdDir).Length : null;
+    }
+
+    /// <summary>탐색 한 번을 돌리며 GevDiscovery 가 남긴 Info 이상의 로그를 모은다. 다른 출처(잔류 수신 스레드 등)의 로그는 거른다.</summary>
+    private static async Task<(IReadOnlyList<GevDeviceInfo> Result, List<(GevLogLevel Level, string Message)> Logged)> DiscoverCapturingLogAsync(GevDiscoveryOpt opt)
+    {
+        var logged = new List<(GevLogLevel Level, string Message)>();
+        var prevSink = GevLog.Sink;
+        var prevLevel = GevLog.MinLevel;
+        IReadOnlyList<GevDeviceInfo> result;
+        try
+        {
+            GevLog.Sink = (lvl, src, msg, _) =>
+            {
+                if (src == "GevDiscovery") lock (logged) logged.Add((lvl, msg));
+            };
+            GevLog.MinLevel = GevLogLevel.Info;
+            result = await GevDiscovery.DiscoverAsync(opt);
+        }
+        finally
+        {
+            GevLog.Sink = prevSink;
+            GevLog.MinLevel = prevLevel;
+        }
+        lock (logged) return (result, logged.ToList());
+    }
+
+    [Fact]
+    public async Task AnEmptyInterfaceListIsNamedAsTheReasonForTheEmptyResult()
+    {
+        // 빈 목록은 "창 동안 아무도 답하지 않았다" 와 모양이 같다 — 창을 열지도 않은 까닭을 경고 한 줄로 밝혀야 둘이 갈린다.
+        var (result, logged) = await DiscoverCapturingLogAsync(new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>() });
+
+        Assert.Empty(result);
+        var warn = Assert.Single(logged);
+        Assert.Equal(GevLogLevel.Warn, warn.Level);
+        Assert.Contains("GevDiscoveryOpt.Interfaces is an empty list", warn.Message);
+        Assert.Contains("without waiting", warn.Message);
+    }
+
+    [Fact]
+    public async Task WhenNoInterfaceCouldSend_TheSummaryWarnsThatNothingWasSent()
+    {
+        // 인터페이스는 있었지만 어느 것에서도 소켓을 못 열었다 — 인터페이스마다 까닭을 경고하고, 마지막 요약도 "탐색을 마쳤다"
+        // 가 아니라 "아무것도 보내지 못했다" 는 경고여야 한다. 요약이 Info 로 남으면 빈 목록이 "아무도 답하지 않았다" 로 읽힌다.
+        var (result, logged) = await DiscoverCapturingLogAsync(UnbindableOpt(2));
+
+        Assert.Empty(result);
+        Assert.Equal(2, logged.Count(e => e.Level == GevLogLevel.Warn && e.Message.Contains("cannot bind a discovery socket")));
+        var summary = Assert.Single(logged, e => e.Message.Contains("no DISCOVERY_CMD was sent"));
+        Assert.Equal(GevLogLevel.Warn, summary.Level);
+        Assert.Contains("2 interface(s)", summary.Message);
+        Assert.DoesNotContain(logged, e => e.Message.StartsWith("discovery finished", StringComparison.Ordinal));
     }
 
     [Fact]

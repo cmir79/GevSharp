@@ -30,7 +30,13 @@ internal static class GevNet
     }
 
     /// <summary>동작 중(Up)인 인터페이스의 IPv4 유니캐스트 주소를 전부 모은다. 조회 실패는 빈 목록 + 경고.</summary>
-    internal static List<IfInfo> GetIpv4Interfaces(bool includeLoopback)
+    internal static List<IfInfo> GetIpv4Interfaces(bool includeLoopback) => GetIpv4Interfaces(includeLoopback, out _);
+
+    /// <summary>
+    /// <see cref="GetIpv4Interfaces(bool)"/> 와 같되, 빈 목록이 "조회 자체가 실패했다"(<paramref name="enumerated"/> = false, 경고를 남겼다)
+    /// 인지 "조회는 됐지만 해당하는 인터페이스가 없다" 인지를 알려 준다 — 호출자가 빈 결과의 까닭을 밝힐 수 있게.
+    /// </summary>
+    internal static List<IfInfo> GetIpv4Interfaces(bool includeLoopback, out bool enumerated)
     {
         var list = new List<IfInfo>();
         NetworkInterface[] nics;
@@ -41,8 +47,10 @@ internal static class GevNet
         catch (Exception ex)
         {
             GevLog.Warn(LogSrc, "failed to enumerate network interfaces", ex);
+            enumerated = false;
             return list;
         }
+        enumerated = true;
 
         foreach (var nic in nics)
         {

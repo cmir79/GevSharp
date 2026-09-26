@@ -148,6 +148,11 @@ Discovery details: one socket per interface bound to `(interfaceIp, 0)` with `En
 255.255.255.255:3956 and to the interface's directed broadcast; collect ACKs until the timeout; dedupe by
 MAC (keep the reply whose interface shares the device subnet if there are several). Truncated ACKs are
 logged and skipped, never turned into ghost entries. Flags byte = `FlagAckRequired | FlagAllowBroadcastAck`.
+An empty list is not only "nobody answered": with no interface to send on (`Interfaces` is an empty list, no
+non-loopback IPv4 interface is up — an unplugged or disabled NIC is not — or the interface list cannot be read)
+`DiscoverAsync` returns at once without waiting for the window, and when interfaces exist but no DISCOVERY_CMD
+left any of them (bind failure, no target, every send failed) the result is empty as well. Both cases log a Warn
+naming the cause; the return type stays a list rather than an exception.
 
 ### Device
 

@@ -88,8 +88,10 @@ public class DiscoveryBroadcastTests
     public void EveryUpIpv4InterfaceIsEnumerated_AndLoopbackIsOptIn()
     {
         var withLoopback = GevNet.GetIpv4Interfaces(includeLoopback: true);
-        var withoutLoopback = GevNet.GetIpv4Interfaces(includeLoopback: false);
+        var withoutLoopback = GevNet.GetIpv4Interfaces(includeLoopback: false, out var enumerated);
 
+        // 목록을 읽었다고 답해야 한다 — 빈 탐색 결과의 까닭을 "조회 실패" 와 "해당 인터페이스 없음" 으로 가르는 근거다.
+        Assert.True(enumerated);
         Assert.NotEmpty(withLoopback);
         Assert.All(withLoopback, i => Assert.Equal(AddressFamily.InterNetwork, i.Address.AddressFamily));
         Assert.Contains(withLoopback, i => i.IsLoopback);
