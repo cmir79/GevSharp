@@ -861,6 +861,50 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task SkippedFrameWithoutATrailerIgnoresRetentionWhenResendIsOff()
+    {
+        // 버리기로 한 프레임(여기서는 지원하지 않는 payload_type 4 의 12바이트 리더)도 트레일러가 오거나 조용해질 때까지 슬롯을 쥔다.
+        // 리센드가 꺼져 있으면 기다릴 리센드가 없으므로 PacketTimeoutMs 에 닫아야 한다 — 시작 로그와 옵션 설명이 "FrameRetentionMs 는
+        // 쓰이지 않는다" 고 알리는데 이 자리만 보존 시간을 쓰면, FrameDropped 와 버림 계수기가 그만큼 늦고 그동안 조립 슬롯 하나가 묶인다.
+        // 리센드가 켜진 쪽은 같은 시험 안의 대조군이다 — 같은 프레임이 보존 시간까지 기다리는 것을 함께 재서 시계가 살아 있음을 보인다.
+        const int packetTimeoutMs = 300;
+        const int offRetentionMs = 3000;
+        const int onRetentionMs = 1500;
+
+        var off = await MeasureSkippedFrameCloseAsync(resendEnabled: false, packetTimeoutMs, offRetentionMs);
+        var on = await MeasureSkippedFrameCloseAsync(resendEnabled: true, packetTimeoutMs, onRetentionMs);
+
+        // 닫는 시각은 "마지막 패킷 + 시한" 이하로 내려가지 않는다(하한은 과부하에도 흔들리지 않는다). 위쪽 상한은 보존 시간의 절반이라
+        // 보존 시간을 쓰던 판(≈ 3000 ms)과 한참 떨어져 있다.
+        Assert.True(off >= packetTimeoutMs - 10 && off < offRetentionMs / 2,
+            $"resend off: the skipped frame closed after {off} ms; expected about PacketTimeoutMs ({packetTimeoutMs} ms), not FrameRetentionMs ({offRetentionMs} ms) "
+            + "— GevStream.Receiver.cs CheckCompletion must give up on a skipped frame after PacketTimeoutMs when resend is off");
+        Assert.True(on >= onRetentionMs - 10,
+            $"resend on (control): the skipped frame closed after {on} ms; it should wait for FrameRetentionMs ({onRetentionMs} ms)");
+    }
+
+    /// <summary>지원하지 않는 종류의 리더 한 장만 보내고 FrameDropped 가 올 때까지의 시간을 잰다.</summary>
+    private static async Task<long> MeasureSkippedFrameCloseAsync(bool resendEnabled, int packetTimeoutMs, int retentionMs)
+    {
+        var opt = StreamRig.DefaultOpt();
+        opt.ResendEnabled = resendEnabled;
+        opt.PacketTimeoutMs = packetTimeoutMs;
+        opt.FrameRetentionMs = retentionMs;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        rig.Sender.SendShortLeader(1, GvspConst.PayloadChunkData, dataBytes: 12);   // 트레일러는 끝내 오지 않는다
+        var diag = await rig.WaitDroppedAsync();
+        sw.Stop();
+
+        Assert.Equal(1UL, diag.FrameId);
+        Assert.Equal(GevFrameDropReason.Unsupported, diag.Reason);
+        Assert.Equal(1, rig.Stream.Stats.FramesDroppedUnsupported);
+        return sw.ElapsedMilliseconds;
+    }
+
+    [Fact]
     public async Task LargerLeaderGrowsTheBuffersLazily()
     {
         var opt = StreamRig.DefaultOpt();

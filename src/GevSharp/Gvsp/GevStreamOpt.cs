@@ -40,8 +40,11 @@ public sealed class GevStreamOpt
 
     /// <summary>
     /// 마지막 패킷 도착 후 이 시간이 지나도록 완성되지 않은 프레임은 포기한다 — 리센드를 아직 묻고 있는 프레임에만 쓰인다.
+    /// 하나 더: 리센드가 켜져 있으면 다른 이유(버퍼 없음·다루지 않는 형식·오류)로 버리기로 한 프레임도 트레일러가 오지 않는 한
+    /// 이 시간까지 조립 슬롯을 쥐고, 그 프레임의 <see cref="GevStream.FrameDropped"/> 도 그때 올라간다.
     /// 리센드가 꺼져 있으면(<see cref="ResendEnabled"/> = false 또는 <see cref="PacketRequestRatio"/> = 0) 이 값은 쓰이지 않는다:
     /// 불완전 프레임은 마지막 패킷 뒤 <see cref="PacketTimeoutMs"/> 에 포기되고, 더 새로운 블록이 시작되면 곧바로 닫힌다.
+    /// 버리기로 한 프레임도 트레일러가 없으면 마지막 패킷 뒤 <see cref="PacketTimeoutMs"/> 에 닫힌다.
     /// 예산을 다 썼거나 장치가 못 준다고 답한 프레임도 <see cref="PacketTimeoutMs"/> 에 닫힌다.
     /// 리더만 받은 가장 새 프레임은 예외로 이 시간이 지나도 기다린다(노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다).
     /// </summary>

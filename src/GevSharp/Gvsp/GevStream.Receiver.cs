@@ -1329,7 +1329,8 @@ public sealed partial class GevStream
     /// 오래된 순서로 슬롯을 본다. 완성됐거나 포기해야 할 프레임은 닫고, 아직 기다려야 하는 프레임을 만나면 그 뒤의 프레임은 닫지 않는다(순서 보존).
     /// 버퍼를 쥐지 않은(건너뛰기) 슬롯은 순서를 막지 않는다.
     /// 포기 시점: 리센드를 더 요청하지 않는 프레임(예산 소진·장치 거절·리센드 꺼짐)은 마지막 패킷 뒤 재요청 간격 하나만 더 기다리고,
-    /// 그 밖의 프레임은 보존 시간까지 기다린다. 기다리는 프레임은 마감이 되거나 꼬리가 확정될 때 구멍을 다시 본다.
+    /// 그 밖의 프레임은 보존 시간까지 기다린다. 버리기로 한 프레임은 트레일러를 받으면 곧바로, 못 받으면 리센드가 켜져 있을 때 보존 시간,
+    /// 꺼져 있을 때 재요청 간격 뒤에 닫는다. 기다리는 프레임은 마감이 되거나 꼬리가 확정될 때 구멍을 다시 본다.
     /// </summary>
     private void CheckCompletion(long now, FrameSlot? current)
     {
@@ -1343,7 +1344,11 @@ public sealed partial class GevStream
 
             if (slot.IsSkipped)
             {
-                if (slot.HasTrailer || idleTicks >= _retentionTicks)
+                // 버리기로 한 프레임은 트레일러를 받거나 조용해지면 닫는다. 리센드가 꺼져 있으면 보존 시간이 아니라 재요청 간격을 쓴다 —
+                // 옵션 설명과 시작 로그가 "보존 시간은 쓰이지 않는다" 고 알리는데 여기만 보존 시간을 쓰면, FrameDropped 와 버림 계수기가
+                // 그만큼 늦고 조립 슬롯 하나가 그동안 묶인다.
+                var skipGiveUpTicks = _isResendEnabled ? _retentionTicks : _packetTimeoutTicks;
+                if (slot.HasTrailer || idleTicks >= skipGiveUpTicks)
                 {
                     CloseSlot(i);
                     continue;
