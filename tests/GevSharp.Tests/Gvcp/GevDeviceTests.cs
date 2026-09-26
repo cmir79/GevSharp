@@ -871,4 +871,21 @@ public class GevDeviceTests
         Assert.Single(wide);
         Assert.Contains("0x00002000", wide[0]);
     }
+
+    [Fact]
+    public async Task AWideAddressWhoseNarrowedEndLeavesThe32BitSpaceIsRejectedBeforeSending()
+    {
+        // 좁히기는 상위 비트만 버린다. 좁힌 주소에서 끝이 32비트 공간을 넘으면 그건 장식이 아니라 잘못된 접근이라
+        // (벤더가 0xFFFFFFFF 를 "없음" 표식으로 쓰기도 한다) 넓은 주소여도 좁은 주소와 똑같이 보내기 전에 거절한다.
+        using var r = new GvcpTestResponder();
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o => o.HeartbeatPeriodMs = 60_000));
+        IGevPort port = dev;
+        var before = r.Requests.Count;
+
+        await Assert.ThrowsAsync<GevException>(() => port.ReadAsync(0xFFFF_FFFF_FFFF_FFFEUL, new byte[4]).AsTask());
+        await Assert.ThrowsAsync<GevException>(() => port.WriteAsync(0x1_FFFF_FFFFUL, new byte[4]).AsTask());
+        await Assert.ThrowsAsync<GevException>(() => port.ReadAsync(0x1_FFFF_FF00UL, new byte[1024]).AsTask());
+
+        Assert.Empty(r.Requests.Skip(before));
+    }
 }
