@@ -1901,6 +1901,50 @@ public class GevStreamLogTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CutBlockWarningNamesTheLikelyCauseFromTheShortfall(bool isSubPacketShortfall)
+    {
+        // 모자란 양이 원인을 가른다. 한 패킷에 못 미치게 모자라면 우리가 리더에서 계산한 크기가 장치와 어긋난 것이고,
+        // 패킷 단위로 모자라면 장치가 블록을 일찍 끝낸 것이다(정지가 장치에 남아 있으면 이어지는 연속 취득의 모든 장이 그렇게 끝나기도 한다 —
+        // 하류 실측). 뒤의 경우를 "크기 불일치" 로 안내하면 현장이 엉뚱한 곳을 판다.
+        var logged = await CaptureAsync(async () =>
+        {
+            await using var rig = new StreamRig();
+            await rig.StartAsync();
+            var frame = rig.Sender.BuildFrame(1, 64, 100, Mono8, seed: 0x11);
+            var d = frame.DataBytesPerPacket;
+            if (isSubPacketShortfall)
+            {
+                // 장치가 모든 패킷을 보냈지만 마지막 패킷이 리더 크기보다 10 바이트 짧다.
+                var full = frame.Data;
+                frame.Data = full.AsSpan(0, full.Length - 10).ToArray();
+                rig.Sender.SendFrame(frame);
+            }
+            else
+            {
+                rig.Sender.SendPacket(frame, 0, GvspConst.StatusSuccess);
+                rig.Sender.SendPacket(frame, 1, GvspConst.StatusSuccess);
+                rig.Sender.SendPacket(frame, 2, GvspConst.StatusSuccess);
+                rig.Sender.SendTrailer(frame, 3);
+            }
+            await rig.WaitDroppedAsync(3000);
+        });
+
+        var warn = Assert.Single(logged, l => l.Level == GevLogLevel.Warn && l.Message.Contains("the trailer ended the block"));
+        if (isSubPacketShortfall)
+        {
+            Assert.Contains("size", warn.Message);
+            Assert.DoesNotContain("ended the block early", warn.Message);
+        }
+        else
+        {
+            Assert.Contains("ended the block early", warn.Message);
+            Assert.DoesNotContain("size mismatch", warn.Message);
+        }
+    }
+
+    [Theory]
     [InlineData(true, 0.25, false)]
     [InlineData(false, 0.25, true)]
     [InlineData(true, 0.0, true)]

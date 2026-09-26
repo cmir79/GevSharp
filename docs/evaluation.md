@@ -337,6 +337,11 @@ wait until the previous start + exposure + transfer time before starting again. 
 settle time, 80 cancelled grabs at a 30 ms gap: 0 of 40 timed out with it, 7 of 40 without. This is device
 behaviour, not a library fix; the library's part is to report such a frame as incomplete (R29) rather than deliver
 it. Scope: this Basler only (Crevis not measured); figures are the consumer's (its `cvinspect-cutmech` runs).
+The same pending stop can also cut a *continuous* acquisition started right after it: starting live 25–100 ms after
+a cancelled single grab (exposure 30 ms), 5 of 43 runs got 0–1 whole frames in the first second, every block
+ending with a trailer at 254 of 563 packets until acquisition was stopped and started again; with the settle time,
+0 of 42. For that shape the one-time warning now says the device ended the block early, and it keeps the
+size-rule hint for shortfalls below one packet.
 
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of
