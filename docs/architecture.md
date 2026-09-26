@@ -514,9 +514,18 @@ Formula layer (`GenApi/Formula`): `Formula.Parse(string) → Formula` (immutable
 `Formula.Evaluate(Func<string, GenApiValue> resolve) → GenApiValue` where `GenApiValue` is an
 int64/double union. Grammar: `+ - * / % ** & | ^ ~ << >> && || ! < > <= >= = == <> != ?:`, parentheses,
 decimal / hex (`0x`) / float literals, `PI`/`E`, functions `SIN COS TAN ASIN ACOS ATAN ABS EXP LN LG SQRT
-TRUNC FLOOR CEIL ROUND SGN NEG`. Precedence follows C. Integer ⊕ integer stays integer (`/` truncates,
-`**` integer when exponent ≥ 0); any double promotes. Division by zero and invalid operations throw
-`GenApiException` — never return 0 silently. Parse depth is bounded; variable names are identifiers
+TRUNC FLOOR CEIL ROUND SGN NEG`. Precedence follows C. Two evaluation rules, chosen by the node that owns
+the formula (`FormulaMode`, a required argument of `FormulaScope`):
+- *Integer* — `IntSwissKnife`, `IntConverter`, inline address formulas, and the public `Formula.Evaluate`:
+  integer ⊕ integer stays integer (`/` truncates, `**` integer when exponent ≥ 0, overflow throws); any
+  double promotes; bitwise operators reject doubles.
+- *Real* — `SwissKnife` and `Converter` (the formula, its `Expression`s and the Converter limit mapping):
+  the value is a float, so `/` and `**` give real results even between integers (`1000000 / N`,
+  `10 ** ((TO / 10) / 20)` with an integer register `TO`). `+ - *` between integers stay exact integers but
+  continue in double instead of throwing on overflow. Bitwise operators and shifts truncate double operands
+  toward zero (so `(N / 2) & 1` gives what integer division then `&` gave); NaN/out-of-range still throws.
+
+Division by zero and invalid operations throw `GenApiException` — never return 0 silently. Parse depth is bounded; variable names are identifiers
 (letters, digits, `_`, `.`) and are resolved by the caller from `<pVariable Name="X">Node</pVariable>`.
 
 Runtime layer (`GenApi/Runtime`): concrete node classes implementing the public interfaces over the
@@ -576,6 +585,12 @@ GenApi runtime — implementation notes where the behaviour is more specific tha
   Registers that share bytes without a graph edge (StructReg entries, alias registers) are found by address
   overlap and dropped. `INode.Invalidate()` uses the same closure but includes the node itself and its whole
   value chain.
+- A write that **throws** is treated as "the device may hold the new value": a GVCP command leaves before its
+  acknowledge is awaited, so a lost reply, a timeout after PENDING_ACK or a cancelled wait all arrive here with
+  the device already changed. The register drops its own cache and every overlapping one, and the node drops
+  the same closure as `INode.Invalidate()`, then the exception propagates. The exception type is not
+  inspected — if the device refused or the command never left, the cost is one extra read. The write shadow is
+  left as it was: there is no way to record "unknown", and clearing it would zero sibling fields for certain.
 - Write-only registers cannot be read for a read-modify-write, so the node map keeps a write shadow — the
   bytes it last wrote at each address — and uses it as the base: a field written through one
   `MaskedIntReg`/`StructEntry` survives the next write of a sibling field. Bytes never written read as 0.

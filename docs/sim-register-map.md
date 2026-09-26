@@ -115,11 +115,12 @@ Derived nodes without a register: `PayloadSize` (IntSwissKnife `((WIDTH * ((PIXF
 invalidated by Width/Height/PixelFormat), `AcquisitionModeIsMultiFrame`, `TriggerModeIsOn`,
 `TriggerSoftwareIsAvailable` (IntSwissKnife predicates), `TLParamsLocked` (host-side Integer literal).
 
-Both Converters carry a float literal in `FormulaFrom` on purpose. `TO` is the integer register value and the
-formula engine keeps integer ÷ integer as a truncating integer division, so `TO / 10` would read 0.0 dB for
-every raw value below 10 and break the write→read round trip. `FormulaTo` receives the Converter's float value
-in `FROM`, so it is floating-point already. Both directions are therefore floating-point: a value written
-through `Gain` reads back unchanged to 0.1 dB, and `ExposureTime` keeps sub-microsecond raw values.
+Both Converters carry a float literal in `FormulaFrom` (`TO / 10.0`). `TO` is the integer register value;
+float nodes (SwissKnife, Converter) evaluate `/` as a real division even between two integers (see the
+Formula layer in `architecture.md`), so `TO / 10` would read the same today. The literal was written when
+the engine still truncated there and is kept so the fixture does not lean on that rule. `FormulaTo` receives
+the Converter's float value in `FROM`. Both directions are floating-point: a value written through `Gain`
+reads back unchanged to 0.1 dB, and `ExposureTime` keeps sub-microsecond raw values.
 
 ## Pixel content
 
