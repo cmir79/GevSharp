@@ -8,6 +8,13 @@ namespace GevSharp;
 /// 장치 제어 세션 — GVCP 채널, CCP 제어권, 하트비트, 레지스터/메모리 접근, <see cref="IGevPort"/>.
 /// 파티션: 이 파일(열기·하트비트·닫기), GevDevice.Access.cs(레지스터/메모리/포트).
 /// XML(GetXmlAsync)·노드맵(GetNodeMapAsync)·스트림(OpenStreamAsync)은 각 모듈이 partial 파티션으로 덧붙인다.
+/// <para>
+/// 오류 계약: 장치에 닿는 조작은 <see cref="GevException"/> 계열(응답 없음 <see cref="GevTimeoutException"/>, 장치 거절
+/// <see cref="GevStatusException"/>, 제어권 상실 <see cref="GevControlLostException"/>)과 함께 <see cref="ObjectDisposedException"/> 을 던진다 —
+/// <see cref="DisposeAsync"/> 뒤의 모든 장치 접근(앞서 받아 둔 노드맵의 노드 조작도 포트가 이 장치라 같다. 이미 받아 둔 XML·노드맵을
+/// 돌려주는 호출만은 캐시에서 답한다), 그리고 닫기와 겹쳐 채널에 늦게 닿은 요청. 취소는 <see cref="OperationCanceledException"/>.
+/// "라이브러리가 낸 실패 전부" 를 잡으려면 GevException 과 ObjectDisposedException 을 함께 잡는다.
+/// </para>
 /// </summary>
 public sealed partial class GevDevice : IGevPort, IAsyncDisposable
 {
@@ -54,6 +61,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             // 장치가 열리지 못한다. 채널 기본값으로 열고, 하트비트를 시작하기 직전에 InitAsync 가 실제 값으로 좁힌다.
             MaxPendingAckWaitMs = opt.MaxPendingAckWaitMs ?? GvcpChannelOpt.DefaultMaxPendingAckWaitMs,
         });
+        Gvcp.OnClosed = OnChannelClosed;
 
         _logSrc = $"{LogSrc} {Address}";
     }
@@ -64,7 +72,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     /// <summary>GVCP 소켓이 묶인 호스트 주소. 스트림의 SCDA 로도 쓴다.</summary>
     public IPAddress LocalAddress { get; }
     public GevAccessMode AccessMode => _opt.AccessMode;
-    /// <summary>열려 있고 제어권을 잃지 않았다.</summary>
+    /// <summary>
+    /// 열려 있고 제어권을 잃지 않았다. <see cref="DisposeAsync"/> 뒤, 그리고 제어권을 잃은 뒤(하트비트 연속 실패, CCP 가 풀림,
+    /// 제어 채널 <see cref="Gvcp"/> 가 세션보다 먼저 닫힘)에는 false — 제어 채널이 닫히면 하트비트를 기다리지 않고 그 자리에서 바뀐다.
+    /// </summary>
     public bool IsOpen => Volatile.Read(ref _state) == StateOpen;
     /// <summary>GVBS 0x0934.</summary>
     public uint GvcpCapability { get; private set; }
@@ -248,6 +259,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(periodMs, ct).ConfigureAwait(false);
+                // 다른 길(제어 채널이 닫힘)로 이미 상실이 났으면 더 보낼 곳이 없다 — 닫힌 채널에 세 번 실패하며 경고를 쌓지 않는다.
+                if (Volatile.Read(ref _state) != StateOpen) return;
 
                 uint ccp;
                 try
@@ -320,6 +333,21 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     }
 
     /// <summary>
+    /// 제어 채널이 세션보다 먼저 닫혔다 — 수신 소켓이 회복 불가로 채널을 스스로 닫았거나, 누군가 <see cref="Gvcp"/> 를 직접 닫았다.
+    /// 열린 세션이면 그 자리에서 제어권 상실로 넘긴다. 하트비트가 세 번 실패하기를 기다리면 그동안 <see cref="IsOpen"/> 은 true 인데
+    /// 모든 조작이 ObjectDisposedException 으로 끝나고, 하트비트가 없는 읽기 전용 세션은 그 상태에서 영영 벗어나지 못한다.
+    /// 세션이 스스로 닫는 중(상태가 이미 Disposed)이거나 이미 잃었으면 아무것도 하지 않는다. 채널을 닫는 스레드에서 불린다.
+    /// </summary>
+    private void OnChannelClosed(Exception? cause)
+    {
+        if (Volatile.Read(ref _state) != StateOpen) return;
+        var reason = cause is null
+            ? "the GVCP control channel was closed while the device was open"
+            : $"the GVCP control channel closed itself: {cause.Message}";
+        OnControlLost(cause ?? new GevException(reason), reason);
+    }
+
+    /// <summary>
     /// 상태를 ControlLost 로 바꾸고 이벤트를 스레드 풀에서 올린다. 하트비트 태스크 안에서 직접 부르면
     /// 핸들러가 <see cref="DisposeAsync"/> 를 기다릴 때 그 태스크 자신을 기다리게 되어 멈춘다 — 그래서 분리한다.
     /// </summary>
@@ -364,7 +392,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         }
     }
 
-    /// <summary>하트비트를 멈추고, 제어 중이면 CCP = 0 을 써서 놓고, 채널을 닫는다. 몇 번 불러도 안전하다.</summary>
+    /// <summary>
+    /// 하트비트를 멈추고, 제어 중이면 CCP = 0 을 써서 놓고, 채널을 닫는다. 몇 번 불러도 안전하다.
+    /// 그 뒤 장치에 닿는 조작은 전부 <see cref="ObjectDisposedException"/> 이다(<see cref="GevException"/> 이 아니다).
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         var previous = Interlocked.Exchange(ref _state, StateDisposed);

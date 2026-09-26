@@ -186,7 +186,7 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
     public IPAddress Address { get; }
     public IPAddress LocalAddress { get; }         // host address used for GVCP; also the SCDA for streams
     public GevAccessMode AccessMode { get; }
-    public bool IsOpen { get; }
+    public bool IsOpen { get; }                    // false after DisposeAsync or once control is lost (see "Errors" below)
     public uint GvcpCapability { get; }            // GVBS 0x0934
     public ulong TimestampTickFrequency { get; }   // GVBS 0x093C/0x0940 (0 if unreadable)
     public int DeviceHeartbeatTimeoutMs { get; }   // GVBS 0x0938 read back after we wrote it; a uint register, saturated at int.MaxValue (never negative)
@@ -228,6 +228,19 @@ Releasing control: `DisposeAsync` writes CCP = 0 whenever the CCP write was *sen
 seen. A cancelled or timed-out open may already have been applied by the device, and leaving it unreleased
 locks the camera for a whole device heartbeat timeout (R21). The only case that must not release is
 `ACCESS_DENIED`, where the privilege belongs to another application.
+
+Errors. Device operations throw the `GevException` family (`GevTimeoutException` no reply,
+`GevStatusException` device refusal, `GevControlLostException` control lost) **and `ObjectDisposedException`,
+which is not a `GevException`**: every device access after `DisposeAsync` throws it — node operations of a
+node map taken earlier included, since the device is their port (`GetXmlAsync`/`GetNodeMapAsync` alone answer
+from the session cache) — and so does a request that reaches the channel after it closed while racing
+`DisposeAsync`. Cancellation is `OperationCanceledException`. A caller that means "any library failure"
+catches `GevException` and `ObjectDisposedException` together. If the control channel closes underneath an
+open session — its receive socket failed beyond recovery, or someone disposed `device.Gvcp` — the session
+turns control-lost on the spot: `IsOpen` becomes false, `ControlLost` fires, and later calls throw
+`GevControlLostException`, rather than answering "open" while every call fails with `ObjectDisposedException`
+until three heartbeats have failed (a read-only session, which runs no heartbeat, never left that state).
+Pinned by `DeviceLifecycleTests.Dispose_NodeMapTakenBefore_*` and `GvcpChannelClosedUnderAnOpenDevice_*`.
 
 `IGevPort` implementation: `ReadAsync`/`WriteAsync` map to READMEM/WRITEMEM; 4-byte-aligned 4-byte
 accesses may use READREG/WRITEREG. An address above `uint.MaxValue` is narrowed to its low 32 bits with a
@@ -655,7 +668,7 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
 | Group | Types | Where it is specified |
 |---|---|---|
 | Discovery, device, stream | `GevDiscovery(Opt)`, `GevDeviceInfo`, `GevDevice`, `GevDeviceOpt`, `GevAccessMode`, `GevStream`, `GevStreamOpt`, `PacketSizeMode`, `GevFrame`, `GevStreamStats`, `GevStreamStatsSnap`, `GevFrameDiag`, `GevFrameDropReason` | the sections above |
-| Errors | `GevException`, `GevTimeoutException`, `GevStatusException`, `GevControlLostException`, `GevStreamClosedException`, `GenApiException` | "Errors" in CLAUDE.md; each carries the operation or node it failed on |
+| Errors | `GevException`, `GevTimeoutException`, `GevStatusException`, `GevControlLostException`, `GevStreamClosedException`, `GenApiException` | "Errors" in CLAUDE.md; each carries the operation or node it failed on. Outside this family, device operations also throw `ObjectDisposedException` (after `DisposeAsync`, or racing it) and `GevFrame.Data` does after the frame is disposed — "Device" above |
 | Logging | `GevLog`, `GevLogLevel` | a sink the host installs once; the library writes nowhere by itself |
 | Register boundary | `IGevPort` | the one seam between GenApi and a transport |
 | GVCP wire | `GvcpConst`, `GvbsAddr`, `GvcpPacket`, `GvcpCmd`, `GvcpAck`, `GvcpCmdHeader`, `GvcpAckHeader`, `GvcpChannel`, `GvcpChannelOpt` | "GVCP channel" above and `docs/protocol-notes.md` |

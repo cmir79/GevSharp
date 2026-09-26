@@ -310,6 +310,69 @@ public class DeviceLifecycleTests
         Assert.NotEqual(first, next.Gvcp.LocalEndPoint);
     }
 
+    [Fact]
+    public async Task Dispose_NodeMapTakenBefore_ThrowsObjectDisposedOnTheNextDeviceAccess()
+    {
+        // 오류 계약(architecture.md)이 적는 대로: 닫힌 뒤의 조작은 GevException 이 아니라 ObjectDisposedException 이다 —
+        // 앞서 받아 둔 노드맵도 포트가 이 장치라 같다. GenApi 층이 그것을 GenApiException 으로 감싸지 않는지까지 본다.
+        await using var rig = await SimRig.StartAsync();
+        var nodes = await rig.Device.GetNodeMapAsync();
+        var xml = await rig.Device.GetXmlAsync();
+        var width = nodes.GetInteger("Width");
+        Assert.Equal(128, await width.GetAsync());
+
+        await rig.Device.DisposeAsync();
+
+        // 세션 동안 받아 둔 것(XML·노드맵)은 닫힌 뒤에도 캐시에서 그대로 돌려준다 — 막히는 것은 장치에 닿는 조작이다.
+        Assert.Same(nodes, await rig.Device.GetNodeMapAsync());
+        Assert.Same(xml, await rig.Device.GetXmlAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => width.SetAsync(256).AsTask());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => rig.Device.ReadRegAsync(GvbsAddr.Version));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => rig.Device.OpenStreamAsync());
+    }
+
+    [Fact]
+    public async Task GvcpChannelClosedUnderAnOpenDevice_FlipsTheSessionToControlLostAtOnce()
+    {
+        // 수신 소켓이 회복 불가로 실패하면 채널은 스스로 Dispose() 한다. 그 소켓 오류를 루프백에서 일으킬 방법이 없어
+        // 같은 메서드를 밖에서 불러 닫힌 뒤의 상태를 만든다(누군가 device.Gvcp 를 직접 닫는 경우와도 같다).
+        // 하트비트 주기를 3 s 로 둔다 — 세 번 실패(9 s)를 기다려서야 상태가 바뀌는 회귀라면 아래 단정이 그 전에 걸린다.
+        await using var rig = await SimRig.StartAsync(device: o => { o.HeartbeatTimeoutMs = 30_000; o.HeartbeatPeriodMs = 3000; });
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Device.ControlLost += (_, ex) => lost.TrySetResult(ex);
+
+        rig.Device.Gvcp.Dispose();
+
+        // 열려 있다고 답하면서 모든 조작이 ObjectDisposedException 으로 끝나는 창이 없어야 한다.
+        var ex = await Record.ExceptionAsync(() => rig.Device.ReadRegAsync(GvbsAddr.Version));
+        Assert.IsType<GevControlLostException>(ex);
+        Assert.Contains("GVCP control channel", ex!.Message);
+        Assert.False(rig.Device.IsOpen);
+
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.True(ReferenceEquals(done, lost.Task), "ControlLost did not fire after the GVCP channel closed under the open device");
+        Assert.IsAssignableFrom<GevException>(await lost.Task);
+    }
+
+    [Fact]
+    public async Task GvcpChannelClosedUnderAReadOnlySession_AlsoEndsTheSession()
+    {
+        // 읽기 전용 세션은 하트비트가 없다 — 채널이 닫혀도 상태를 바꿔 줄 것이 달리 없어, 이 경로가 없으면 영영 "열림" 이다.
+        await using var rig = await SimRig.StartAsync();
+        var ro = SimRig.DefaultDeviceOpt();
+        ro.AccessMode = GevAccessMode.ReadOnly;
+        await using var reader = await GevDevice.OpenAsync(rig.EndPoint, ro);
+        Assert.Equal(0, reader.HeartbeatPeriodMs);
+
+        reader.Gvcp.Dispose();
+
+        await Assert.ThrowsAsync<GevControlLostException>(() => reader.ReadRegAsync(GvbsAddr.Version));
+        Assert.False(reader.IsOpen);
+        // 다른 세션은 영향이 없다.
+        Assert.True(rig.Device.IsOpen);
+        Assert.Equal(0x0002_0000u, await rig.Device.ReadRegAsync(GvbsAddr.Version));
+    }
+
     // ---------------------------------------------------------------- register / memory access
 
     [Fact]

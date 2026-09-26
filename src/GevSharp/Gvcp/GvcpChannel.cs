@@ -72,6 +72,8 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     private int _reqIdCounter;
     private volatile PendingRequest? _pending;
     private volatile bool _isDisposed;
+    /// <summary>수신 루프가 회복 불가로 채널을 스스로 닫을 때의 원인. 밖에서 닫았으면 null.</summary>
+    private Exception? _closeCause;
     private long _staleAckCount;
     private long _foreignPacketCount;
     private long _malformedPacketCount;
@@ -118,6 +120,13 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         _rxThread.Start();
         GevLog.Debug(_logSrc, $"channel opened from {LocalEndPoint}");
     }
+
+    /// <summary>
+    /// 채널이 닫힐 때 한 번 불린다 — 누가 닫았든(쥔 세션의 닫기, 수신 소켓이 회복 불가로 스스로 닫음, 호출자가 직접 닫음).
+    /// 인자는 스스로 닫은 경우의 원인이고 그 밖에는 null. 닫는 스레드에서 동기로 불리므로 가볍게 처리한다.
+    /// 이 채널을 쥔 세션은 이것으로 "열려 있다고 답하면서 모든 요청이 ObjectDisposedException 으로 끝나는" 창을 닫는다.
+    /// </summary>
+    internal Action<Exception?>? OnClosed { get; set; }
 
     public IPEndPoint LocalEndPoint { get; }
     public IPEndPoint DeviceEndPoint { get; }
@@ -405,7 +414,9 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 {
                     // 스스로 회복하지 않는 소켓 — 경고를 무한히 찍는 대신 채널을 닫아 요청 쪽이 즉시 실패하게 한다.
                     GevLog.Error(_logSrc, $"receive failed {consecutiveFailures} times in a row ({ex.SocketErrorCode}); closing the channel", ex);
-                    _pending?.Tcs.TrySetException(new GevException($"GVCP receive on {LocalEndPoint} kept failing ({ex.SocketErrorCode}); channel closed", ex));
+                    var failure = new GevException($"GVCP receive on {LocalEndPoint} kept failing ({ex.SocketErrorCode}); channel closed", ex);
+                    _pending?.Tcs.TrySetException(failure);
+                    _closeCause = failure;
                     Dispose();
                     break;
                 }
@@ -497,7 +508,11 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         if (_isDisposed) throw new ObjectDisposedException(nameof(GvcpChannel));
     }
 
-    /// <summary>소켓을 닫고 수신 스레드가 끝나기를 기다린다. 대기 중인 요청은 <see cref="ObjectDisposedException"/> 으로 끝난다.</summary>
+    /// <summary>
+    /// 소켓을 닫고 수신 스레드가 끝나기를 기다린다. 대기 중인 요청은 <see cref="ObjectDisposedException"/> 으로 끝나고,
+    /// 그 뒤의 요청도 전부 <see cref="ObjectDisposedException"/> 이다. 이 채널을 쥔 <see cref="GevDevice"/> 가 아직 열려 있었다면
+    /// 그 세션은 이 자리에서 제어권 상실로 넘어간다.
+    /// </summary>
     public void Dispose()
     {
         if (_isDisposed) return;
@@ -512,11 +527,27 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
 
         _pending?.Tcs.TrySetException(new ObjectDisposedException(nameof(GvcpChannel)));
+        NotifyClosed();
 
         if (Thread.CurrentThread != _rxThread && _rxThread.IsAlive && !_rxThread.Join(RxThreadJoinMs))
             GevLog.Warn(_logSrc, "receive thread did not stop within the join timeout");
 
         GevLog.Debug(_logSrc, $"channel closed (was {LocalEndPoint})");
+    }
+
+    /// <summary><see cref="OnClosed"/> 를 부른다. 받는 쪽의 실패가 닫기를 멈추지 않게 삼키고 남긴다.</summary>
+    private void NotifyClosed()
+    {
+        var callback = OnClosed;
+        if (callback is null) return;
+        try
+        {
+            callback(_closeCause);
+        }
+        catch (Exception ex)
+        {
+            GevLog.Error(_logSrc, "channel-closed callback threw", ex);
+        }
     }
 
     /// <summary>
