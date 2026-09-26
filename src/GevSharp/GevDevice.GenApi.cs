@@ -40,14 +40,21 @@ public sealed partial class GevDevice
     /// 예를 들어 <c>AcquisitionStart</c> 의 pIsLocked 가 <c>TLParamsLocked = 0</c> 인 장치에서는 1 을 쓰기 전까지
     /// 그 커맨드가 잠긴 WO, 즉 접근 불가(NA)로 보여 실행할 수 없다.
     /// 순서: 스트림 <c>StartAsync</c> → 이 메서드에 true → AcquisitionStart … AcquisitionStop → 이 메서드에 false → 스트림 <c>StopAsync</c>.
-    /// 노드가 없는 장치에서는 아무것도 하지 않고 false 를 돌려준다(그런 장치는 이 잠금을 쓰지 않는다).
+    /// 값을 썼으면 true. false 는 아무것도 쓰지 않았다는 뜻이고 두 경우다 — 노드가 없는 장치(그런 장치는 이 잠금을 쓰지 않는다, Debug 로그)와,
+    /// 같은 이름의 노드가 정수 노드가 아닌 기술(쓸 방법을 모른다 — 그 노드에 걸린 잠금은 그대로 남으므로 Warn 로그에 노드 종류를 적는다).
+    /// 예외로 올리지 않는 것은 앞의 경우가 정상이라서다. 뒤의 경우를 가려야 하면 <see cref="GenApiNodeMap.GetNode"/> 로 종류를 본다.
     /// </summary>
     public async Task<bool> SetTlParamsLockedAsync(bool locked, CancellationToken ct = default)
     {
         var nodes = await GetNodeMapAsync(ct).ConfigureAwait(false);
-        if (nodes.GetNode(TlParamsLockedNode) is not GenApi.IInteger node)
+        var found = nodes.GetNode(TlParamsLockedNode);
+        if (found is not GenApi.IInteger node)
         {
-            GevLog.Debug(LogSrc, $"{TlParamsLockedNode} is not in the node map of {Address}; transport-layer locking is not used by this device");
+            // 두 경우를 한 문구로 적지 않는다 — 노드가 있는데 "없다" 고 적히면, 획득 커맨드가 잠긴 채 남은 이유를 로그에서 찾을 수 없다.
+            if (found is null)
+                GevLog.Debug(LogSrc, $"{TlParamsLockedNode} is not in the node map of {Address}; transport-layer locking is not used by this device");
+            else
+                GevLog.Warn(LogSrc, $"{TlParamsLockedNode} on {Address} is a {found.Kind} node, not an integer; nothing was written, so features the description gates on it keep their current lock state");
             return false;
         }
         await node.SetAsync(locked ? 1 : 0, ct).ConfigureAwait(false);

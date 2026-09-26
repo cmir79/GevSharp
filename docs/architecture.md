@@ -203,7 +203,8 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
 
     public Task<GevXmlDoc> GetXmlAsync(CancellationToken ct = default);                // Xml module
     public Task<GenApiNodeMap> GetNodeMapAsync(CancellationToken ct = default);         // cached after first call
-    public Task SetTlParamsLockedAsync(bool locked, CancellationToken ct = default);    // host-side node, not a register; gates the acquisition commands
+    public Task<bool> SetTlParamsLockedAsync(bool locked, CancellationToken ct = default);   // host-side node, not a register; gates the acquisition commands.
+                                                                                            // false = nothing written: no TLParamsLocked (Debug log), or one that is not an integer node (Warn log)
     public Task<GevStream> OpenStreamAsync(GevStreamOpt? opt = null, CancellationToken ct = default);  // Gvsp module; channel 0
     public Task<GevStream> OpenStreamAsync(int streamChannel, GevStreamOpt? opt = null, CancellationToken ct = default);  // channel count from GVBS 0x0904
     // Both overloads need control: a ReadOnly session cannot write the stream-channel registers and is
@@ -503,7 +504,9 @@ public partial class GenApiNodeMap
 ```
 
 **Transport-layer lock.** `GevDevice.SetTlParamsLockedAsync(bool locked, ct) → Task<bool>` writes the
-`TLParamsLocked` node (returns false when the description has none). That node is *not* a device register —
+`TLParamsLocked` node and returns true. It returns false, writing nothing, when the description has no such
+node (logged at Debug — such a device does not use the lock) or declares it as something other than an
+integer node (logged at Warn with the node kind — whatever the description gates on it stays as it was). That node is *not* a device register —
 it lives in the node map, and vendor descriptions gate features on it: on a Basler ace, `AcquisitionStart`
 carries `ImposedAccessMode=WO` plus `pIsLocked = (TLParamsLocked = 0)`, so it reads as a locked write-only
 node — i.e. `NotAvailable` — until the host sets the lock, and the format parameters (`Width`, `Height`,
