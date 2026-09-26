@@ -98,6 +98,14 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     // ------------------------------------------------------------------ open
 
     /// <summary>탐색 결과로 연다. 로컬 주소는 옵션 → 응답을 들은 인터페이스 순으로 정한다.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="info"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="opt"/> 의 값이 범위를 벗어났다.</exception>
+    /// <exception cref="GevException">
+    /// 장치 주소가 IPv4 가 아니거나, 쓸 로컬 주소가 없는데(옵션에도 탐색 결과에도) 장치로 나가는 로컬 주소를 정할 수 없거나, 열기 순서에서
+    /// 장치와 주고받다 실패했다 — 그 실패의 하위 형식은 <see cref="OpenAsync(IPEndPoint, GevDeviceOpt, CancellationToken)"/> 와 같다.
+    /// </exception>
+    /// <exception cref="System.Net.Sockets.SocketException">GVCP 소켓을 로컬 주소에 묶지 못했다(이 경우만 감싸지 않고 그대로 나온다).</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static Task<GevDevice> OpenAsync(GevDeviceInfo info, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (info is null) throw new ArgumentNullException(nameof(info));
@@ -106,6 +114,14 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     }
 
     /// <summary>주소로 연다. 로컬 주소는 옵션 → 같은 서브넷 인터페이스 → OS 라우팅 순으로 정한다.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="address"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="opt"/> 의 값이 범위를 벗어났다.</exception>
+    /// <exception cref="GevException">
+    /// IPv4 주소가 아니거나, 옵션에 로컬 주소가 없는데 장치로 나가는 로컬 주소를 정할 수 없거나, 열기 순서에서 장치와 주고받다 실패했다 —
+    /// 그 실패의 하위 형식은 <see cref="OpenAsync(IPEndPoint, GevDeviceOpt, CancellationToken)"/> 와 같다.
+    /// </exception>
+    /// <exception cref="System.Net.Sockets.SocketException">GVCP 소켓을 로컬 주소에 묶지 못했다(이 경우만 감싸지 않고 그대로 나온다).</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static Task<GevDevice> OpenAsync(IPAddress address, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (address is null) throw new ArgumentNullException(nameof(address));
@@ -116,8 +132,21 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     /// 주소와 GVCP 포트로 연다 — 표준 포트(3956)가 아닌 곳에서 답하는 장치용: 루프백의 시뮬레이터, 포트를 옮겨 둔 NAT·포워딩 뒤의 장치 등.
     /// 로컬 주소는 옵션 → 같은 서브넷 인터페이스 → OS 라우팅 순으로 정한다. IPv4 만 받는다.
     /// 이 포트는 제어 채널(레지스터 접근·하트비트·리센드 요청)에만 쓰인다 — 스트림은 장치가 자기 설정대로 보내는 곳에서 받는다.
+    /// 세션은 <paramref name="device"/> 의 사본을 쥔다 — 연 뒤에 그 객체를 다른 장치에 다시 써도 이 세션은 처음 연 장치에 묶여 있다.
     /// </summary>
-    /// <exception cref="ArgumentOutOfRangeException">포트가 0 이다.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="device"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="device"/> 의 포트가 0 이거나, <paramref name="opt"/> 의 값이 범위를 벗어났다.</exception>
+    /// <exception cref="GevException">
+    /// IPv4 끝점이 아니거나, 옵션에 로컬 주소가 없는데 장치로 나가는 로컬 주소를 정할 수 없거나, 보내기가 소켓 오류로 실패했다.
+    /// 열기 순서(부트스트랩 읽기 → CCP → 하트비트 타임아웃)에서 장치와 주고받다 난 실패는 하위 형식으로 온다 — 응답 없음
+    /// <see cref="GevTimeoutException"/>, 장치 거절 <see cref="GevStatusException"/>, 다른 애플리케이션이 제어권을 쥐고 있음
+    /// <see cref="GevControlLostException"/>(<see cref="GevAccessMode.ReadOnly"/> 가 아닐 때). 실패한 열기는 세션을 닫으며, CCP 쓰기를
+    /// 내보낸 뒤였으면 짧은 예산 안에서 놓아 주려 한다(못 놓으면 장치가 자기 하트비트 타임아웃으로 푼다).
+    /// </exception>
+    /// <exception cref="System.Net.Sockets.SocketException">
+    /// GVCP 소켓을 로컬 주소에 묶지 못했다 — 옵션의 LocalAddress 가 이 호스트의 IPv4 주소가 아닐 때 등. 이 경우만 감싸지 않고 그대로 나온다.
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (device is null) throw new ArgumentNullException(nameof(device));

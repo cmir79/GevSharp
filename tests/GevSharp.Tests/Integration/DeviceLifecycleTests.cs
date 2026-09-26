@@ -560,6 +560,31 @@ public class DeviceLifecycleTests
         Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
     }
 
+    [Fact]
+    public async Task OpenAsync_EndPoint_ThrowsWhatItsDocumentationLists()
+    {
+        // 공개 진입점의 <exception> 목록이 코드와 어긋나지 않게 값싼 갈래를 못 박는다. 옵션 범위·무응답(GevDeviceTests)과
+        // 제어권 거절(SecondSession_Control_WhileFirstHoldsCcp_ThrowsControlLost), 포트 0(위)은 따로 시험한다.
+        Assert.Throws<ArgumentNullException>(() => { _ = GevDevice.OpenAsync((IPEndPoint)null!); });   // 태스크가 아니라 호출 자리에서
+
+        // IPv4 가 아닌 끝점: 로컬 주소를 스스로 정하는 자리(옵션에 없을 때)든 채널을 만드는 자리(옵션에 있을 때)든 GevException.
+        // 둘 다 소켓을 만들기 전에 끝나 아무것도 보내지 않는다.
+        var v6 = new IPEndPoint(IPAddress.IPv6Loopback, GvcpConst.Port);
+        await Assert.ThrowsAsync<GevException>(() => GevDevice.OpenAsync(v6));
+        await Assert.ThrowsAsync<GevException>(() => GevDevice.OpenAsync(v6, new GevDeviceOpt { LocalAddress = IPAddress.Loopback }));
+
+        using var sim = SimRig.StartSim();
+        // 옵션의 로컬 주소에 GVCP 소켓을 묶지 못하면 SocketException 이 감싸지 않고 나온다. 192.0.2.1 은 문서용 예약 주소(TEST-NET-1)라
+        // 이 호스트의 주소일 수 없다 — 묶는 데서 끝나고 아무것도 보내지 않는다.
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
+            () => GevDevice.OpenAsync(sim.GvcpEndPoint, new GevDeviceOpt { LocalAddress = IPAddress.Parse("192.0.2.1") }));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => GevDevice.OpenAsync(sim.GvcpEndPoint, SimRig.DefaultDeviceOpt(), new CancellationToken(canceled: true)));
+        Assert.Null(sim.ControlOwner);   // 실패한 열기는 제어권을 남기지 않는다
+        Assert.Equal(0, sim.WriteRegCount);
+    }
+
     // ---------------------------------------------------------------- stream vs. device lifetime
 
     [Fact]
