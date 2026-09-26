@@ -10,7 +10,7 @@ namespace GevSharp;
 /// GVSP 스트림 수신기. 소켓 하나·수신 스레드 하나로 패킷을 받아 풀 버퍼에 조립하고, 완성된 프레임을 유한 큐로 넘긴다.
 /// 시작 순서: 소켓 바인드 → SCDA/SCP → SCPS 플래그 읽기 → 패킷 크기 협상 → SCPS/SCPD → 스레드. AcquisitionStart 는 보내지 않는다(GenApi 쪽 몫).
 /// SCPS 는 크기 외에 장치가 켜 둔 플래그(단편화 금지·빅엔디언)를 지키고, Auto 협상은 단편화 금지로 검증했으므로 스트리밍도 같은 조건으로 쓴다.
-/// 정지 순서: SCP = 0, SCDA = 0 → 소켓 닫기(수신 블로킹 해제) → 스레드 합류 → 큐를 <see cref="GevStreamClosedException"/> 으로 닫기.
+/// 정지 순서: SCP = 0, SCDA = 0 → 소켓 닫기(수신 대기 해제) → 스레드 합류 → 큐를 <see cref="GevStreamClosedException"/> 으로 닫기.
 /// </summary>
 public sealed partial class GevStream : IAsyncDisposable
 {
@@ -24,6 +24,11 @@ public sealed partial class GevStream : IAsyncDisposable
     private const int StateStarted = 2;
     private const int StateStopping = 3;
     private const int StateStopped = 4;
+    /// <summary>
+    /// 수신 스레드가 정지 요청 없이 스스로 끝났다(소켓 사망 등). 받기는 이미 "닫힘" 으로 끝나지만 장치 전송 끄기와
+    /// 버퍼 반납은 아직이라 <see cref="StateStopped"/> 와 다르다 — 정지는 이 상태를 살아 있는 스트림처럼 끝까지 정리한다.
+    /// </summary>
+    private const int StateFaulted = 5;
     /// <summary>정지가 수신 스레드를 기다리는 상한. 제어 채널의 같은 상한과 맞춘다.</summary>
     private const int ReceiverJoinMs = 2000;
 
@@ -41,6 +46,8 @@ public sealed partial class GevStream : IAsyncDisposable
     private readonly string _logSrc;
     private readonly GevStreamOpt _opt;
     private readonly int _channel;
+    /// <summary>정지(와 실패한 시작의 되돌리기)에서 장치 전송을 끄는 쓰기에 주는 고정 예산(ms) — 호출자의 토큰·채널 재시도와 무관하다.</summary>
+    private readonly int _shutdownWriteBudgetMs;
     private readonly GevFramePool _pool;
     private readonly GevStreamStats _stats = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
@@ -59,7 +66,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// <param name="opt">수신 옵션. null 이면 기본값. 값 범위가 어긋나면 <see cref="ArgumentOutOfRangeException"/>.</param>
     /// <param name="streamChannel">스트림 채널 번호(0 부터).</param>
     /// <param name="deviceAddress">장치 IPv4 — 방화벽 통과용 한 바이트를 보낼 목적지. null 이면 그 단계를 건너뛴다.</param>
-    internal GevStream(IGevPort regs, IGvcpResendPort resend, IPAddress localAddress, GevStreamOpt? opt, int streamChannel = 0, IPAddress? deviceAddress = null)
+    /// <param name="shutdownWriteBudgetMs">
+    /// 정지의 SCP = 0·SCDA = 0(과 실패한 시작의 SCP = 0)이 합쳐서 쓸 수 있는 시간. 장치가 열 때는 <see cref="GevDevice.ShutdownWriteBudgetMs"/> 를 넘기고,
+    /// 포트 위에 바로 만든 스트림은 그 상한(<see cref="GevDevice.CcpReleaseMaxMs"/>)을 받는다.
+    /// </param>
+    internal GevStream(IGevPort regs, IGvcpResendPort resend, IPAddress localAddress, GevStreamOpt? opt, int streamChannel = 0, IPAddress? deviceAddress = null,
+        int shutdownWriteBudgetMs = GevDevice.CcpReleaseMaxMs)
     {
         _regs = regs ?? throw new ArgumentNullException(nameof(regs));
         _resend = resend ?? throw new ArgumentNullException(nameof(resend));
@@ -71,6 +83,8 @@ public sealed partial class GevStream : IAsyncDisposable
             throw new ArgumentException("Local address must be an IPv4 address.", nameof(localAddress));
         }
         if (streamChannel < 0 || streamChannel > 511) throw new ArgumentOutOfRangeException(nameof(streamChannel));
+        if (shutdownWriteBudgetMs <= 0) throw new ArgumentOutOfRangeException(nameof(shutdownWriteBudgetMs));
+        _shutdownWriteBudgetMs = shutdownWriteBudgetMs;
 
         _opt = opt ?? new GevStreamOpt();
         _opt.Validate();
@@ -87,6 +101,16 @@ public sealed partial class GevStream : IAsyncDisposable
 
     public GevStreamStats Stats => _stats;
 
+    /// <summary>
+    /// 스트림이 프레임을 받고 있으면 참 — <see cref="StartAsync"/> 가 성공한 뒤부터, <see cref="StopAsync"/>·<see cref="DisposeAsync"/>
+    /// 가 불리거나 수신 스레드가 스스로 끝날 때(스트림 소켓이 죽는 등)까지.
+    /// <para>
+    /// 수신 스레드가 스스로 끝나면 이 값이 거짓이 되고 <see cref="ReceiveAsync"/> 는 큐에 남은 장을 다 내준 뒤
+    /// <see cref="GevStreamClosedException"/> 으로 끝난다. 그 스트림은 다시 시작할 수 없고, 정리도 아직이다 —
+    /// <see cref="StopAsync"/>(또는 <see cref="DisposeAsync"/>)를 불러야 장치 전송이 꺼지고 버퍼가 돌아온다.
+    /// 장치가 조용해진 것만으로는 수신 스레드가 끝나지 않으므로 그때는 참으로 남는다(<see cref="ReceiveAsync"/> 설명 참고).
+    /// </para>
+    /// </summary>
     public bool IsStarted => Volatile.Read(ref _state) == StateStarted;
 
     /// <summary>프레임을 전달하지 못했을 때 수신 스레드에서 호출된다 — 가볍게 처리해야 한다.</summary>
@@ -95,9 +119,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// <summary>테스트용: 인터페이스 MTU 조회를 바꿔 끼운다. null 이면 실제 인터페이스를 본다.</summary>
     internal Func<IPAddress, int>? MtuResolver { get; set; }
 
+    /// <summary>테스트용: 스트림 소켓 생성을 바꿔 끼운다 — 핸들 고갈처럼 생성이 던지는 자리를 만든다. null 이면 IPv4 UDP 소켓을 새로 만든다.</summary>
+    internal Func<Socket>? SocketFactory { get; set; }
+
     /// <summary>
     /// 소켓을 열고 장치 스트림 채널을 이 소켓으로 향하게 한 뒤 수신 스레드를 띄운다. 두 번 부르면 <see cref="InvalidOperationException"/>.
-    /// 레지스터 쓰기 실패는 그대로 던지며, 그 경우 소켓은 닫히고 스트림은 정지 상태가 된다.
+    /// 시작이 실패하면(소켓 생성·바인드든 레지스터 쓰기든) 그 예외를 그대로 던지며, 그 경우 소켓은 닫히고 스트림은 정지 상태가 된다.
     /// </summary>
     public async Task StartAsync(CancellationToken ct = default)
     {
@@ -106,16 +133,22 @@ public sealed partial class GevStream : IAsyncDisposable
         {
             if (_state != StateNew)
             {
-                throw new InvalidOperationException(_state == StateStarted || _state == StateStarting
-                    ? "Stream is already started."
-                    : "Stream cannot be restarted after it was stopped.");
+                throw new InvalidOperationException(_state switch
+                {
+                    StateStarted or StateStarting => "Stream is already started.",
+                    StateFaulted => "Stream receiver has already ended on its own; a stream cannot be restarted. Stop it and open a new one.",
+                    _ => "Stream cannot be restarted after it was stopped.",
+                });
             }
             _state = StateStarting;
 
-            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            // 소켓 생성도 아래 try 안에 둔다 — 핸들·버퍼가 바닥나면 생성이 던지는데, 그 예외가 try 밖에서 나면 상태가
+            // "시작 중" 에 걸린 채 남아 다시 시작하려는 쪽은 "이미 시작됨" 을 받고, 정지는 아무것도 쓴 적 없는 장치를 되돌리러 간다.
+            Socket? socket = null;
             var hasWrittenScp = false;
             try
             {
+                socket = SocketFactory?.Invoke() ?? new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                 socket.Bind(new IPEndPoint(_localAddress, _opt.LocalPort ?? 0));
                 socket.ReceiveBufferSize = _opt.SocketBufferBytes;
                 var granted = socket.ReceiveBufferSize;
@@ -166,20 +199,31 @@ public sealed partial class GevStream : IAsyncDisposable
                     Priority = _opt.ReceiverPriority,
                 };
                 _thread = thread;
+                // 상태는 스레드를 띄우기 **전에** 세운다. 소켓이 곧장 죽으면 수신 스레드가 "시작됨" 을 "스스로 끝남" 으로
+                // 내리는데, 그보다 늦게 여기서 "시작됨" 을 쓰면 죽은 스트림이 시작된 것으로 남는다. 띄우기가 던지면 아래 catch 가 되돌린다.
+                Volatile.Write(ref _state, StateStarted);
                 thread.Start();
-                _state = StateStarted;
-                GevLog.Info(_logSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_opt.ResendEnabled ? "on" : "off")}.");
+                GevLog.Info(_logSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_isResendEnabled ? "on" : "off")}.");
+                if (!_isResendEnabled)
+                {
+                    // 비율 0 도 리센드를 끈다 — 옵션만 보고 보존 시간을 늘린 사람이 "왜 안 바뀌나" 를 로그에서 찾을 수 있게 한 번 적는다.
+                    GevLog.Info(_logSrc, $"Resend is off (ResendEnabled = {_opt.ResendEnabled}, PacketRequestRatio = {_opt.PacketRequestRatio.ToString(System.Globalization.CultureInfo.InvariantCulture)}); "
+                        + $"FrameRetentionMs ({_opt.FrameRetentionMs} ms) does not apply: an incomplete frame is abandoned {_opt.PacketTimeoutMs} ms "
+                        + "after its last packet, or as soon as a newer block starts.");
+                }
             }
             catch
             {
                 _socket = null;
                 _isStopRequested = true;
-                socket.Close();
+                socket?.Close();
                 if (hasWrittenScp)
                 {
                     // 장치가 닫힌 포트로 쏘지 않게 최선을 다해 되돌린다 — 여기서의 실패는 원래 예외를 가리지 않는다.
-                    try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, CancellationToken.None).ConfigureAwait(false); }
-                    catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to reset SCP after a failed start.", ex); }
+                    // 정지와 같은 고정 예산에 묶는다: 시작이 실패한 까닭이 말없는 장치라면 채널 예산 전부를 한 번 더 쓰게 되고,
+                    // 그동안 겹친 정지는 자물쇠 앞에서 함께 기다린다.
+                    using var budget = new CancellationTokenSource(_shutdownWriteBudgetMs);
+                    await WriteZeroForShutdownAsync(GvbsAddr.ScpOffset, "SCP", "after a failed start", budget.Token).ConfigureAwait(false);
                 }
                 _queue?.Complete(new GevStreamClosedException("Stream failed to start."));
                 _state = StateStopped;
@@ -196,7 +240,22 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 장치 전송을 끄고(SCP = 0, SCDA = 0) 소켓을 닫아 수신 스레드를 깨운 뒤 합류한다. 조립 중이던 프레임은 버려지고,
     /// 큐에 남은 프레임은 반납되며, 대기 중인 <see cref="ReceiveAsync"/> 는 <see cref="GevStreamClosedException"/> 으로 끝난다.
     /// 여러 번 불러도 된다. 레지스터 쓰기 실패는 로그만 남기고 로컬 정리는 끝까지 진행한다.
+    /// <para>
+    /// <b>토큰은 정지를 끊지 않는다.</b> 이미 취소된 토큰이 와도, 도중에 취소돼도 위 단계를 전부 밟고 정상으로 돌아온다 —
+    /// 돌아왔다면 스트림은 멈춘 것이다. 반쯤 멈춘 스트림은 온전히 도는 것보다 나쁘다: 장치 전송 끄기를 건너뛰면 장치가
+    /// 닫힌 포트를 향해 계속 쏘고, 로컬 정리를 건너뛰면 큐에 든 버퍼가 돌아오지 않는다. 다 멈춘 뒤에 취소 예외를 던지지도 않는다 —
+    /// 셧다운을 취소 처리로 감싼 호출자는 그 예외 때문에 뒤따르는 정리(장치 닫기 등)를 건너뛰게 되는데, 정작 정지는 끝나 있다.
+    /// </para>
+    /// <para>
+    /// 대신 기다리는 자리마다 상한이 따로 있다. 장치 전송 끄기는 두 쓰기를 합쳐 고정 예산 하나 — 응답 창(<see cref="GevDeviceOpt.GvcpTimeoutMs"/>)
+    /// 두 개, 많아야 2 초 — 안에서 끝난다. 이 예산은 호출자의 토큰에도 <see cref="GevDeviceOpt.GvcpRetries"/> 에도 기대지 않으므로,
+    /// 장치가 답하지 않게 된 뒤에도(재시도가 끝없는 설정에서도) 정지는 그만큼만 쓰고 돌아온다. 예산이 다하면 경고를 남기고
+    /// 로컬 정리로 넘어간다 — 그때 장치는 옛 SCP·SCDA 를 그대로 들고 있다. 수신 스레드 합류는 2 초를 넘지 않는다.
+    /// 겹친 시작이 자물쇠를 쥐고 있으면 그 시작이 끝나기를 먼저 기다리며, 그 시간은 시작에 준 토큰과 제어 채널의 시한·재시도가 정한다
+    /// (실패한 시작의 SCP 되돌리기는 위와 같은 고정 예산이다).
+    /// </para>
     /// </summary>
+    /// <param name="ct">어떤 단계도 끊지 않는다(위 설명). 취소돼 있어도 정지를 끝까지 하고 정상으로 돌아온다.</param>
     public async Task StopAsync(CancellationToken ct = default)
     {
         var thread = _thread;
@@ -205,7 +264,10 @@ public sealed partial class GevStream : IAsyncDisposable
             throw new InvalidOperationException("StopAsync must not be called from the receiver thread (for example inside a FrameDropped handler).");
         }
 
-        await _lifecycle.WaitAsync(ct).ConfigureAwait(false);
+        // 토큰을 넘기지 않는다 — SemaphoreSlim 은 이미 취소된 토큰이면 비어 있는 자물쇠도 잡지 않고 곧장 취소로 끝나,
+        // 정지가 아무 일도 하지 않은 채 돌아간다. 겹친 시작이 자물쇠를 쥔 자리에서도 마찬가지로, 그 시작이 끝난 뒤 스트림이
+        // 그대로 돌게 된다. 쥐는 쪽은 전부 상한이 있으므로(위 설명) 이 대기도 끝난다.
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             if (_state == StateStopped) return;
@@ -217,10 +279,16 @@ public sealed partial class GevStream : IAsyncDisposable
             _state = StateStopping;
             _isStopRequested = true;
 
-            try { await WriteRegAsync(GvbsAddr.ScpOffset, 0, ct).ConfigureAwait(false); }
-            catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCP = 0 while stopping the stream.", ex); }
-            try { await WriteRegAsync(GvbsAddr.ScdaOffset, 0, ct).ConfigureAwait(false); }
-            catch (Exception ex) { GevLog.Warn(_logSrc, "Failed to write SCDA = 0 while stopping the stream.", ex); }
+            // 장치 전송 끄기는 호출자의 토큰과 무관하게 시도한다(실패한 시작의 되돌리기와 같다). 토큰을 넘기면 SCP 쓰기 도중의
+            // 취소가 "SCP 쓰기 실패" 로 기록되고, 이미 취소된 토큰을 받은 SCDA 쓰기는 보내지도 못한 채 끝난다.
+            // 그렇다고 채널의 재시도 예산 전부를 쓰지도 않는다 — 두 쓰기가 합쳐서 고정 예산 하나를 받는다. 채널 예산에 기대면 말없는
+            // 장치 앞에서 정지가 쓰기 둘 × (1 + GvcpRetries) × 응답 창만큼(재시도 중인 하트비트 뒤의 줄서기까지) 붙들리는데 호출자는
+            // 그것을 끊을 길이 없고, 재시도가 끝없으면 정지가 돌아오지 않는다(응답 창 500 ms·재시도 20 회에서 30 초 안에 돌아오지 않았다).
+            using (var budget = new CancellationTokenSource(_shutdownWriteBudgetMs))
+            {
+                await WriteZeroForShutdownAsync(GvbsAddr.ScpOffset, "SCP", "while stopping the stream", budget.Token).ConfigureAwait(false);
+                await WriteZeroForShutdownAsync(GvbsAddr.ScdaOffset, "SCDA", "while stopping the stream", budget.Token).ConfigureAwait(false);
+            }
 
             var socket = _socket;
             _socket = null;
@@ -230,7 +298,7 @@ public sealed partial class GevStream : IAsyncDisposable
             _thread = null;
             if (thread is not null && thread.IsAlive)
             {
-                // 상한 없이 기다리지 않는다. 소켓을 닫으면 블로킹 수신이 깨어나는 것이 보통이지만 그것을 보장하는 규격은 없고,
+                // 상한 없이 기다리지 않는다. 소켓을 닫으면 수신 대기(Poll)가 깨어나는 것이 보통이지만 그것을 보장하는 규격은 없고,
                 // 여기서 무한히 기다리면 정지가 영영 돌아오지 않는다. 게다가 이 대기는 스레드풀 스레드를 하나 붙들고 있어서,
                 // 코어가 적은 기계에서 정지가 몇 개 겹치면 풀이 고갈된다. 제어 채널은 이미 같은 상한을 두고 있다.
                 // 시한을 넘겨도 할 일은 그대로 한다 — 소켓은 이미 닫혔고 아래에서 큐를 비워 버퍼를 돌려준다.
@@ -262,7 +330,8 @@ public sealed partial class GevStream : IAsyncDisposable
     }
 
     /// <summary>
-    /// 다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/>.
+    /// 다음 프레임을 기다린다. 시작 전이거나 정지된 스트림이면 <see cref="GevStreamClosedException"/> — 수신 스레드가
+    /// 스스로 끝난 스트림(<see cref="IsStarted"/> 참고)도 큐에 남은 장을 다 내준 뒤 같은 예외로 끝난다.
     /// 받은 프레임은 반드시 Dispose 한다.
     /// <para>
     /// <b>장치가 사라져도 이 대기는 스스로 끝나지 않는다.</b> 장치는 자기가 연 스트림을 모르므로 제어 상실
@@ -517,6 +586,13 @@ public sealed partial class GevStream : IAsyncDisposable
     /// </summary>
     internal void SimulateReceiverQueueCompletion(Exception cause) => _queue?.Complete(cause);
 
+    /// <summary>
+    /// 정지 요청 없이 스트림 소켓을 닫는다 — NIC 가 내려가 소켓이 죽은 것과 같은 자리를 만들어, 수신 스레드가
+    /// 스스로 끝나는 실제 경로(대기·수신 실패 → 루프 종료 → 큐 닫기)를 밟게 한다. 어느 갈래로 오는지는 플랫폼이 정한다 —
+    /// 대기(Poll)가 예외를 내면 수신 오류 분류로, 참을 돌려주면 다음 수신의 ObjectDisposedException 으로 온다.
+    /// </summary>
+    internal void KillSocketForTest() => _socket?.Close();
+
     /// <summary>조립이 끝나 큐에 든 프레임을 동기로 꺼낸다 — 할당 계측이 비동기 대기의 할당에 섞이지 않게.</summary>
     internal bool TryDrainForTest(out GevFrame frame)
     {
@@ -549,6 +625,32 @@ public sealed partial class GevStream : IAsyncDisposable
         var scratch = _scratch ?? throw new InvalidOperationException("The receiver has not been initialised.");
         Buffer.BlockCopy(packet, 0, scratch, 0, length);
         OnPacket(length, System.Diagnostics.Stopwatch.GetTimestamp());
+    }
+
+    /// <summary>
+    /// 정지(와 실패한 시작의 되돌리기)에서 장치 전송을 끄는 0 쓰기 하나. <paramref name="budget"/> 은 호출자의 토큰이 아니라 그 자리에서 만든
+    /// 고정 예산이다. 실패는 로그만 남기고 삼킨다 — 로컬 정리는 이 결과와 무관하게 끝까지 가야 한다.
+    /// 앞선 쓰기가 예산을 다 썼으면 보내지 않고 그렇다고 적는다(이미 취소된 토큰으로 부르면 채널은 보내지도 않고 취소로 끝난다).
+    /// </summary>
+    private async Task WriteZeroForShutdownAsync(uint offset, string register, string during, CancellationToken budget)
+    {
+        if (budget.IsCancellationRequested)
+        {
+            GevLog.Warn(_logSrc, $"Skipped writing {register} = 0 {during}: the {_shutdownWriteBudgetMs} ms budget for turning the device's transmission off was already spent.");
+            return;
+        }
+        try
+        {
+            await WriteRegAsync(offset, 0, budget).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            GevLog.Warn(_logSrc, $"Writing {register} = 0 {during} got no answer within the {_shutdownWriteBudgetMs} ms budget; giving up so the local cleanup is not held.");
+        }
+        catch (Exception ex)
+        {
+            GevLog.Warn(_logSrc, $"Failed to write {register} = 0 {during}.", ex);
+        }
     }
 
     private ValueTask WriteRegAsync(uint offset, uint value, CancellationToken ct)

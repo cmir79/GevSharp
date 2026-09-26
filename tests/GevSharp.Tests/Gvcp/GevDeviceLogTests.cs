@@ -39,4 +39,30 @@ public class GevDeviceLogTests
         Assert.Equal("GevDevice", entry.Source);
         Assert.Contains("no PENDING_ACK budget", entry.Message);
     }
+
+    [Fact]
+    public void AHugeResponseWindowDoesNotWrapThePendingAckBudget()
+    {
+        // 응답 창이 int.MaxValue / 2 를 넘으면 2 × 응답 창을 int 로 셈할 때 음수로 감긴다. 그러면 빼기가 더하기가 되어
+        // 여유가 없는 설정이 오히려 수십억 ms 의 상한을 얻고, 경고도 나지 않는다.
+        var logged = new List<(GevLogLevel Level, string Source, string Message)>();
+        var prevSink = GevLog.Sink;
+        var prevLevel = GevLog.MinLevel;
+        int cap;
+        try
+        {
+            GevLog.Sink = (lvl, src, msg, _) => { lock (logged) logged.Add((lvl, src, msg)); };
+            GevLog.MinLevel = GevLogLevel.Warn;
+            cap = GevDevice.AutoPendingAckWaitMs(3000, 1000, 1_100_000_000);
+        }
+        finally
+        {
+            GevLog.Sink = prevSink;
+            GevLog.MinLevel = prevLevel;
+        }
+
+        Assert.Equal(1_100_000_000, cap);   // 여유가 없으니 응답 창 하나로 떨어진다
+        var entry = Assert.Single(logged);
+        Assert.Contains("no PENDING_ACK budget", entry.Message);
+    }
 }

@@ -204,6 +204,23 @@ public class GvcpChannelTests
         Assert.Contains("READREG", ex.Message);
         Assert.True(sw.ElapsedMilliseconds >= 100, $"gave up after only {sw.ElapsedMilliseconds} ms");
         Assert.Equal(3, r.CountOf(GvcpConst.ReadRegCmd));
+        // 응답이 아예 없던 시한 초과에는 "장치가 답했다" 표식이 없다 — 이것이 장치 상실로 읽히는 쪽이다.
+        Assert.False(ex.Data.Contains(GvcpChannel.PendingAckExpiredKey));
+    }
+
+    [Fact]
+    public async Task RetriesAtIntMaxValueStillSendsTheRequest()
+    {
+        // "끝없이 재시도" 로 흔히 고르는 값이다. 총 시도 횟수(1 + Retries)를 int 로 셈하면 음수로 감겨 루프가 한 번도
+        // 돌지 않고, 장치에 아무것도 보내지 않은 채 "-2147483648 attempt(s)" 시한 초과로 끝난다.
+        using var r = new GvcpTestResponder();
+        using var ch = Open(r, timeoutMs: 300, retries: int.MaxValue);
+        r.WriteU32(0x1000, 0x5A5A5A5A);
+
+        var ack = await ch.RequestAsync(GvcpCmd.ReadReg(0x1000));
+
+        Assert.Equal(0x5A5A5A5Au, ack.GetRegValue(0));
+        Assert.Equal(1, r.CountOf(GvcpConst.ReadRegCmd));
     }
 
     [Fact]
@@ -299,12 +316,14 @@ public class GvcpChannelTests
         r.PendingAckMs = 20_000;
         r.PendingAckDelayMs = 3000;
 
-        await Assert.ThrowsAsync<GevTimeoutException>(() => ch.RequestAsync(GvcpCmd.ReadReg(0)));
+        var ex = await Assert.ThrowsAsync<GevTimeoutException>(() => ch.RequestAsync(GvcpCmd.ReadReg(0)));
 
         // 시간은 재지 않는다. 상한을 잊는 회귀는 어느 쪽으로 가든 시계 없이 걸리기 때문이다 —
         // 예고된 20 s 를 기다리든 600 ms 뒤의 진짜 ACK 를 받아들이든 결과는 "성공" 이라 위의 ThrowsAsync 가 먼저 깨진다.
         // (진짜 ACK 가 반드시 오므로 20 s 를 실제로 기다리는 일 자체가 없다 — 시간 상한을 두어도 발동할 수 없었다.)
         Assert.Equal(1, ch.PendingAckCount);
+        // 장치는 답했다 — 형은 무응답 시한 초과와 같아도 표식으로 갈린다(카메라 XML 적재가 이것을 장치 상실로 읽지 않는다).
+        Assert.Equal(true, ex.Data[GvcpChannel.PendingAckExpiredKey]);
     }
 
     // ---------------------------------------------------------------- fire-and-forget

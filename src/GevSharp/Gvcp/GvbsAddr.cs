@@ -51,7 +51,7 @@ public static class GvbsAddr
     public const uint HeartbeatTimeout = 0x0938;        // ms
     public const uint TimestampTickFreqHigh = 0x093C;
     public const uint TimestampTickFreqLow = 0x0940;
-    public const uint TimestampControl = 0x0944;        // 값(LSB 기준): 2 = reset, 1 = latch
+    public const uint TimestampControl = 0x0944;        // 값(LSB 기준): 1 = reset, 2 = latch
     public const uint TimestampLatchedHigh = 0x0948;
     public const uint TimestampLatchedLow = 0x094C;
     public const uint DiscoveryAckDelay = 0x0950;

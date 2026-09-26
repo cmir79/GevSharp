@@ -271,6 +271,46 @@ public class SimNodeMapTests
     }
 
     [Fact]
+    public async Task AcquisitionStart_LocksAcquisitionModeAndImageFormatUntilStop()
+    {
+        // 실제 카메라는 획득이 도는 동안 모드와 이미지 형식(ROI 위치·반전 포함)을 잠근다 — 하류가 AcquisitionStop 을
+        // 빠뜨려 다음 연속 획득으로 못 넘어가는 결함을, 시뮬레이터에서도 같은 거절로 드러내기 위한 잠금이다.
+        await using var s = await Session.OpenAsync();
+        var mode = s.Map.GetEnumeration("AcquisitionMode");
+        var offsetX = s.Map.GetInteger("OffsetX");
+        var offsetY = s.Map.GetInteger("OffsetY");
+        var reverseX = s.Map.GetBoolean("ReverseX");
+        Assert.False(await mode.IsLockedAsync());
+
+        Assert.True(await s.Device.SetTlParamsLockedAsync(true));
+        await s.Map.GetCommand("AcquisitionStart").ExecuteAsync();
+        await WaitUntilAsync(() => s.Sim.IsAcquiring);
+
+        var ex = await Assert.ThrowsAsync<GenApiException>(() => mode.SetAsync("SingleFrame").AsTask());
+        Assert.Contains("locked", ex.Message);
+        Assert.Equal(SimFeatureAddr.AcquisitionModeContinuous, s.Sim.Registers.ReadU32(SimFeatureAddr.AcquisitionMode));
+        Assert.Equal("Continuous", await mode.GetAsync());   // 잠김은 쓰기만 막는다
+        Assert.Equal(AccessMode.ReadOnly, await mode.GetAccessModeAsync());
+        await Assert.ThrowsAsync<GenApiException>(() => offsetX.SetAsync(4).AsTask());
+        await Assert.ThrowsAsync<GenApiException>(() => offsetY.SetAsync(2).AsTask());
+        await Assert.ThrowsAsync<GenApiException>(() => reverseX.SetAsync(true).AsTask());
+        Assert.Equal(0u, s.Sim.Registers.ReadU32(SimFeatureAddr.OffsetX));
+        Assert.Equal(0u, s.Sim.Registers.ReadU32(SimFeatureAddr.ReverseX));
+
+        await s.Map.GetCommand("AcquisitionStop").ExecuteAsync();
+        await WaitUntilAsync(() => !s.Sim.IsAcquiring);
+        Assert.True(await s.Device.SetTlParamsLockedAsync(false));
+
+        Assert.False(await mode.IsLockedAsync());
+        await mode.SetAsync("SingleFrame");
+        Assert.Equal(SimFeatureAddr.AcquisitionModeSingleFrame, s.Sim.Registers.ReadU32(SimFeatureAddr.AcquisitionMode));
+        await offsetX.SetAsync(4);
+        await reverseX.SetAsync(true);
+        Assert.Equal(4u, s.Sim.Registers.ReadU32(SimFeatureAddr.OffsetX));
+        Assert.Equal(1u, s.Sim.Registers.ReadU32(SimFeatureAddr.ReverseX));
+    }
+
+    [Fact]
     public async Task GevSCPSPacketSize_MaskedWritePreservesFlagBits()
     {
         await using var s = await Session.OpenAsync();
@@ -300,6 +340,39 @@ public class SimNodeMapTests
         await Task.Delay(5);
         await latch.ExecuteAsync();
         Assert.True(await latched.GetAsync() > first);
+    }
+
+    [Fact]
+    public async Task GevTimestampNodes_ResetAndLatchTheDeviceCounter()
+    {
+        // 실제 GigE 카메라의 기술이 쓰는 전송 계층 이름 — 장치 시계로 프레임을 짝짓는 하류 코드가 이 이름으로 찾는다.
+        await using var s = await Session.OpenAsync();
+        var latch = s.Map.GetCommand("GevTimestampControlLatch");
+        var reset = s.Map.GetCommand("GevTimestampControlReset");
+        var value = s.Map.GetInteger("GevTimestampValue");
+        Assert.Equal(1_000_000_000, await s.Map.GetInteger("GevTimestampTickFrequency").GetAsync());
+
+        // 카운터를 흘려 둔 뒤에 reset 한다 — 열자마자 reset 하면 reset 노드가 아무것도 안 해도(엉뚱한 CommandValue) 아래 범위를 통과한다.
+        await Task.Delay(250);
+        var h1 = Stopwatch.GetTimestamp();
+        await reset.ExecuteAsync();
+        Assert.Equal(0, await value.GetAsync());   // reset 은 래치하지 않는다
+        await Task.Delay(20);
+        await latch.ExecuteAsync();
+        var h2 = Stopwatch.GetTimestamp();
+        var first = await value.GetAsync();
+        // 10 ms .. 20 s — reset 뒤의 틱(1 GHz)이다. 굶주린 러너가 늘리는 것은 대기뿐이라 상한은 눈금만 지킨다.
+        Assert.InRange(first, 10_000_000L, 20_000_000_000L);
+        Assert.True((ulong)first <= s.Sim.TimestampTicks, "a latched value cannot be ahead of the counter that stamps frames");
+        // reset 이 카운터를 실제로 되돌렸는지: 시뮬레이터는 호스트와 같은 시계로 세므로, reset 을 보내기 직전부터 latch 가 끝날 때까지의
+        // 시간이 래치 값의 상한이다(1 µs 는 ns 환산의 끝자리 여유). reset 이 아무것도 안 하면 앞서 흘린 250 ms 와 열기 시간을 싣고 넘는다.
+        var bracketNs = (long)((h2 - h1) * (1_000_000_000.0 / Stopwatch.Frequency)) + 1_000;
+        Assert.True(first <= bracketNs, $"after GevTimestampControlReset the latched count {first} ns must fit in the {bracketNs} ns since the reset was sent");
+
+        // 두 이름 가족은 같은 레지스터를 본다.
+        Assert.Equal(first, await s.Map.GetInteger("TimestampLatchValue").GetAsync());
+        await s.Map.GetCommand("TimestampLatch").ExecuteAsync();
+        Assert.True(await value.GetAsync() > first);
     }
 
     [Fact]

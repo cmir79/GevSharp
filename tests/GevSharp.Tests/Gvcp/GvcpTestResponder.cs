@@ -10,7 +10,7 @@ namespace GevSharp.Tests.Gvcp;
 /// 루프백 최소 응답기 — 64 KiB 메모리 이미지로 DISCOVERY/READREG/WRITEREG/READMEM/WRITEMEM 에 답한다.
 /// 패킷은 라이브러리의 작성기를 쓰지 않고 손으로 조립한다(대칭 오류 상쇄 방지).
 /// 시나리오 노브: 지연, 틀린 req_id 선행, PENDING_ACK 선행(전체 또는 한 주소만), N 회 드롭, 침묵, 오류 상태, CCP 점유, 잘린 DISCOVERY_ACK,
-/// 잘못된 ack command, 잘린 응답, READMEM_ACK 길이 어긋남, PENDING_ACK 만 보내고 멈추는 주소.
+/// 잘못된 ack command, 잘린 응답, READMEM_ACK 길이 어긋남, PENDING_ACK 만 보내고 멈추는 주소, 쓰기를 받고도 값을 바꾸지 않는 주소.
 /// 받은 요청은 도착 시각(<see cref="ElapsedMs"/> 기준)과 함께 기록한다 — 요청 사이의 간격을 재는 시험이 쓴다.
 /// </summary>
 internal sealed class GvcpTestResponder : IDisposable
@@ -50,12 +50,14 @@ internal sealed class GvcpTestResponder : IDisposable
     private long _pendingAckAddr = -1;
     private volatile bool _isCcpHeldByOther;
     private volatile int _truncateDiscoveryTo;
+    private volatile int _discoveryErrorStatus;
     private long _errorAddr = -1;
     private volatile int _errorStatus = GvcpConst.StatusWriteProtect;
     private volatile bool _isAckEmptyForWrites;
     private volatile int _readMemLengthDelta;
     private long _pendingAckStallAddr = -1;
     private volatile int _pendingAckStallMs = 60_000;
+    private long _writeIgnoredAddr = -1;
 
     /// <summary>모든 응답을 이만큼 늦춘다.</summary>
     public int ReplyDelayMs { get => _replyDelayMs; set => _replyDelayMs = value; }
@@ -75,6 +77,8 @@ internal sealed class GvcpTestResponder : IDisposable
     public bool IsCcpHeldByOther { get => _isCcpHeldByOther; set => _isCcpHeldByOther = value; }
     /// <summary>0 보다 크면 DISCOVERY_ACK 페이로드를 이 길이로 자른다.</summary>
     public int TruncateDiscoveryTo { get => _truncateDiscoveryTo; set => _truncateDiscoveryTo = value; }
+    /// <summary>0 이 아니면 DISCOVERY_CMD 에 페이로드 없이 이 오류 status 로 답한다 — 거기 있지만 탐색을 거절하는 장치.</summary>
+    public ushort DiscoveryErrorStatus { get => (ushort)_discoveryErrorStatus; set => _discoveryErrorStatus = value; }
     /// <summary>이 주소를 건드리는 요청에 <see cref="ErrorStatus"/> 로 답한다. null = 없음.</summary>
     public uint? ErrorAddr
     {
@@ -94,6 +98,12 @@ internal sealed class GvcpTestResponder : IDisposable
     }
     /// <summary><see cref="PendingAckStallAddr"/> 의 PENDING_ACK 가 예고하는 완료 시간.</summary>
     public int PendingAckStallMs { get => _pendingAckStallMs; set => _pendingAckStallMs = value; }
+    /// <summary>이 주소에 대한 WRITEREG 는 성공으로 답하되 값을 저장하지 않는다 — 쓰기를 받아 놓고 자기 값을 고집하는 장치 흉내. null = 없음.</summary>
+    public uint? WriteIgnoredAddr
+    {
+        get { var v = Interlocked.Read(ref _writeIgnoredAddr); return v < 0 ? null : (uint)v; }
+        set => Interlocked.Exchange(ref _writeIgnoredAddr, value.HasValue ? value.Value : -1L);
+    }
 
     public void DropNext(int count) => Interlocked.Exchange(ref _dropNext, count);
     public void WrongReqIdNext(int count) => Interlocked.Exchange(ref _wrongReqIdNext, count);
@@ -262,6 +272,8 @@ internal sealed class GvcpTestResponder : IDisposable
         {
             case GvcpConst.DiscoveryCmd:
             {
+                if (DiscoveryErrorStatus != 0)
+                    return Error(reply, GvcpConst.DiscoveryAck, reqId, DiscoveryErrorStatus);
                 var len = TruncateDiscoveryTo > 0 ? TruncateDiscoveryTo : GvbsAddr.DiscoveryDataLen;
                 Header(reply, GvcpConst.StatusSuccess, GvcpConst.DiscoveryAck, (ushort)len, reqId);
                 Memory.AsSpan(0, len).CopyTo(reply.AsSpan(8));
@@ -295,6 +307,8 @@ internal sealed class GvcpTestResponder : IDisposable
                         return IndexAck(reply, GvcpConst.WriteRegAck, reqId, (ushort)i, GvcpConst.StatusAccessDenied);
                     if (addr + 4 > MemorySize)
                         return IndexAck(reply, GvcpConst.WriteRegAck, reqId, (ushort)i, GvcpConst.StatusInvalidAddress);
+                    if (WriteIgnoredAddr == addr)
+                        continue;
                     payload.AsSpan(i * 8 + 4, 4).CopyTo(Memory.AsSpan((int)addr));
                 }
                 if (IsAckEmptyForWrites)

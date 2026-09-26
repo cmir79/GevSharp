@@ -405,6 +405,45 @@ public class SimGvcpTests
         Assert.Equal(0, dev.HeartbeatTimeouts);
     }
 
+    [Fact]
+    public void Reboot_ReportsTheReleaseBeforeANewOwnerCanTakeControl()
+    {
+        // 재부팅이 비운 제어권(null)은 그 뒤에 잡은 새 보유자보다 먼저 관찰자에게 닿아야 한다 — 뒤집혀 [새 보유자, null] 로 오면
+        // 관찰자는 누군가 쥐고 있는 장치를 "아무도 안 쥐었다" 로 읽는다. 앞에 느린 관찰자를 하나 세워 그 창을 넓힌다:
+        // 재부팅의 null 을 받는 자리에서 다른 호스트(B)가 CCP 를 쓰고 ACK 를 잠시 기다린다. null 을 명령 처리와 같은 잠금 밖에서
+        // 올리면 그 대기 동안 응답기가 B 의 쓰기를 처리해 B 가 먼저 기록되고, 잠금 안에서 올리면 B 의 쓰기는 그 뒤로 밀린다.
+        using var dev = StartDevice();
+        using var a = new RawGvcpClient(dev.GvcpEndPoint);
+        using var b = new RawGvcpClient(dev.GvcpEndPoint);
+        // 제어권 획득과 HeartbeatTimeout = 0 을 한 WRITEREG 에 — 굶주린 러너에서 재부팅 전에 A 가 만료돼 null 이 먼저 오는 일을 막는다.
+        Assert.Equal(GvcpConst.StatusSuccess, a.WriteRegs((GvbsAddr.Ccp, GvbsAddr.CcpControl), (GvbsAddr.HeartbeatTimeout, 0u)).Status);
+
+        var callerThread = Environment.CurrentManagedThreadId;
+        var nullThread = -1;
+        RawGvcpAck? ackInHandler = null;
+        var owners = new List<IPEndPoint?>();
+        dev.ControlOwnerChanged += owner =>
+        {
+            if (owner is not null || nullThread != -1) return;
+            nullThread = Environment.CurrentManagedThreadId;
+            b.SendRaw(RawGvcpClient.BuildCmd(GvcpConst.WriteRegCmd, GvcpConst.FlagAckRequired, b.NextReqId(),
+                RawGvcpClient.WriteRegPayload((GvbsAddr.Ccp, GvbsAddr.CcpControl))));
+            // ACK 가 오는지는 단정하지 않는다 — 고친 판에서는 응답기가 이 처리기가 끝나기를 기다리므로 여기서는 오지 않는 것이 정상이다.
+            // 이 대기는 null 을 잠금 밖에서 올리는 판이 경합에서 지게 만드는 몫이다.
+            ackInHandler = b.Receive(500);
+        };
+        dev.ControlOwnerChanged += owner => { lock (owners) owners.Add(owner); };
+
+        dev.Reboot();
+
+        var ack = ackInHandler ?? b.Receive() ?? throw new TimeoutException("no reply to the new host's CCP write");
+        Assert.Equal(GvcpConst.StatusSuccess, ack.Status);
+        // 응답기는 CCP 를 바꾸고 이벤트를 올린 뒤에 ACK 를 보내므로, ACK 를 받았으면 B 는 이미 기록돼 있다.
+        lock (owners) Assert.Equal(new IPEndPoint?[] { null, b.LocalEndPoint }, owners);
+        Assert.Equal(b.LocalEndPoint, dev.ControlOwner);
+        Assert.Equal(callerThread, nullThread);   // 재부팅의 null 은 Reboot 를 부른 스레드에서 올라간다(이벤트 문서)
+    }
+
     // ---- PENDING_ACK ----
 
     [Fact]
@@ -579,9 +618,15 @@ public class SimGvcpTests
         using var dev = StartDevice();
         using var c = new RawGvcpClient(dev.GvcpEndPoint);
 
-        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // reset
+        // 부트스트랩 0x0944 의 값은 1 = reset, 2 = latch 다 — 실제 장치의 기술(GevTimestampControlReset CommandValue 1,
+        // GevTimestampControlLatch CommandValue 2)이 이 값을 쓴다. 뒤바뀌면 호스트의 "래치" 가 카운터를 지운다.
+        // reset 은 래치 레지스터를 건드리지 않는다 — 시각과 무관하게 갈리는 단정이라 먼저 본다(뒤바뀐 장치는 여기서 0 이 아닌 값을 싣는다).
+        c.WriteRegOk(GvbsAddr.TimestampControl, 1);   // reset
+        var (_, r) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+        Assert.Equal(0ul, ((ulong)r[0] << 32) | r[1]);
+
         Thread.Sleep(20);
-        c.WriteRegOk(GvbsAddr.TimestampControl, 1);   // latch
+        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // latch
         var (_, v) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow, GvbsAddr.TimestampControl);
         ulong latched = ((ulong)v[0] << 32) | v[1];
 
@@ -589,6 +634,67 @@ public class SimGvcpTests
         // 초·틱처럼 10^3 배 이상 어긋난 값을 실으면 아래위 어느 쪽으로든 범위를 벗어난다.
         Assert.InRange(latched, 10_000_000ul, 20_000_000_000ul);   // 10 ms .. 20 s (1 GHz)
         Assert.Equal(0u, v[2]);
+    }
+
+    [Fact]
+    public void TimestampReset_RestartsTheRunningCounter()
+    {
+        // 위 시험은 시작 직후에 reset 하므로 reset 이 아무것도 안 해도 통과한다 — 여기서 그 둘을 가른다.
+        // 시뮬레이터는 같은 프로세스라 호스트의 Stopwatch 와 같은 시계로 센다. 그러니 reset 을 보내기 직전(h1)부터 latch 의 ACK 를
+        // 받은 뒤(h2)까지가 reset 뒤 래치 값의 상한이다. 부하가 늘리는 것은 이 괄호뿐이라 이 단정은 굶주린 러너에서도 흔들리지 않는다.
+        // reset 이 아무것도 안 하면 래치 값은 앞서 흘려 둔 시간(아래 ≥ 200 ms)을 싣고 괄호를 넘는다 — 두 왕복만으로 그보다 오래
+        // 걸리는 러너에서는 그 판별이 약해질 뿐 고친 판이 거짓으로 깨지지는 않는다.
+        using var dev = StartDevice();
+        using var c = new RawGvcpClient(dev.GvcpEndPoint);
+
+        Thread.Sleep(250);   // 카운터를 흘려 둔다
+        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // latch — reset 전 값
+        var (_, before) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+        ulong latchedBefore = ((ulong)before[0] << 32) | before[1];
+        // 판별력의 전제: reset 이 없었다면 아래 래치 값은 적어도 이만큼을 싣는다.
+        Assert.True(latchedBefore >= 200_000_000ul, $"the counter ran only {latchedBefore} ns before the reset");
+
+        long h1 = Stopwatch.GetTimestamp();
+        c.WriteRegOk(GvbsAddr.TimestampControl, 1);   // reset
+        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // latch
+        long h2 = Stopwatch.GetTimestamp();
+        var (_, after) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+        ulong latchedAfter = ((ulong)after[0] << 32) | after[1];
+
+        // 1 µs 여유: 양쪽이 틱을 ns 로 바꾸며 버리는 끝자리.
+        ulong bracketNs = (ulong)((h2 - h1) * (1_000_000_000.0 / Stopwatch.Frequency)) + 1_000;
+        Assert.True(latchedAfter <= bracketNs,
+            $"after a reset the latched count {latchedAfter} ns must fit in the {bracketNs} ns between sending the reset and the latch ACK (before the reset: {latchedBefore} ns)");
+    }
+
+    [Fact]
+    public void RetransmittedCommand_WithTheSameReqId_IsExecutedAgain()
+    {
+        // 응답기는 req_id 를 기억하지 않는다 — 같은 req_id 로 다시 온 명령(호스트가 늦은 ACK 를 기다리다 재전송한 것)도
+        // 새 명령처럼 다시 실행한다. 자기 소거 명령이면 효과가 두 번 난다. 문서(sim-register-map.md)가 적는 이 동작을 래치로 못 박는다:
+        // 두 번째 실행은 더 늦은 카운터를 싣는다.
+        using var dev = StartDevice();
+        using var c = new RawGvcpClient(dev.GvcpEndPoint);
+        const ushort reqId = 0x1234;
+        var latch = RawGvcpClient.BuildCmd(GvcpConst.WriteRegCmd, GvcpConst.FlagAckRequired, reqId,
+            RawGvcpClient.WriteRegPayload((GvbsAddr.TimestampControl, 2)));
+        int writesBefore = dev.WriteRegCount;
+
+        c.SendRaw(latch);
+        var first = c.Receive() ?? throw new TimeoutException("no reply to the first send");
+        Assert.Equal(reqId, first.ReqId);
+        Assert.Equal(GvcpConst.StatusSuccess, first.Status);
+        var (_, a) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+
+        Thread.Sleep(5);
+        c.SendRaw(latch);   // 같은 바이트, 같은 req_id
+        var second = c.Receive() ?? throw new TimeoutException("no reply to the retransmission");
+        Assert.Equal(reqId, second.ReqId);
+        Assert.Equal(GvcpConst.StatusSuccess, second.Status);
+        var (_, b) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+
+        Assert.Equal(writesBefore + 2, dev.WriteRegCount);
+        Assert.True((((ulong)b[0] << 32) | b[1]) > (((ulong)a[0] << 32) | a[1]), "the retransmitted latch must run again and capture a later count");
     }
 
     [Fact]

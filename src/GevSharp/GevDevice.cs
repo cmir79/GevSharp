@@ -8,6 +8,13 @@ namespace GevSharp;
 /// 장치 제어 세션 — GVCP 채널, CCP 제어권, 하트비트, 레지스터/메모리 접근, <see cref="IGevPort"/>.
 /// 파티션: 이 파일(열기·하트비트·닫기), GevDevice.Access.cs(레지스터/메모리/포트).
 /// XML(GetXmlAsync)·노드맵(GetNodeMapAsync)·스트림(OpenStreamAsync)은 각 모듈이 partial 파티션으로 덧붙인다.
+/// <para>
+/// 오류 계약: 장치에 닿는 조작은 <see cref="GevException"/> 계열(응답 없음 <see cref="GevTimeoutException"/>, 장치 거절
+/// <see cref="GevStatusException"/>, 제어권 상실 <see cref="GevControlLostException"/>)과 함께 <see cref="ObjectDisposedException"/> 을 던진다 —
+/// <see cref="DisposeAsync"/> 뒤의 모든 장치 접근(앞서 받아 둔 노드맵의 노드 조작도 포트가 이 장치라 같다. 이미 받아 둔 XML·노드맵을
+/// 돌려주는 호출만은 캐시에서 답한다), 그리고 닫기와 겹쳐 채널에 늦게 닿은 요청. 취소는 <see cref="OperationCanceledException"/>.
+/// "라이브러리가 낸 실패 전부" 를 잡으려면 GevException 과 ObjectDisposedException 을 함께 잡는다.
+/// </para>
 /// </summary>
 public sealed partial class GevDevice : IGevPort, IAsyncDisposable
 {
@@ -24,6 +31,13 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     internal const int HeartbeatMaxFailures = 3;
     /// <summary>닫을 때 CCP = 0 쓰기에 주는 최대 시간 — 채널 재시도 예산 전부를 닫기에 쓰지 않는다.</summary>
     internal const int CcpReleaseMaxMs = 2000;
+
+    /// <summary>
+    /// 끝내는 자리의 쓰기(장치 닫기의 CCP = 0, 스트림 정지의 SCP = 0·SCDA = 0)에 주는 고정 예산 — 응답 창 두 개(재전송 한 번의 여유),
+    /// 많아야 <see cref="CcpReleaseMaxMs"/>. 호출자의 토큰에도 재시도 횟수에도 기대지 않는다: 채널 예산에 기대면 말없는 장치 앞에서 정리가
+    /// (1 + GvcpRetries) × 응답 창만큼 붙들리고, 재시도가 끝없으면(GvcpRetries = int.MaxValue) 돌아오지 않는다.
+    /// </summary>
+    internal static int ShutdownWriteBudgetMs(int gvcpTimeoutMs) => (int)Math.Min((long)gvcpTimeoutMs * 2, CcpReleaseMaxMs);
 
     private const int StateOpening = 0;
     private const int StateOpen = 1;
@@ -54,6 +68,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             // 장치가 열리지 못한다. 채널 기본값으로 열고, 하트비트를 시작하기 직전에 InitAsync 가 실제 값으로 좁힌다.
             MaxPendingAckWaitMs = opt.MaxPendingAckWaitMs ?? GvcpChannelOpt.DefaultMaxPendingAckWaitMs,
         });
+        Gvcp.OnClosed = OnChannelClosed;
 
         _logSrc = $"{LogSrc} {Address}";
     }
@@ -64,13 +79,19 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     /// <summary>GVCP 소켓이 묶인 호스트 주소. 스트림의 SCDA 로도 쓴다.</summary>
     public IPAddress LocalAddress { get; }
     public GevAccessMode AccessMode => _opt.AccessMode;
-    /// <summary>열려 있고 제어권을 잃지 않았다.</summary>
+    /// <summary>
+    /// 열려 있고 제어권을 잃지 않았다. <see cref="DisposeAsync"/> 뒤, 그리고 제어권을 잃은 뒤(하트비트 연속 실패, CCP 가 풀림,
+    /// 제어 채널 <see cref="Gvcp"/> 가 세션보다 먼저 닫힘)에는 false — 제어 채널이 닫히면 하트비트를 기다리지 않고 그 자리에서 바뀐다.
+    /// </summary>
     public bool IsOpen => Volatile.Read(ref _state) == StateOpen;
     /// <summary>GVBS 0x0934.</summary>
     public uint GvcpCapability { get; private set; }
     /// <summary>GVBS 0x093C/0x0940 (Hz). 읽지 못하면 0.</summary>
     public ulong TimestampTickFrequency { get; private set; }
-    /// <summary>장치가 실제로 적용한 하트비트 타임아웃(GVBS 0x0938 을 다시 읽은 값).</summary>
+    /// <summary>
+    /// 장치가 실제로 적용한 하트비트 타임아웃(GVBS 0x0938 을 다시 읽은 값). 레지스터는 부호 없는 32비트라
+    /// int 에 들어가지 않는 값(2^31 ms 이상)은 <see cref="int.MaxValue"/> 로 포화한다 — 음수가 되는 일은 없다.
+    /// </summary>
     public int DeviceHeartbeatTimeoutMs { get; private set; }
     /// <summary>하트비트 주기. 읽기 전용 세션은 0.</summary>
     public int HeartbeatPeriodMs { get; private set; }
@@ -84,6 +105,14 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     // ------------------------------------------------------------------ open
 
     /// <summary>탐색 결과로 연다. 로컬 주소는 옵션 → 응답을 들은 인터페이스 순으로 정한다.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="info"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="opt"/> 의 값이 범위를 벗어났다.</exception>
+    /// <exception cref="GevException">
+    /// 장치 주소가 IPv4 가 아니거나, 쓸 로컬 주소가 없는데(옵션에도 탐색 결과에도) 장치로 나가는 로컬 주소를 정할 수 없거나, 열기 순서에서
+    /// 장치와 주고받다 실패했다 — 그 실패의 하위 형식은 <see cref="OpenAsync(IPEndPoint, GevDeviceOpt, CancellationToken)"/> 와 같다.
+    /// </exception>
+    /// <exception cref="System.Net.Sockets.SocketException">GVCP 소켓을 로컬 주소에 묶지 못했다(이 경우만 감싸지 않고 그대로 나온다).</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static Task<GevDevice> OpenAsync(GevDeviceInfo info, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (info is null) throw new ArgumentNullException(nameof(info));
@@ -92,16 +121,43 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     }
 
     /// <summary>주소로 연다. 로컬 주소는 옵션 → 같은 서브넷 인터페이스 → OS 라우팅 순으로 정한다.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="address"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="opt"/> 의 값이 범위를 벗어났다.</exception>
+    /// <exception cref="GevException">
+    /// IPv4 주소가 아니거나, 옵션에 로컬 주소가 없는데 장치로 나가는 로컬 주소를 정할 수 없거나, 열기 순서에서 장치와 주고받다 실패했다 —
+    /// 그 실패의 하위 형식은 <see cref="OpenAsync(IPEndPoint, GevDeviceOpt, CancellationToken)"/> 와 같다.
+    /// </exception>
+    /// <exception cref="System.Net.Sockets.SocketException">GVCP 소켓을 로컬 주소에 묶지 못했다(이 경우만 감싸지 않고 그대로 나온다).</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static Task<GevDevice> OpenAsync(IPAddress address, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (address is null) throw new ArgumentNullException(nameof(address));
         return OpenCoreAsync(new IPEndPoint(address, GvcpConst.Port), opt?.LocalAddress, opt, ct);
     }
 
-    /// <summary>포트를 지정해 연다 — 표준 포트가 아닌 시뮬레이터용.</summary>
-    internal static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default)
+    /// <summary>
+    /// 주소와 GVCP 포트로 연다 — 표준 포트(3956)가 아닌 곳에서 답하는 장치용: 루프백의 시뮬레이터, 포트를 옮겨 둔 NAT·포워딩 뒤의 장치 등.
+    /// 로컬 주소는 옵션 → 같은 서브넷 인터페이스 → OS 라우팅 순으로 정한다. IPv4 만 받는다.
+    /// 이 포트는 제어 채널(레지스터 접근·하트비트·리센드 요청)에만 쓰인다 — 스트림은 장치가 자기 설정대로 보내는 곳에서 받는다.
+    /// 세션은 <paramref name="device"/> 의 사본을 쥔다 — 연 뒤에 그 객체를 다른 장치에 다시 써도 이 세션은 처음 연 장치에 묶여 있다.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="device"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="device"/> 의 포트가 0 이거나, <paramref name="opt"/> 의 값이 범위를 벗어났다.</exception>
+    /// <exception cref="GevException">
+    /// IPv4 끝점이 아니거나, 옵션에 로컬 주소가 없는데 장치로 나가는 로컬 주소를 정할 수 없거나, 보내기가 소켓 오류로 실패했다.
+    /// 열기 순서(부트스트랩 읽기 → CCP → 하트비트 타임아웃)에서 장치와 주고받다 난 실패는 하위 형식으로 온다 — 응답 없음
+    /// <see cref="GevTimeoutException"/>, 장치 거절 <see cref="GevStatusException"/>, 다른 애플리케이션이 제어권을 쥐고 있음
+    /// <see cref="GevControlLostException"/>(<see cref="GevAccessMode.ReadOnly"/> 가 아닐 때). 실패한 열기는 세션을 닫으며, CCP 쓰기를
+    /// 내보낸 뒤였으면 짧은 예산 안에서 놓아 주려 한다(못 놓으면 장치가 자기 하트비트 타임아웃으로 푼다).
+    /// </exception>
+    /// <exception cref="System.Net.Sockets.SocketException">
+    /// GVCP 소켓을 로컬 주소에 묶지 못했다 — 옵션의 LocalAddress 가 이 호스트의 IPv4 주소가 아닐 때 등. 이 경우만 감싸지 않고 그대로 나온다.
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
+    public static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (device is null) throw new ArgumentNullException(nameof(device));
+        if (device.Port == 0) throw new ArgumentOutOfRangeException(nameof(device), "The GVCP port of the device end point must be 1..65535.");
         return OpenCoreAsync(device, opt?.LocalAddress, opt, ct);
     }
 
@@ -118,8 +174,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     /// </summary>
     internal static int AutoPendingAckWaitMs(int deviceTimeoutMs, int periodMs, int gvcpTimeoutMs)
     {
-        var budgetMs = deviceTimeoutMs - periodMs - 2 * gvcpTimeoutMs;
-        if (budgetMs >= gvcpTimeoutMs) return budgetMs;
+        // long 으로 센다 — 응답 창이 int.MaxValue / 2 를 넘으면 2 × 응답 창이 int 로는 음수로 감겨, 여유가 없는 설정이
+        // 경고 없이 수십억 ms 의 상한을 얻는다. 결과가 응답 창 이상이면 deviceTimeoutMs 보다 작으므로 int 로 되돌려도 안전하다.
+        var budgetMs = (long)deviceTimeoutMs - periodMs - 2L * gvcpTimeoutMs;
+        if (budgetMs >= gvcpTimeoutMs) return (int)budgetMs;
         GevLog.Warn(LogSrc, $"GVCP response window {gvcpTimeoutMs} ms leaves no PENDING_ACK budget inside the device heartbeat timeout {deviceTimeoutMs} ms (heartbeat period {periodMs} ms); capping the PENDING_ACK wait at {gvcpTimeoutMs} ms, control may drop on a slow command");
         return gvcpTimeoutMs;
     }
@@ -151,7 +209,7 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     {
         _info = await GevDeviceInfo.ReadFromDeviceAsync(Gvcp, LocalAddress, ct).ConfigureAwait(false);
         GvcpCapability = await ReadRegCoreAsync(GvbsAddr.GvcpCapability, ct).ConfigureAwait(false);
-        DeviceHeartbeatTimeoutMs = (int)await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
+        DeviceHeartbeatTimeoutMs = SaturateToMs(await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false));
         TimestampTickFrequency = await ReadTickFrequencyAsync(ct).ConfigureAwait(false);
         GevLog.Info(_logSrc, $"opened {_info.Manufacturer} {_info.Model} [{_info.SerialNumber}] via {LocalAddress} (spec {_info.SpecMajor}.{_info.SpecMinor}, cap 0x{GvcpCapability:X8}, tick {TimestampTickFrequency} Hz)");
 
@@ -187,9 +245,13 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         {
             GevLog.Warn(_logSrc, $"device rejected heartbeat timeout {_opt.HeartbeatTimeoutMs} ms ({GvcpConst.StatusName(ex.Status)}); keeping the device value");
         }
-        DeviceHeartbeatTimeoutMs = (int)await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
+        var rawTimeoutMs = await ReadRegCoreAsync(GvbsAddr.HeartbeatTimeout, ct).ConfigureAwait(false);
+        DeviceHeartbeatTimeoutMs = SaturateToMs(rawTimeoutMs);
 
-        var effectiveTimeout = DeviceHeartbeatTimeoutMs > 0 ? DeviceHeartbeatTimeoutMs : _opt.HeartbeatTimeoutMs;
+        // 주기와 PENDING_ACK 상한을 끌어낼 근거로는 1..int.MaxValue 로 읽힌 값만 쓴다. 0 이나 int 에 들어가지 않는 값이면
+        // 요청한 타임아웃으로 계산한다 — 포화된 값으로 끌어내면 하트비트가 며칠에 한 번이 되는데, 그 되읽기를 믿을 근거가 없고
+        // 너무 드물게 치면 잃는 것은 제어권, 너무 자주 치면 잃는 것은 패킷 몇 개라 요청값 쪽이 안전하다.
+        var effectiveTimeout = rawTimeoutMs is > 0 and <= int.MaxValue ? (int)rawTimeoutMs : _opt.HeartbeatTimeoutMs;
         HeartbeatPeriodMs = _opt.HeartbeatPeriodMs ?? Math.Max(1, effectiveTimeout / 3);
         if (HeartbeatPeriodMs >= effectiveTimeout)
             GevLog.Warn(_logSrc, $"heartbeat period {HeartbeatPeriodMs} ms is not shorter than the device timeout {effectiveTimeout} ms; control may drop");
@@ -200,6 +262,12 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         _heartbeatTask = Task.Run(() => HeartbeatLoopAsync(HeartbeatPeriodMs, _heartbeatCts.Token));
         GevLog.Debug(_logSrc, $"control acquired (CCP 0x{ccp:X}), heartbeat every {HeartbeatPeriodMs} ms, device timeout {DeviceHeartbeatTimeoutMs} ms");
     }
+
+    /// <summary>
+    /// 부호 없는 32비트 ms 레지스터 값을 int 로 옮긴다. int 에 들어가지 않는 값은 <see cref="int.MaxValue"/> 로 포화한다 —
+    /// 그냥 캐스트하면 0xFFFFFFFF 가 -1(<see cref="Timeout.Infinite"/>)이 되어, 그 값을 대기 시간으로 쓰는 쪽이 영영 기다린다.
+    /// </summary>
+    private static int SaturateToMs(uint raw) => raw > int.MaxValue ? int.MaxValue : (int)raw;
 
     private async Task<ulong> ReadTickFrequencyAsync(CancellationToken ct)
     {
@@ -233,6 +301,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(periodMs, ct).ConfigureAwait(false);
+                // 다른 길(제어 채널이 닫힘)로 이미 상실이 났으면 더 보낼 곳이 없다 — 닫힌 채널에 세 번 실패하며 경고를 쌓지 않는다.
+                if (Volatile.Read(ref _state) != StateOpen) return;
 
                 uint ccp;
                 try
@@ -305,6 +375,21 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     }
 
     /// <summary>
+    /// 제어 채널이 세션보다 먼저 닫혔다 — 수신 소켓이 회복 불가로 채널을 스스로 닫았거나, 누군가 <see cref="Gvcp"/> 를 직접 닫았다.
+    /// 열린 세션이면 그 자리에서 제어권 상실로 넘긴다. 하트비트가 세 번 실패하기를 기다리면 그동안 <see cref="IsOpen"/> 은 true 인데
+    /// 모든 조작이 ObjectDisposedException 으로 끝나고, 하트비트가 없는 읽기 전용 세션은 그 상태에서 영영 벗어나지 못한다.
+    /// 세션이 스스로 닫는 중(상태가 이미 Disposed)이거나 이미 잃었으면 아무것도 하지 않는다. 채널을 닫는 스레드에서 불린다.
+    /// </summary>
+    private void OnChannelClosed(Exception? cause)
+    {
+        if (Volatile.Read(ref _state) != StateOpen) return;
+        var reason = cause is null
+            ? "the GVCP control channel was closed while the device was open"
+            : $"the GVCP control channel closed itself: {cause.Message}";
+        OnControlLost(cause ?? new GevException(reason), reason);
+    }
+
+    /// <summary>
     /// 상태를 ControlLost 로 바꾸고 이벤트를 스레드 풀에서 올린다. 하트비트 태스크 안에서 직접 부르면
     /// 핸들러가 <see cref="DisposeAsync"/> 를 기다릴 때 그 태스크 자신을 기다리게 되어 멈춘다 — 그래서 분리한다.
     /// </summary>
@@ -349,7 +434,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         }
     }
 
-    /// <summary>하트비트를 멈추고, 제어 중이면 CCP = 0 을 써서 놓고, 채널을 닫는다. 몇 번 불러도 안전하다.</summary>
+    /// <summary>
+    /// 하트비트를 멈추고, 제어 중이면 CCP = 0 을 써서 놓고, 채널을 닫는다. 몇 번 불러도 안전하다.
+    /// 그 뒤 장치에 닿는 조작은 전부 <see cref="ObjectDisposedException"/> 이다(<see cref="GevException"/> 이 아니다).
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         var previous = Interlocked.Exchange(ref _state, StateDisposed);
@@ -374,7 +462,8 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         {
             // 닫기는 오래 붙들지 않는다 — 채널의 재시도 예산 전부가 아니라 짧은 고정 예산만 준다.
             // 놓지 못해도 장치는 자기 하트비트 타임아웃으로 알아서 푼다.
-            var releaseBudgetMs = (int)Math.Min((long)_opt.GvcpTimeoutMs * 2, CcpReleaseMaxMs);
+            // 응답 창은 채널이 쥔 사본에서 — 호출자의 옵션 객체는 열고 난 뒤에도 바뀔 수 있다(0 으로 바꾸면 해제를 시도조차 안 하게 된다).
+            var releaseBudgetMs = ShutdownWriteBudgetMs(Gvcp.Opt.TimeoutMs);
             using var releaseCts = new CancellationTokenSource(releaseBudgetMs);
             try
             {

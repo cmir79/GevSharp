@@ -18,6 +18,11 @@ public sealed partial class SimDevice : IDisposable
     private static readonly Lazy<string> _embeddedXml = new(LoadEmbeddedXml);
 
     private readonly object _gate = new();
+    /// <summary>
+    /// GVCP 명령 하나의 처리(하트비트 만료 검사 포함)와 <see cref="Reboot"/> 를 서로 배제한다 — 재부팅이 명령 한가운데에 끼어
+    /// 반쯤 되돌린 상태를 명령이 보거나, 명령이 되돌린 값을 다시 덮는 일이 없게 한다.
+    /// </summary>
+    private readonly object _commandGate = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly double _nsPerClockTick = 1_000_000_000.0 / Stopwatch.Frequency;
     private readonly byte[] _mac = new byte[6];
@@ -140,7 +145,12 @@ public sealed partial class SimDevice : IDisposable
 
     public bool IsAcquiring => Registers.ReadU32(SimFeatureAddr.AcquisitionStatus) != 0;
 
-    /// <summary>제어권 보유자가 바뀔 때(획득·해제·타임아웃). 서버 스레드에서 호출된다.</summary>
+    /// <summary>
+    /// 제어권 보유자가 바뀔 때(획득·해제·타임아웃·<see cref="Reboot"/>). 획득·해제·타임아웃은 서버 스레드에서, 재부팅이 비운 것(null)은
+    /// <see cref="Reboot"/> 를 부른 스레드에서 호출된다. 어느 쪽이든 GVCP 명령 처리와 같은 잠금 안에서 올라가므로 관찰자는 바뀐 순서대로
+    /// 받는다 — 재부팅의 null 은 그 뒤에 잡은 새 보유자보다 항상 먼저다. 그 잠금 안이라 처리기가 이 장치의 GVCP 응답을 기다리면
+    /// 그동안 응답기도 멈춘다(처리기가 끝나야 다음 명령을 처리한다).
+    /// </summary>
     public event Action<IPEndPoint?>? ControlOwnerChanged;
 
     /// <summary>프레임 하나의 전송이 끝났을 때(블록 ID). 송신 스레드에서 호출된다.</summary>
@@ -185,7 +195,10 @@ public sealed partial class SimDevice : IDisposable
         thread.Start();
     }
 
-    /// <summary>획득을 멈추고 소켓을 닫고 스레드를 거둔다. 여러 번 불러도 된다. 레지스터 내용은 남는다.</summary>
+    /// <summary>
+    /// 획득을 멈추고 소켓을 닫고 스레드를 거둔다. 여러 번 불러도 된다. 레지스터 내용과 제어권 보유자는 남는다 —
+    /// 장치 재시작을 흉내 내려면 <see cref="Reboot"/> 를 쓴다.
+    /// </summary>
     public void Stop()
     {
         _isStopping = true;
@@ -206,6 +219,46 @@ public sealed partial class SimDevice : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    /// <summary>
+    /// 전원을 껐다 켠 장치를 흉내 낸다. 소켓(엔드포인트)은 그대로 두고 휘발 상태만 켜진 직후로 되돌린다 —
+    /// 획득 정지, 제어권(보유자·CCP·PrimaryApp), 하트비트 타임아웃(<see cref="SimDeviceOpt.HeartbeatTimeoutMs"/>), GVCP 설정,
+    /// 스트림 채널 0(SCP·SCPS·SCPD·SCDA·SCCFG), 타임스탬프 카운터(0 부터)와 래치 값, 피처 페이지(<see cref="ResetFeatures"/>),
+    /// 블록 ID(다음 프레임은 1), 리센드 이력, 무장된 소프트웨어 트리거.
+    /// 남는 것: 식별·영속 IP·사용자 이름 같은 비휘발 레지스터, 관찰용 카운터와 FrameCounter 레지스터(시뮬레이터의 생애를 센다).
+    /// <para>
+    /// 처리 중인 GVCP 명령이 끝난 뒤, 다음 명령 전에 한꺼번에 일어난다. 보유자가 있었으면 <see cref="ControlOwnerChanged"/>(null) 이
+    /// 이 메서드를 부른 스레드에서, 다음 명령이 처리되기 전에 한 번 올라간다. 호스트 쪽에서는 다음 하트비트가 CCP = 0 을 읽어 제어권 상실(장치 재시작 계열 사유)을 알리고, 새 세션이 기다림 없이
+    /// 제어권을 잡는다. 꺼져 있는 동안의 공백(응답하지 않는 시간)은 흉내 내지 않는다.
+    /// </para>
+    /// <para>
+    /// <see cref="Stop"/>/<see cref="Start"/> 는 재부팅이 아니다 — 제어권과 레지스터가 그대로 남아 같은 호스트가 계속 보유자로 보이고,
+    /// 임시 포트(<see cref="SimDeviceOpt.GvcpPort"/> = 0)면 다시 시작할 때 포트까지 바뀐다.
+    /// </para>
+    /// </summary>
+    public void Reboot()
+    {
+        lock (_commandGate)
+        {
+            StopAcquisition(join: true);
+            IPEndPoint? previousOwner;
+            lock (_gate)
+            {
+                previousOwner = _owner;
+                _owner = null;
+            }
+            ResetVolatileBootstrap();
+            Volatile.Write(ref _timestampBaseNs, NowNs);
+            Volatile.Write(ref _blockId, 0UL);
+            Interlocked.Exchange(ref _softwareTriggerPending, 0);
+            lock (_history) _history.Clear();
+            ResetFeatures();
+            // 명령 잠금 안에서 올린다 — 서버 스레드의 획득·해제·만료 알림도 같은 잠금 안에서 올라가므로, 이 null 이 끝나기 전에는
+            // 다음 명령(다른 호스트의 CCP 쓰기)이 처리되지 않고 관찰자는 [null, 새 보유자] 순서로만 받는다.
+            // 잠금을 풀고 올리면 그 틈에 응답기가 새 보유자를 먼저 알려 [새 보유자, null] 로 뒤집힐 수 있다.
+            if (previousOwner is not null) ControlOwnerChanged?.Invoke(null);
+        }
+    }
 
     /// <summary>피처 페이지를 생성 시 옵션 값으로 되돌린다(UserSetLoad). FrameCounter 는 유지한다.</summary>
     public void ResetFeatures()
@@ -287,27 +340,13 @@ public sealed partial class SimDevice : IDisposable
         if (Opt.SupportPendingAck) cap |= GvbsAddr.GvcpCapPendingAck;
         r.WriteU32(GvbsAddr.GvcpCapability, cap);
 
-        r.WriteU32(GvbsAddr.HeartbeatTimeout, (uint)Math.Max(0, Opt.HeartbeatTimeoutMs));
         r.WriteU32(GvbsAddr.TimestampTickFreqHigh, 0);
         r.WriteU32(GvbsAddr.TimestampTickFreqLow, 1_000_000_000);
-        r.WriteU32(GvbsAddr.TimestampControl, 0);
-        r.WriteU32(GvbsAddr.TimestampLatchedHigh, 0);
-        r.WriteU32(GvbsAddr.TimestampLatchedLow, 0);
         r.WriteU32(GvbsAddr.DiscoveryAckDelay, 0);
-        r.WriteU32(GvbsAddr.GvcpConfig, 0);
         r.WriteU32(GvbsAddr.PendingTimeout, (uint)Math.Max(0, Opt.PendingAckDelayMs));
-
-        r.WriteU32(GvbsAddr.Ccp, 0);
-        r.WriteU32(GvbsAddr.PrimaryAppPort, 0);
-        r.WriteU32(GvbsAddr.PrimaryAppIp, 0);
-
-        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 0);
-        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScpsOffset), (uint)Opt.DefaultPacketSize & GvbsAddr.ScpsSizeMask);
-        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScpdOffset), 0);
-        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset), 0);
         r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScspOffset), 0);
         r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.SccOffset), SimStreamBits.SccPacketResend | SimStreamBits.SccExtendedIds);
-        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.SccfgOffset), Opt.ExtendedIds ? SimStreamBits.SccfgExtendedIds : 0);
+        ResetVolatileBootstrap();
 
         // 쓰기 보호 표 — 식별·능력·읽기 전용 상태 레지스터
         r.MarkReadOnly(GvbsAddr.Version, 4);
@@ -345,6 +384,31 @@ public sealed partial class SimDevice : IDisposable
         r.MarkReadOnly(SimFeatureAddr.WidthMax, 4);
         r.MarkReadOnly(SimFeatureAddr.HeightMax, 4);
         r.MarkReadOnly(SimFeatureAddr.FrameCounter, 4);
+    }
+
+    /// <summary>
+    /// 켜질 때마다 정해진 값으로 돌아가는 부트스트랩 레지스터 — 하트비트 타임아웃, 타임스탬프 제어·래치, GVCP 설정, 제어권(CCP·PrimaryApp),
+    /// 스트림 채널 0 설정(SCP·SCPS·SCPD·SCDA·SCCFG). 생성과 <see cref="Reboot"/> 가 같이 쓴다.
+    /// 식별·능력·영속 IP·사용자 이름과 소켓이 정하는 SCSP 는 건드리지 않는다. 보유자(<c>_owner</c>)는 부르는 쪽이 비운다.
+    /// </summary>
+    private void ResetVolatileBootstrap()
+    {
+        var r = Registers;
+        r.WriteU32(GvbsAddr.HeartbeatTimeout, (uint)Math.Max(0, Opt.HeartbeatTimeoutMs));
+        r.WriteU32(GvbsAddr.TimestampControl, 0);
+        r.WriteU32(GvbsAddr.TimestampLatchedHigh, 0);
+        r.WriteU32(GvbsAddr.TimestampLatchedLow, 0);
+        r.WriteU32(GvbsAddr.GvcpConfig, 0);
+
+        r.WriteU32(GvbsAddr.Ccp, 0);
+        r.WriteU32(GvbsAddr.PrimaryAppPort, 0);
+        r.WriteU32(GvbsAddr.PrimaryAppIp, 0);
+
+        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 0);
+        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScpsOffset), (uint)Opt.DefaultPacketSize & GvbsAddr.ScpsSizeMask);
+        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScpdOffset), 0);
+        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset), 0);
+        r.WriteU32(GvbsAddr.StreamChannel(0, GvbsAddr.SccfgOffset), Opt.ExtendedIds ? SimStreamBits.SccfgExtendedIds : 0);
     }
 
     private static ushort SerialHash(string serial)

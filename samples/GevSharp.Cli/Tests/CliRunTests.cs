@@ -175,7 +175,7 @@ public class CliRunTests
         var (code, _, stderr) = await RunAsync("discover --probe 127.0.0.1:1 --timeout 200");
 
         Assert.Equal(CliExitCode.Device, code);
-        Assert.Contains("no reply", stderr);
+        Assert.Contains("no usable discovery reply", stderr);
     }
 
     [Fact]

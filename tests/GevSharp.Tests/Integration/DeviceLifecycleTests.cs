@@ -277,6 +277,47 @@ public class DeviceLifecycleTests
         }
     }
 
+    [Fact]
+    public async Task SimReboot_DropsControl_HostReportsARestart_AndANewSessionTakesOver()
+    {
+        // 전원을 껐다 켠 장치: 주소·포트는 그대로, CCP 는 0, 휘발 상태는 켜진 직후. 호스트의 다음 하트비트가 CCP = 0 을 읽는다 —
+        // 마지막 하트비트가 장치 시한(10 s)보다 한참 전이 아니므로 사유는 "다른 애플리케이션이 놓았거나 가져갔거나, 장치가 재시작" 이어야 한다.
+        await using var rig = await SimRig.StartAsync(device: o => o.HeartbeatPeriodMs = 100);
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Device.ControlLost += (_, ex) => lost.TrySetResult(ex);
+        var owners = new List<IPEndPoint?>();
+        rig.Sim.ControlOwnerChanged += o => { lock (owners) owners.Add(o); };
+        var endPoint = rig.EndPoint;
+
+        await rig.Device.WriteRegAsync(SimFeatureAddr.Width, 256);
+        await rig.Device.WriteRegAsync(GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 50_000);
+        await rig.Device.WriteRegAsync(SimFeatureAddr.AcquisitionStart, 1);
+        Assert.True(rig.Sim.IsAcquiring);
+
+        rig.Sim.Reboot();
+
+        Assert.Equal(endPoint, rig.Sim.GvcpEndPoint);                 // 같은 자리로 돌아온다 — 호스트가 그대로 닿는다
+        Assert.Null(rig.Sim.ControlOwner);
+        Assert.Equal(0u, rig.Sim.Registers.ReadU32(GvbsAddr.Ccp));
+        Assert.Equal(0u, rig.Sim.Registers.ReadU32(GvbsAddr.PrimaryAppPort));
+        lock (owners) Assert.Equal(new IPEndPoint?[] { null }, owners);
+        Assert.False(rig.Sim.IsAcquiring);
+        Assert.Equal(128u, rig.Sim.Registers.ReadU32(SimFeatureAddr.Width));   // 피처·스트림 채널·하트비트 시한은 켜진 직후 값
+        Assert.Equal(0u, rig.ReadStreamReg(GvbsAddr.ScpOffset));
+        Assert.Equal((uint)rig.Sim.Opt.HeartbeatTimeoutMs, rig.Sim.Registers.ReadU32(GvbsAddr.HeartbeatTimeout));
+        Assert.Equal(0ul, rig.Sim.LastBlockId);                          // 다음 프레임은 블록 1
+
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.True(ReferenceEquals(done, lost.Task), "ControlLost did not fire after the simulator rebooted");
+        var ex = Assert.IsType<GevControlLostException>(await lost.Task);
+        Assert.Contains("device restarted", ex.Message);
+        Assert.False(rig.Device.IsOpen);
+
+        // 재부팅한 장치는 새 세션(다른 소켓)이 기다림 없이 잡는다.
+        await using var next = await GevDevice.OpenAsync(rig.EndPoint, SimRig.DefaultDeviceOpt());
+        Assert.Equal(next.Gvcp.LocalEndPoint, rig.Sim.ControlOwner);
+    }
+
     // ---------------------------------------------------------------- dispose
 
     [Fact]
@@ -308,6 +349,69 @@ public class DeviceLifecycleTests
         await using var next = await GevDevice.OpenAsync(sim.GvcpEndPoint, SimRig.DefaultDeviceOpt());
         Assert.Equal(next.Gvcp.LocalEndPoint, sim.ControlOwner);
         Assert.NotEqual(first, next.Gvcp.LocalEndPoint);
+    }
+
+    [Fact]
+    public async Task Dispose_NodeMapTakenBefore_ThrowsObjectDisposedOnTheNextDeviceAccess()
+    {
+        // 오류 계약(architecture.md)이 적는 대로: 닫힌 뒤의 조작은 GevException 이 아니라 ObjectDisposedException 이다 —
+        // 앞서 받아 둔 노드맵도 포트가 이 장치라 같다. GenApi 층이 그것을 GenApiException 으로 감싸지 않는지까지 본다.
+        await using var rig = await SimRig.StartAsync();
+        var nodes = await rig.Device.GetNodeMapAsync();
+        var xml = await rig.Device.GetXmlAsync();
+        var width = nodes.GetInteger("Width");
+        Assert.Equal(128, await width.GetAsync());
+
+        await rig.Device.DisposeAsync();
+
+        // 세션 동안 받아 둔 것(XML·노드맵)은 닫힌 뒤에도 캐시에서 그대로 돌려준다 — 막히는 것은 장치에 닿는 조작이다.
+        Assert.Same(nodes, await rig.Device.GetNodeMapAsync());
+        Assert.Same(xml, await rig.Device.GetXmlAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => width.SetAsync(256).AsTask());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => rig.Device.ReadRegAsync(GvbsAddr.Version));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => rig.Device.OpenStreamAsync());
+    }
+
+    [Fact]
+    public async Task GvcpChannelClosedUnderAnOpenDevice_FlipsTheSessionToControlLostAtOnce()
+    {
+        // 수신 소켓이 회복 불가로 실패하면 채널은 스스로 Dispose() 한다. 그 소켓 오류를 루프백에서 일으킬 방법이 없어
+        // 같은 메서드를 밖에서 불러 닫힌 뒤의 상태를 만든다(누군가 device.Gvcp 를 직접 닫는 경우와도 같다).
+        // 하트비트 주기를 3 s 로 둔다 — 세 번 실패(9 s)를 기다려서야 상태가 바뀌는 회귀라면 아래 단정이 그 전에 걸린다.
+        await using var rig = await SimRig.StartAsync(device: o => { o.HeartbeatTimeoutMs = 30_000; o.HeartbeatPeriodMs = 3000; });
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Device.ControlLost += (_, ex) => lost.TrySetResult(ex);
+
+        rig.Device.Gvcp.Dispose();
+
+        // 열려 있다고 답하면서 모든 조작이 ObjectDisposedException 으로 끝나는 창이 없어야 한다.
+        var ex = await Record.ExceptionAsync(() => rig.Device.ReadRegAsync(GvbsAddr.Version));
+        Assert.IsType<GevControlLostException>(ex);
+        Assert.Contains("GVCP control channel", ex!.Message);
+        Assert.False(rig.Device.IsOpen);
+
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.True(ReferenceEquals(done, lost.Task), "ControlLost did not fire after the GVCP channel closed under the open device");
+        Assert.IsAssignableFrom<GevException>(await lost.Task);
+    }
+
+    [Fact]
+    public async Task GvcpChannelClosedUnderAReadOnlySession_AlsoEndsTheSession()
+    {
+        // 읽기 전용 세션은 하트비트가 없다 — 채널이 닫혀도 상태를 바꿔 줄 것이 달리 없어, 이 경로가 없으면 영영 "열림" 이다.
+        await using var rig = await SimRig.StartAsync();
+        var ro = SimRig.DefaultDeviceOpt();
+        ro.AccessMode = GevAccessMode.ReadOnly;
+        await using var reader = await GevDevice.OpenAsync(rig.EndPoint, ro);
+        Assert.Equal(0, reader.HeartbeatPeriodMs);
+
+        reader.Gvcp.Dispose();
+
+        await Assert.ThrowsAsync<GevControlLostException>(() => reader.ReadRegAsync(GvbsAddr.Version));
+        Assert.False(reader.IsOpen);
+        // 다른 세션은 영향이 없다.
+        Assert.True(rig.Device.IsOpen);
+        Assert.Equal(0x0002_0000u, await rig.Device.ReadRegAsync(GvbsAddr.Version));
     }
 
     // ---------------------------------------------------------------- register / memory access
@@ -408,6 +512,86 @@ public class DeviceLifecycleTests
         Assert.Equal(0, sim.WriteMemCount);
     }
 
+    // ---------------------------------------------------------------- open by end point
+
+    [Fact]
+    public async Task OpenAsync_EndPoint_IsPublic_AndOpensADeviceOnANonStandardPort()
+    {
+        // 표준 포트가 아닌 곳의 장치(루프백 시뮬레이터, NAT 뒤 장치)를 공개 API 만으로 열 수 있어야 한다 — 내부 오버로드였던 것을 공개했다.
+        var method = typeof(GevDevice).GetMethod(nameof(GevDevice.OpenAsync), new[] { typeof(IPEndPoint), typeof(GevDeviceOpt), typeof(CancellationToken) });
+        Assert.NotNull(method);
+        Assert.True(method!.IsPublic);
+
+        using var sim = SimRig.StartSim();
+        Assert.NotEqual(3956, sim.GvcpEndPoint.Port);
+        await using var dev = await GevDevice.OpenAsync(sim.GvcpEndPoint, SimRig.DefaultDeviceOpt());
+        Assert.True(dev.IsOpen);
+        Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
+        Assert.Equal(0x0002_0000u, await dev.ReadRegAsync(GvbsAddr.Version));
+    }
+
+    [Fact]
+    public async Task OpenAsync_EndPoint_RejectsPortZero()
+    {
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => GevDevice.OpenAsync(new IPEndPoint(IPAddress.Loopback, 0)));
+        Assert.Equal("device", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task OpenAsync_EndPoint_KeepsItsOwnCopy_SoReusingTheCallersEndPointChangesNothing()
+    {
+        // IPEndPoint 는 바뀌는 객체다. 호출자가 같은 객체를 다음 장치(다른 시뮬레이터·포워딩 포트)에 다시 쓰면,
+        // 송신 주소는 열 때 직렬화해 둔 사본이라 그대로인데 응답 대조가 호출자의 객체를 보고 있으면 진짜 장치의 응답이
+        // 전부 남의 패킷으로 버려진다 — 요청마다 시한 초과, 끝내 "하트비트 실패" 로 제어권 상실이 나고 원인은 어디에도 안 남는다.
+        using var sim = SimRig.StartSim();
+        var ep = new IPEndPoint(sim.GvcpEndPoint.Address, sim.GvcpEndPoint.Port);
+        await using var dev = await GevDevice.OpenAsync(ep, SimRig.DefaultDeviceOpt());
+        var foreignBefore = dev.Gvcp.ForeignPacketCount;
+
+        ep.Port = 1;
+        ep.Address = IPAddress.Parse("127.0.0.2");
+
+        // 동작 단정을 먼저 둔다 — 사본을 쥐지 않는 회귀는 여기서 GevTimeoutException 으로 드러난다.
+        Assert.Equal(0x0002_0000u, await dev.ReadRegAsync(GvbsAddr.Version));
+        Assert.Equal(foreignBefore, dev.Gvcp.ForeignPacketCount);
+        Assert.True(dev.IsOpen);
+        // 진단에 드러나는 주소(DeviceEndPoint·로그)도 연 장치 그대로다.
+        Assert.NotSame(ep, dev.Gvcp.DeviceEndPoint);
+        Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
+
+        // getter 로 받은 객체를 바꿔도 같다 — 채널이 응답 대조에 쓰는 사본을 밖으로 내주지 않는다.
+        var handedOut = dev.Gvcp.DeviceEndPoint;
+        handedOut.Port = 1;
+        Assert.Equal(0x0002_0000u, await dev.ReadRegAsync(GvbsAddr.Version));
+        Assert.Equal(foreignBefore, dev.Gvcp.ForeignPacketCount);
+        Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
+    }
+
+    [Fact]
+    public async Task OpenAsync_EndPoint_ThrowsWhatItsDocumentationLists()
+    {
+        // 공개 진입점의 <exception> 목록이 코드와 어긋나지 않게 값싼 갈래를 못 박는다. 옵션 범위·무응답(GevDeviceTests)과
+        // 제어권 거절(SecondSession_Control_WhileFirstHoldsCcp_ThrowsControlLost), 포트 0(위)은 따로 시험한다.
+        Assert.Throws<ArgumentNullException>(() => { _ = GevDevice.OpenAsync((IPEndPoint)null!); });   // 태스크가 아니라 호출 자리에서
+
+        // IPv4 가 아닌 끝점: 로컬 주소를 스스로 정하는 자리(옵션에 없을 때)든 채널을 만드는 자리(옵션에 있을 때)든 GevException.
+        // 둘 다 소켓을 만들기 전에 끝나 아무것도 보내지 않는다.
+        var v6 = new IPEndPoint(IPAddress.IPv6Loopback, GvcpConst.Port);
+        await Assert.ThrowsAsync<GevException>(() => GevDevice.OpenAsync(v6));
+        await Assert.ThrowsAsync<GevException>(() => GevDevice.OpenAsync(v6, new GevDeviceOpt { LocalAddress = IPAddress.Loopback }));
+
+        using var sim = SimRig.StartSim();
+        // 옵션의 로컬 주소에 GVCP 소켓을 묶지 못하면 SocketException 이 감싸지 않고 나온다. 192.0.2.1 은 문서용 예약 주소(TEST-NET-1)라
+        // 이 호스트의 주소일 수 없다 — 묶는 데서 끝나고 아무것도 보내지 않는다.
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
+            () => GevDevice.OpenAsync(sim.GvcpEndPoint, new GevDeviceOpt { LocalAddress = IPAddress.Parse("192.0.2.1") }));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => GevDevice.OpenAsync(sim.GvcpEndPoint, SimRig.DefaultDeviceOpt(), new CancellationToken(canceled: true)));
+        Assert.Null(sim.ControlOwner);   // 실패한 열기는 제어권을 남기지 않는다
+        Assert.Equal(0, sim.WriteRegCount);
+    }
+
     // ---------------------------------------------------------------- stream vs. device lifetime
 
     [Fact]
@@ -431,5 +615,62 @@ public class DeviceLifecycleTests
         Assert.False(waiting.IsCompleted);
         await stream.StopAsync();                           // 장치에 SCP = 0 을 못 써도(닫힘) 로컬 정리는 끝까지 간다
         await Assert.ThrowsAsync<GevStreamClosedException>(() => waiting);
+    }
+
+    [Theory]
+    [InlineData(20, 300)]               // 셧다운이 짧은 시한을 준다
+    [InlineData(20, 0)]                 // 시한이 이미 지난 토큰
+    [InlineData(int.MaxValue, 0)]       // 끝없이 재시도하는 채널 — 채널 예산에 기대면 정지가 영영 돌아오지 않는다
+    public async Task Stream_StopAgainstASilentDevice_EndsWithinItsOwnWriteBudget(int gvcpRetries, int callerTokenMs)
+    {
+        // 스트림이 도는 중에 장치가 GVCP 에 답하지 않게 됐다(케이블이 빠졌거나 전원이 나갔다). 셧다운은 스트림을 멈추고 장치를 닫는다.
+        // 정지는 호출자의 토큰과 무관하게 장치 전송 끄기(SCP = 0, SCDA = 0)를 시도하는데, 그 두 쓰기가 채널의 재시도 예산 전부
+        // (쓰기 둘 × (1 + GvcpRetries) × GvcpTimeoutMs, 그 앞에 재시도 중인 하트비트 뒤의 줄서기까지)를 쓰면 호출자는 정지를 끊을
+        // 길이 없다. 두 쓰기는 호출자의 토큰에도 GvcpRetries 에도 기대지 않는 고정 예산 하나를 따로 받아야 한다.
+        const int gvcpTimeoutMs = 500;
+        var rig = await SimRig.StartAsync(device: o =>
+        {
+            o.GvcpTimeoutMs = gvcpTimeoutMs;
+            o.GvcpRetries = gvcpRetries;
+        });
+        var streamOpt = SimRig.DefaultStreamOpt();
+        var stream = await rig.OpenStreamAsync(streamOpt);
+        var budgetMs = GevDevice.ShutdownWriteBudgetMs(gvcpTimeoutMs);
+        Task? stop = null;
+        try
+        {
+            rig.Sim.Stop();
+
+            using var cts = new CancellationTokenSource();
+            if (callerTokenMs > 0) cts.CancelAfter(callerTokenMs);
+            else cts.Cancel();
+
+            var sw = Stopwatch.StartNew();
+            stop = stream.StopAsync(cts.Token);
+            // 회귀가 나도 시험이 매달리지 않게 기다림에만 상한을 둔다 — 정지 자체를 끊는 것이 아니다.
+            var done = await Task.WhenAny(stop, Task.Delay(30_000));
+            sw.Stop();
+
+            Assert.True(ReferenceEquals(done, stop),
+                $"StopAsync did not return within 30 s against a silent device (GvcpRetries {gvcpRetries}); GevStream.cs StopAsync must bound the SCP/SCDA writes with its own budget");
+            await stop;                                     // 정지는 정상으로 돌아온다 — 취소 예외도 쓰기 실패도 밖으로 내지 않는다
+            // 예산 뒤에 남는 일은 소켓 닫기·수신 스레드 합류·큐 비우기뿐이라 즉시 끝난다. 상한은 예산에 과부하 여유를 얹은 값이고,
+            // 채널 예산에 기대던 판(쓰기 둘 × 21 회 × 500 ms ≈ 21 s, 재시도가 끝없으면 무한)과는 한참 떨어져 있다.
+            const int limitMs = 5000;
+            Assert.True(sw.ElapsedMilliseconds < limitMs,
+                $"StopAsync took {sw.ElapsedMilliseconds} ms against a silent device (write budget {budgetMs} ms, GvcpRetries {gvcpRetries}, caller token {callerTokenMs} ms)");
+            // 대조군: 장치가 정말 말이 없었다면 SCP 쓰기가 예산을 다 써야 한다. 이보다 빨리 끝났다면 장치가 답했거나 쓰기를 건너뛴 것이라
+            // 위 상한은 아무것도 재지 않은 셈이다.
+            Assert.True(sw.ElapsedMilliseconds >= budgetMs - 50,
+                $"StopAsync took only {sw.ElapsedMilliseconds} ms; with a silent device the SCP write should have used the {budgetMs} ms budget");
+            Assert.False(stream.IsStarted);
+            Assert.Equal(streamOpt.BufferCount, stream.PoolFreeBuffers);
+        }
+        finally
+        {
+            // 장치를 먼저 닫는다 — 정지가 채널 안에 걸려 있다면 채널을 닫아야 풀린다. 끝나지 않은 정지는 기다리지 않는다.
+            await rig.DisposeAsync();
+            if (stop is { IsCompleted: true }) await stream.DisposeAsync();
+        }
     }
 }

@@ -19,7 +19,9 @@ public sealed partial class GevDevice
             throw new GevControlLostException("a read-only session cannot configure a stream channel; open the device with Control or Exclusive access");
         }
         ct.ThrowIfCancellationRequested();
-        var stream = new GevStream(this, Gvcp, LocalAddress, opt, streamChannel, Address);
+        // 정지의 장치 전송 끄기는 닫기의 CCP 해제와 같은 고정 예산을 받는다 — 스트림은 이 장치의 응답 창을 모른다.
+        // 응답 창은 채널이 열 때 검증해 사본으로 쥔 값에서 읽는다. 호출자의 옵션 객체는 열고 난 뒤에도 바뀔 수 있다.
+        var stream = new GevStream(this, Gvcp, LocalAddress, opt, streamChannel, Address, ShutdownWriteBudgetMs(Gvcp.Opt.TimeoutMs));
         return Task.FromResult(stream);
     }
 }

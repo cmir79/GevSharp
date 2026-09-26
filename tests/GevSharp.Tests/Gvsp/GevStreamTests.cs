@@ -2,6 +2,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using GevSharp.Gvcp;
 using GevSharp.Gvsp;
+using GevSharp.Tests.GenApi.Model;
 
 namespace GevSharp.Tests.Gvsp;
 
@@ -127,6 +128,11 @@ public class GevStreamTests
         // 다섯 프레임을 받기 전에 다 보내므로 풀은 그보다 커야 한다(작으면 다섯째가 NoBuffer 로 버려진다 — 그건 다른 테스트가 본다).
         var opt = StreamRig.DefaultOpt();
         opt.BufferCount = 8;
+        // 침묵 규칙(재요청 간격만큼 조용하면 아직 안 온 꼬리도 구멍으로 친다)과 보존 시간은 여기서 보는 것이 아니다. 기본값 20 ms 로는
+        // 러너가 송신 쪽을 프레임 도중 그만큼만 멈춰도 짐작한 꼬리를 물어 ResendRequests 가 0 이 아니게 된다(프레임마다 30 ms 멈추는 주입으로 재현).
+        // 프레임은 마지막 페이로드에서 닫히므로 문턱을 넉넉히 둬도 이 시험은 느려지지 않는다.
+        opt.PacketTimeoutMs = 2000;
+        opt.FrameRetentionMs = 5000;
         await using var rig = new StreamRig(opt);
         rig.Sender.ExtendedIds = extendedIds;
         await rig.StartAsync();
@@ -156,6 +162,9 @@ public class GevStreamTests
             Assert.True(frame.Data.Span.SequenceEqual(sent[i].Data));
         }
 
+        // 프레임은 마지막 페이로드에서 닫혀 큐에 들므로, 다섯째를 받은 순간 그 블록의 트레일러는 아직 소켓에 있을 수 있다.
+        // 계수기는 수신기가 보낸 패킷을 다 센 뒤에 본다 — 그 전에 찍으면 수신 스레드가 잠깐 밀린 것만으로 25 대 24 로 깨진다.
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= rig.Sender.PacketsSent);
         var snap = rig.Stream.Stats.Snapshot();
         Assert.Equal(5, snap.FramesCompleted);
         Assert.Equal(5, snap.FramesDelivered);
@@ -427,6 +436,87 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task StopCancelledMidwayStillTurnsTheDeviceTransmissionOff()
+    {
+        // 정지 도중 취소가 와도 장치 전송 끄기(SCP = 0, SCDA = 0)는 끝까지 가야 한다. 건너뛰면 장치는 닫힌 포트를 향해
+        // 계속 쏘는데 정지는 성공으로 돌아와, 호출자는 그 사실을 알 길이 없다.
+        await using var rig = new StreamRig();
+        await rig.StartAsync();
+
+        var scp = GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset);
+        var scda = GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset);
+        using var cts = new CancellationTokenSource();
+        rig.Regs.OnWrite = (addr, value) =>
+        {
+            if (addr == scp && value == 0) cts.Cancel();   // SCP = 0 이 나가는 바로 그때 취소가 도착한다
+        };
+
+        await rig.Stream.StopAsync(cts.Token);
+
+        Assert.True(cts.IsCancellationRequested);
+        Assert.Contains((scda, 0u), rig.Regs.Writes);
+        Assert.False(rig.Stream.IsStarted);
+        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync(Ct));
+    }
+
+    [Fact]
+    public async Task StopWithAPreCancelledTokenStillStopsEverything()
+    {
+        // 셧다운 경로는 시한이 이미 지난 토큰으로 정지를 부르기 쉽다. 그래도 정지는 끝까지 한다 — 장치 전송 끄기,
+        // 소켓 닫기, 큐 비우기, 정지 상태. 아무것도 안 하고 취소만 던지면 스트림은 그대로 돌고 큐의 버퍼도 돌아오지 않는다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        rig.Sender.SendFrame(1UL, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 1);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await rig.Stream.StopAsync(cts.Token);
+
+        var writes = rig.Regs.Writes;
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 0u), writes);
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset), 0u), writes);
+        Assert.False(rig.Stream.IsStarted);
+        Assert.Equal(0, rig.Stream.QueuedFrames);
+        Assert.Equal(opt.BufferCount, rig.Stream.PoolFreeBuffers);
+        await Assert.ThrowsAsync<GevStreamClosedException>(async () => await rig.Stream.ReceiveAsync(Ct));
+    }
+
+    [Fact]
+    public async Task ReceiverThreadDyingOnItsOwnClearsIsStarted()
+    {
+        // 소켓이 죽어 수신 스레드가 스스로 끝나면 받기는 "닫힘" 으로 끝난다. 그때 IsStarted 가 계속 참이면 그 값으로
+        // "다시 열기" 와 "이미 멈춤" 을 가르는 쪽이 속는다 — 상태가 사실을 말해야 한다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        rig.Sender.SendFrame(1UL, 64, 48, Mono8);
+        await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames == 1);
+
+        rig.Stream.KillSocketForTest();
+
+        // 이미 큐에 든 장은 그대로 받아 갈 수 있고, 그 다음에 닫힘이 나온다.
+        using (var queued = await rig.ReceiveAsync()) Assert.Equal(1UL, queued.FrameId);
+        var closed = await Assert.ThrowsAsync<GevStreamClosedException>(() => rig.Stream.ReceiveAsync(Ct).AsTask().WaitAsync(TimeSpan.FromSeconds(10), Ct));
+        Assert.False(rig.Stream.IsStarted);
+        // 사유가 "실패(Success)" 같은 모순이 아니어야 한다 — 닫힌 소켓이 대기에서 예외로 오든(Interrupted 등) 다음 수신의 ObjectDisposedException 으로 오든.
+        Assert.DoesNotContain("(Success)", closed.Message);
+
+        // 스스로 끝난 스트림은 멈춘 것이 아니라 정리를 기다리는 것이다 — 다시 시작할 수는 없고,
+        // 정지를 불러야 장치 전송이 꺼지고 버퍼가 돌아온다.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Stream.StartAsync(Ct));
+        await rig.Stream.StopAsync(Ct);
+        var writes = rig.Regs.Writes;
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 0u), writes);
+        Assert.Contains((GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset), 0u), writes);
+        Assert.False(rig.Stream.IsStarted);
+        Assert.Equal(opt.BufferCount, rig.Stream.PoolFreeBuffers);
+    }
+
+    [Fact]
     public void ReceiveBeforeStartThrows()
     {
         var stream = new GevStream(new FakeRegPort(), new TestResendPort(new GvspTestSender()), IPAddress.Loopback, StreamRig.DefaultOpt());
@@ -524,6 +614,25 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task FailedSocketCreationLeavesTheStreamStopped()
+    {
+        // 소켓 생성은 핸들·버퍼가 바닥나면 던진다. 그때 스트림이 "시작 중" 에 걸려 있으면 다시 시작하려는 쪽은
+        // "이미 시작됨" 이라는 엉뚱한 답을 받고, 정지는 아무것도 쓴 적 없는 장치에 SCP/SCDA = 0 을 보낸다.
+        await using var rig = new StreamRig();
+        rig.Stream.SocketFactory = () => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.NoBufferSpaceAvailable);
+
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(() => rig.Stream.StartAsync(Ct));
+        Assert.False(rig.Stream.IsStarted);
+        Assert.Throws<GevStreamClosedException>(() => rig.Stream.TryReceive(out _));
+
+        var retry = await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Stream.StartAsync(Ct));
+        Assert.Contains("cannot be restarted", retry.Message);
+
+        await rig.Stream.StopAsync(Ct);
+        Assert.Empty(rig.Regs.Writes);
+    }
+
+    [Fact]
     public async Task ScpWriteFailingAfterSendIsStillReset()
     {
         // SCP 쓰기 자체의 응답이 유실됐다 — 장치는 포트를 받았을 수 있으므로 닫힌 포트로 쏘지 않게 되돌려야 한다
@@ -546,10 +655,13 @@ public class GevStreamTests
         // 침묵 규칙(재요청 간격만큼 조용하면 꼬리를 구멍으로 친다)이 스케줄링 지연에 걸리지 않게 간격을 넉넉히 둔다 — 여기서 보는 것은 유예뿐이다.
         var opt = StreamRig.DefaultOpt();
         // 프레임 전체가 25 ms 안에 나가므로 문턱을 크게 잡아도 "아직 안 온 꼬리는 구멍이 아니다" 라는 성질은 그대로 걸린다.
-        // 문턱이 러너의 선점보다 짧으면 이 테스트는 유예가 아니라 러너의 스케줄링을 재게 된다.
-        opt.PacketTimeoutMs = 1000;
+        // 문턱이 러너의 선점보다 짧으면 이 테스트는 유예가 아니라 러너의 스케줄링을 재게 된다 — 송신을 프레임 도중 1.1 s 멈추면
+        // 1 s 문턱의 침묵 규칙이 꼬리를 물어 요청이 1 건 나간다(주입으로 재현). 과부하 러너의 멈춤이 그만큼 길어질 수 있어 문턱을 더 올린다.
+        // 프레임은 마지막 페이로드에서 닫히므로 문턱을 더 올려도 이 시험은 느려지지 않는다.
+        // (스트레스 실행에서 실제로 잡힌 이 시험의 실패는 이 경로가 아니라 아래에 적은 데이터그램 유실이었다.)
+        opt.PacketTimeoutMs = 10_000;
         // 보존 시간도 마찬가지 — 러너가 밀려 프레임이 포기되면 "군더더기 요청이 없다" 대신 타임아웃이 난다.
-        opt.FrameRetentionMs = 3000;
+        opt.FrameRetentionMs = 20_000;
         await using var rig = new StreamRig(opt);
         await rig.StartAsync();
 
@@ -561,6 +673,24 @@ public class GevStreamTests
         using var received = await rig.ReceiveAsync();
         Assert.True(received.IsComplete);
         Assert.True(received.Data.Span.SequenceEqual(frame.Data));
+        // 요청 수는 수신기가 보낸 패킷(트레일러까지)을 다 센 뒤에 본다 — 프레임을 받은 순간에는 트레일러가 아직 소켓에 있을 수 있다.
+        // 끝내 다 세지 못하면 데이터그램 하나가 스트림 소켓까지 와서 세지기 전에 사라진 것이다. 그때의 요청은 그 유실을 메운 것이라
+        // 군더더기는 아니지만, 이 시험은 그것도 실패로 남긴다: 옛 수신 대기(블로킹 수신 + 수신 시한)는 윈도우에서 시한 만료 순간 막
+        // 도착한 데이터그램을 잃었고(실기로 잼), 패킷 사이마다 대기가 한 번씩 끝나는 이 시험이 그런 유실이 드러나는 자리다.
+        // 지금의 대기(논블로킹 수신 + Poll)에서는 나오지 않아야 한다. 실패 메시지가 두 경우(수신 쪽 유실 / 군더더기 요청)를 가른다.
+        try
+        {
+            await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= rig.Sender.PacketsSent, 2000);
+        }
+        catch (TimeoutException)
+        {
+            var s = rig.Stream.Stats.Snapshot();
+            var requests = string.Join("; ", rig.Resend.Requests.Select(r => $"{r.First}..{r.Last}"));
+            Assert.Fail($"The receiver counted {s.PacketsReceived} of the {rig.Sender.PacketsSent} datagrams sent ({s.PacketsResent} of them resend copies); "
+                + $"resend requests [{requests}]. A datagram reached the stream socket and was lost before it was counted, so a request here repairs a real "
+                + "loss rather than being spurious. The receiver waits with a non-blocking receive plus Poll precisely so that no datagram is lost at the end "
+                + "of a wait (a timed-out blocking receive lost them on Windows; see docs/evaluation.md, 'Receive wait on Windows'), so this points at a new loss path.");
+        }
         Assert.Equal(0, rig.Resend.RequestCount);
         Assert.Equal(0, rig.Stream.Stats.ResendRequests);
     }
@@ -762,6 +892,50 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task SkippedFrameWithoutATrailerIgnoresRetentionWhenResendIsOff()
+    {
+        // 버리기로 한 프레임(여기서는 지원하지 않는 payload_type 4 의 12바이트 리더)도 트레일러가 오거나 조용해질 때까지 슬롯을 쥔다.
+        // 리센드가 꺼져 있으면 기다릴 리센드가 없으므로 PacketTimeoutMs 에 닫아야 한다 — 시작 로그와 옵션 설명이 "FrameRetentionMs 는
+        // 쓰이지 않는다" 고 알리는데 이 자리만 보존 시간을 쓰면, FrameDropped 와 버림 계수기가 그만큼 늦고 그동안 조립 슬롯 하나가 묶인다.
+        // 리센드가 켜진 쪽은 같은 시험 안의 대조군이다 — 같은 프레임이 보존 시간까지 기다리는 것을 함께 재서 시계가 살아 있음을 보인다.
+        const int packetTimeoutMs = 300;
+        const int offRetentionMs = 3000;
+        const int onRetentionMs = 1500;
+
+        var off = await MeasureSkippedFrameCloseAsync(resendEnabled: false, packetTimeoutMs, offRetentionMs);
+        var on = await MeasureSkippedFrameCloseAsync(resendEnabled: true, packetTimeoutMs, onRetentionMs);
+
+        // 닫는 시각은 "마지막 패킷 + 시한" 이하로 내려가지 않는다(하한은 과부하에도 흔들리지 않는다). 위쪽 상한은 보존 시간의 절반이라
+        // 보존 시간을 쓰던 판(≈ 3000 ms)과 한참 떨어져 있다.
+        Assert.True(off >= packetTimeoutMs - 10 && off < offRetentionMs / 2,
+            $"resend off: the skipped frame closed after {off} ms; expected about PacketTimeoutMs ({packetTimeoutMs} ms), not FrameRetentionMs ({offRetentionMs} ms) "
+            + "— GevStream.Receiver.cs CheckCompletion must give up on a skipped frame after PacketTimeoutMs when resend is off");
+        Assert.True(on >= onRetentionMs - 10,
+            $"resend on (control): the skipped frame closed after {on} ms; it should wait for FrameRetentionMs ({onRetentionMs} ms)");
+    }
+
+    /// <summary>지원하지 않는 종류의 리더 한 장만 보내고 FrameDropped 가 올 때까지의 시간을 잰다.</summary>
+    private static async Task<long> MeasureSkippedFrameCloseAsync(bool resendEnabled, int packetTimeoutMs, int retentionMs)
+    {
+        var opt = StreamRig.DefaultOpt();
+        opt.ResendEnabled = resendEnabled;
+        opt.PacketTimeoutMs = packetTimeoutMs;
+        opt.FrameRetentionMs = retentionMs;
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        rig.Sender.SendShortLeader(1, GvspConst.PayloadChunkData, dataBytes: 12);   // 트레일러는 끝내 오지 않는다
+        var diag = await rig.WaitDroppedAsync();
+        sw.Stop();
+
+        Assert.Equal(1UL, diag.FrameId);
+        Assert.Equal(GevFrameDropReason.Unsupported, diag.Reason);
+        Assert.Equal(1, rig.Stream.Stats.FramesDroppedUnsupported);
+        return sw.ElapsedMilliseconds;
+    }
+
+    [Fact]
     public async Task LargerLeaderGrowsTheBuffersLazily()
     {
         var opt = StreamRig.DefaultOpt();
@@ -945,6 +1119,72 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task RestartedBlockAfterALeaderOnlyFrameIsAssembledWithItsOwnLeader()
+    {
+        // 노출이 긴 촬영에서는 리더가 먼저 오므로 리더만 온 가장 새 프레임은 보존 시간이 지나도 기다린다. 그 사이 장치가 그 블록을
+        // 버리고(정지) 촬영을 다시 시작해 같은 블록 번호로 새 리더를 보내면, 그 리더를 중복으로 버리고 새 페이로드를 옛 리더의
+        // 슬롯에 실어 옛 타임스탬프·기하로 완성 처리하게 된다 — 틀린 값이 정상처럼 보인다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        // 옛 리더는 64x100, 새 프레임은 128x50 — 바이트 수가 같아(6400) 옛 기하로 실어도 "다 받았다" 가 된다.
+        var aborted = rig.Sender.BuildFrame(1, 64, 100, Mono8, seed: 0x10, timestamp: 111_000);
+        rig.Sender.SendPacket(aborted, 0, GvspConst.StatusSuccess);
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= 1);
+        // 재요청 간격과 보존 시간을 둘 다 넘겨 쉰다 — 리더만 온 프레임은 그래도 붙들려 있다.
+        await Task.Delay(opt.FrameRetentionMs + 5 * opt.PacketTimeoutMs, Ct);
+
+        var restarted = rig.Sender.BuildFrame(1, 128, 50, Mono8, seed: 0x20, timestamp: 222_000);
+        Assert.Equal(aborted.Data.Length, restarted.Data.Length);
+        rig.Sender.SendFrame(restarted);
+
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(1UL, frame.FrameId);
+        Assert.Equal(222_000UL, frame.Timestamp);
+        Assert.Equal(128, frame.Width);
+        Assert.Equal(50, frame.Height);
+        Assert.Equal(128, frame.Stride);
+        Assert.True(frame.IsComplete);
+        Assert.True(frame.Data.Span.SequenceEqual(restarted.Data));
+        Assert.Equal(0, rig.Stream.Stats.PacketsDuplicated);
+
+        // 버려진 옛 프레임은 조용히 사라지지 않는다 — 불완전 한 장으로 세고 알린다.
+        var diag = await rig.WaitDroppedAsync();
+        Assert.Equal(1UL, diag.FrameId);
+        Assert.Equal(GevFrameDropReason.Incomplete, diag.Reason);
+        Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        Assert.Equal(1, rig.Stream.Stats.FramesCompleted);
+        Assert.False(rig.Stream.TryReceive(out _));
+    }
+
+    [Fact]
+    public async Task LateCopyOfALeaderOnlyFramesLeaderIsStillADuplicate()
+    {
+        // 위 규칙의 반대편: 리더만 온 프레임에 같은 리더(같은 타임스탬프)가 한참 뒤에 다시 오면 새 촬영이 아니라 늦은 사본이다.
+        // 그것으로 프레임을 다시 열면 버리지 말아야 할 프레임을 불완전으로 세게 된다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        var sent = rig.Sender.BuildFrame(1, 64, 100, Mono8, seed: 0x30, timestamp: 333_000);
+        rig.Sender.SendPacket(sent, 0, GvspConst.StatusSuccess);
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= 1);
+        await Task.Delay(5 * opt.PacketTimeoutMs, Ct);
+        rig.Sender.SendPacket(sent, 0, GvspConst.StatusSuccess);
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsDuplicated >= 1);
+        for (uint id = 1; id <= sent.TrailerId; id++) rig.Sender.SendPacket(sent, id, GvspConst.StatusSuccess);
+
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(333_000UL, frame.Timestamp);
+        Assert.True(frame.IsComplete);
+        Assert.True(frame.Data.Span.SequenceEqual(sent.Data));
+        Assert.Equal(1, rig.Stream.Stats.PacketsDuplicated);
+        Assert.Equal(0, rig.Stream.Stats.FramesIncomplete);
+        Assert.Equal(0, rig.DroppedCount);
+    }
+
+    [Fact]
     public async Task DuplicateAllInPacketIsCountedNotReassembled()
     {
         await using var rig = new StreamRig();
@@ -1097,7 +1337,11 @@ public class GevStreamTests
     [Fact]
     public async Task MalformedTrailerDoesNotPinTheFrameOpen()
     {
-        await using var rig = new StreamRig();
+        var opt = StreamRig.DefaultOpt();
+        // 리더 없이 페이로드만 받은 프레임은 보존 시간이 지나면 불완전으로 닫힌다 — 시험 스레드가 밀려도 리더를 돌려줄 때까지
+        // 열려 있게 넉넉히 둔다. 정상 흐름에서는 리더가 돌아오는 즉시 완성되므로 이 값만큼 기다리지 않는다.
+        opt.FrameRetentionMs = 5000;
+        await using var rig = new StreamRig(opt);
         await rig.StartAsync();
 
         // 첫 프레임으로 버퍼 크기를 알게 한 뒤, 둘째 프레임은 리더 없이 페이로드를 보내고 id 0 짜리 깨진 트레일러를 붙인다.
@@ -1108,17 +1352,25 @@ public class GevStreamTests
             Assert.True(f1.Data.Span.SequenceEqual(first.Data));
         }
 
+        // 깨진 트레일러는 **열려 있는 프레임에** 닿아야 이 시험이 뜻을 가진다. 리센드 답을 붙들지 않으면 송신이 유예(2 ms)보다 늦게
+        // 트레일러에 닿는 순간 리더가 먼저 돌아와 프레임이 닫히고, 깨진 트레일러는 닫힌 블록의 늦은 트레일러로 조용히 지나간다
+        // (15 ms 멈춤으로 재현). 그래서 리더 요청에는 답하지 않다가, 수신기가 깨진 트레일러를 거른 것을 본 뒤에 답한다.
+        rig.Resend.Behaviour = TestResendPort.Mode.Never;
         var second = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 2);
         rig.Sender.Drop.Add((2, 0));
         for (uint id = 1; id <= (uint)second.PacketCount; id++) rig.Sender.SendPacket(second, id, GvspConst.StatusSuccess);
         rig.Sender.SendTrailer(second, packetId: 0);
+
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsIgnored >= 1);
+        Assert.Equal(1, rig.Stream.Stats.FramesCompleted);  // 둘째 프레임은 아직 열려 있다 — 깨진 트레일러를 열린 프레임에서 걸렀다
+        rig.Resend.Behaviour = TestResendPort.Mode.Resend;  // 다음 재요청(재요청 간격 뒤)이 리더를 받아 온다
 
         using var frame = await rig.ReceiveAsync();
         Assert.Equal(2UL, frame.FrameId);
         Assert.True(frame.IsComplete);
         Assert.Equal(second.PacketCount, frame.ExpectedPackets);
         Assert.True(frame.Data.Span.SequenceEqual(second.Data));
-        Assert.True(rig.Stream.Stats.PacketsIgnored >= 1);
+        Assert.Equal(1, rig.Stream.Stats.PacketsIgnored);   // 걸러진 것은 깨진 트레일러 하나뿐이다
         Assert.Equal(0, rig.Stream.Stats.FramesIncomplete);
     }
 
@@ -1223,11 +1475,12 @@ public class GevStreamTests
     /// 풀 버퍼 하나를 정상 프레임으로 한 번 채워 둔 스트림 — 다음 프레임이 같은 버퍼를 받으므로, 덜 온 자리에 이전 프레임의
     /// 바이트가 남아 있으면 눈에 보인다(새 버퍼는 0 이라 그 오염이 가려진다).
     /// </summary>
-    private static async Task<(StreamRig Rig, GvspTestSender.SynthFrame Previous)> StartWithDirtyBufferAsync(bool deliverIncomplete)
+    private static async Task<(StreamRig Rig, GvspTestSender.SynthFrame Previous)> StartWithDirtyBufferAsync(bool deliverIncomplete, Action<GevStreamOpt>? configure = null)
     {
         var opt = StreamRig.DefaultOpt();
         opt.BufferCount = 1;
         opt.DeliverIncompleteFrames = deliverIncomplete;
+        configure?.Invoke(opt);
         var rig = new StreamRig(opt);
         await rig.StartAsync();
         var previous = rig.Sender.SendFrame(1, 64, 100, Mono8, seed: 0xAA);
@@ -1313,6 +1566,114 @@ public class GevStreamTests
             Assert.True(frame.IsComplete);
             Assert.True(frame.Data.Span.SequenceEqual(next.Data));
             Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        }
+    }
+
+    [Fact]
+    public async Task BlockCutBeforeItsFirstPayloadClosesAtOnceAsIncomplete()
+    {
+        // 장치가 리더만 보내고 곧바로 id 1 의 트레일러로 블록을 끊었다(첫 페이로드 전에 멈췄다). 트레일러가 약속한 페이로드는 0 개라
+        // 더 올 것이 없다. 패킷 수 0 을 "아직 모름" 으로 읽으면 보존 시간 내내 기다리며 뒤 프레임을 막고, 불완전 프레임을 받겠다고 한
+        // 소비자에게도 끝내 나가지 않는다 — 한 패킷이라도 받은 뒤 끊긴 블록과 다르게 다룰 까닭이 없다.
+        var (rig, previous) = await StartWithDirtyBufferAsync(deliverIncomplete: true, opt => opt.FrameRetentionMs = 30_000);
+        await using (rig)
+        {
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            Assert.Equal(5, cut.PacketCount);
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendTrailer(cut, 1);
+
+            // 보존 시간(30 초)까지 기다린다면 여기서 시한을 넘긴다.
+            using var frame = await rig.ReceiveAsync(3000);
+            Assert.Equal(2UL, frame.FrameId);
+            Assert.False(frame.IsComplete);
+            Assert.Equal(cut.Data.Length, frame.PayloadSize);
+            Assert.Equal(5, frame.ExpectedPackets);
+            Assert.Equal(5, frame.MissingPackets);
+            // 검사기가 살아 있는지: 버퍼는 이전 프레임으로 더럽혀 두었다 — 비우지 않으면 그 바이트가 그대로 나온다.
+            Assert.False(frame.Data.Span.SequenceEqual(previous.Data), "the frame still holds the previous frame");
+            Assert.True(frame.Data.Span.SequenceEqual(new byte[cut.Data.Length]), "nothing of this block arrived, so the frame must be all zeros");
+
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(2UL, diag.FrameId);
+            Assert.Equal(GevFrameDropReason.Incomplete, diag.Reason);
+            Assert.Equal(5, diag.MissingPackets);
+            Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        }
+    }
+
+    [Fact]
+    public async Task PacketStrideThatShrinksAfterBytesWereLaidDropsTheFrameAsError()
+    {
+        // 리더와 첫 페이로드(id 1)가 함께 유실되면 패킷당 바이트를 배울 근거가 없어 협상값(SCPS)에서 구한 간격으로 자리를 정한다.
+        // 장치가 그보다 짧은 패킷을 보내면 먼저 온 id 2.. 는 넓은 간격에 실리고, 리센드로 돌아온 id 1 이 진짜 간격을 알려 줄 때는
+        // 이미 늦었다. 그 뒤로 받은 패킷 수는 다 차고 받은 끝(가장 먼 끝)도 리더 크기를 넘으므로, 그대로 두면 어긋난 바이트와
+        // 그 사이에 남은 이전 프레임 바이트가 완성으로 나간다. 이미 실은 바이트는 옮길 수 없으니 프레임을 오류로 버려야 한다.
+        // 버퍼를 넉넉히 잡아 둔다 — 넓은 간격에서 뒤쪽 id 가 버퍼 밖으로 밀려나면 예산 초과로 버려져 이 경로에 오지 않는다.
+        var (rig, _) = await StartWithDirtyBufferAsync(deliverIncomplete: false, opt => opt.PayloadSize = 16384);
+        await using (rig)
+        {
+            rig.Sender.PacketSize = 1036;
+            var sent = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x5A);
+            Assert.True(sent.DataBytesPerPacket < GvspConst.DataBytesPerPacket(rig.Stream.PacketSize, extendedIds: false));
+            Assert.Equal(7, sent.PacketCount);
+            rig.Sender.Drop.Add((2, 0));
+            rig.Sender.Drop.Add((2, 1));
+            rig.Sender.SendFrame(sent);
+
+            await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames > 0 || rig.DroppedCount > 0);
+            if (rig.Stream.TryReceive(out var delivered) && delivered is not null)
+            {
+                using (delivered)
+                {
+                    Assert.False(delivered.IsComplete && !delivered.Data.Span.SequenceEqual(sent.Data),
+                        $"block {delivered.FrameId} was delivered complete with its bytes laid at the wrong packet stride");
+                }
+            }
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(2UL, diag.FrameId);
+            Assert.Equal(GevFrameDropReason.Error, diag.Reason);
+            Assert.Equal(1, rig.Stream.Stats.FramesDroppedError);
+            Assert.Equal(1, rig.Stream.Stats.FramesCompleted);   // 더럽히려고 보낸 첫 프레임뿐
+
+            // 리더가 함께 오는 프레임은 실기 전에 id 1 로 간격을 배운다 — 같은 짧은 패킷이어도 그대로 완성되고, 버퍼도 풀로 돌아와 있다.
+            var next = rig.Sender.SendFrame(3, 64, 100, Mono8, seed: 0x33);
+            using var frame = await rig.ReceiveAsync();
+            Assert.Equal(3UL, frame.FrameId);
+            Assert.True(frame.IsComplete);
+            Assert.True(frame.Data.Span.SequenceEqual(next.Data));
+        }
+    }
+
+    [Fact]
+    public async Task PacketStrideThatGrowsAfterBytesWereLaidDropsTheChunkFrameAsError()
+    {
+        // 반대 방향: 장치가 협상값보다 긴 패킷을 보내는데 첫 페이로드(id 1)가 유실되고 짧은 마지막 패킷이 먼저 왔다. 마지막 패킷은
+        // 협상값 간격에 실리고, 리센드로 돌아온 id 1 이 더 긴 간격을 알려 줄 때는 이미 늦었다. 청크가 붙은 프레임은 리더가 크기를
+        // 알려 주지 못해 완성을 패킷 수로만 가리므로, 그대로 두면 마지막 패킷(청크 꼬리)을 잃은 프레임이 완성으로 나간다.
+        var (rig, _) = await StartWithDirtyBufferAsync(deliverIncomplete: false);
+        await using (rig)
+        {
+            rig.Sender.PacketSize = 3000;
+            var sent = rig.Sender.BuildChunkFrame(2, 64, 50, Mono8, chunkBytes: 400, seed: 0x5A);
+            Assert.True(sent.DataBytesPerPacket > GvspConst.DataBytesPerPacket(rig.Stream.PacketSize, extendedIds: false));
+            Assert.Equal(2, sent.PacketCount);
+            rig.Sender.Drop.Add((2, 1));
+            rig.Sender.SendFrame(sent);
+
+            await rig.WaitUntilAsync(() => rig.Stream.QueuedFrames > 0 || rig.DroppedCount > 0);
+            if (rig.Stream.TryReceive(out var delivered) && delivered is not null)
+            {
+                using (delivered)
+                {
+                    Assert.False(delivered.IsComplete && !delivered.Data.Span.SequenceEqual(sent.Data),
+                        $"block {delivered.FrameId} was delivered complete with {delivered.PayloadSize} of {sent.Data.Length} bytes, its last packet laid at the wrong packet stride");
+                }
+            }
+            var diag = await rig.WaitDroppedAsync();
+            Assert.Equal(2UL, diag.FrameId);
+            Assert.Equal(GevFrameDropReason.Error, diag.Reason);
+            Assert.Equal(1, rig.Stream.Stats.FramesDroppedError);
         }
     }
 
@@ -1443,5 +1804,80 @@ public class GevStreamTests
         // 중단이지 손실이 아니다 — 통계에는 세지 않는다.
         Assert.Equal(0, rig.Stream.Stats.FramesCompleted);
         Assert.Equal(0, rig.Stream.Stats.FramesIncomplete);
+    }
+}
+
+/// <summary>
+/// 스트림이 남기는 로그 줄 — <see cref="GevLog.Sink"/> 는 프로세스 전역이라 싱크를 바꿔 끼는 동안 다른 테스트와 나란히 돌지 않는 컬렉션에 둔다.
+/// </summary>
+[Collection(GevLogSinkCollection.Name)]
+public class GevStreamLogTests
+{
+    private const uint Mono8 = 0x01080001;
+
+    /// <summary>싱크를 바꿔 끼운 채 본문을 돌리고, 그동안 남은 (레벨, 메시지) 를 돌려준다.</summary>
+    private static async Task<(GevLogLevel Level, string Message)[]> CaptureAsync(Func<Task> body)
+    {
+        var logged = new List<(GevLogLevel, string)>();
+        var previousSink = GevLog.Sink;
+        var previousLevel = GevLog.MinLevel;
+        GevLog.MinLevel = GevLogLevel.Debug;
+        GevLog.Sink = (level, _, message, _) =>
+        {
+            lock (logged) logged.Add((level, message));
+        };
+        try
+        {
+            await body();
+        }
+        finally
+        {
+            GevLog.Sink = previousSink;
+            GevLog.MinLevel = previousLevel;
+        }
+        lock (logged) return logged.ToArray();
+    }
+
+    [Fact]
+    public async Task BlockCutBeforeItsFirstPayloadIsReportedLikeAnyCutBlock()
+    {
+        // 첫 페이로드 전에 끊긴 블록도 끊긴 블록이다 — 같은 경고가 한 번 나가야 "장치가 블록을 끊는다" 가 현장 로그에 보인다.
+        var logged = await CaptureAsync(async () =>
+        {
+            var opt = StreamRig.DefaultOpt();
+            opt.FrameRetentionMs = 30_000;
+            await using var rig = new StreamRig(opt);
+            await rig.StartAsync();
+
+            var cut = rig.Sender.BuildFrame(2, 64, 100, Mono8, seed: 0x11);
+            rig.Sender.SendPacket(cut, 0, GvspConst.StatusSuccess);
+            rig.Sender.SendTrailer(cut, 1);
+            await rig.WaitDroppedAsync(3000);
+        });
+
+        Assert.Contains(logged, l => l.Level == GevLogLevel.Warn && l.Message.Contains("the trailer ended the block after 0 payload packet(s)"));
+    }
+
+    [Theory]
+    [InlineData(true, 0.25, false)]
+    [InlineData(false, 0.25, true)]
+    [InlineData(true, 0.0, true)]
+    public async Task StartSaysWhenFrameRetentionDoesNotApply(bool resendEnabled, double ratio, bool isResendOff)
+    {
+        // 리센드가 꺼지면 보존 시간은 쓰이지 않는다 — 비율 0 도 그렇다. 옵션만 보고 보존 시간을 늘린 사람이 로그에서 이유를 찾을 수 있어야 하고,
+        // 시작 줄의 "resend on/off" 도 옵션 하나가 아니라 실제로 도는 쪽을 말해야 한다.
+        var logged = await CaptureAsync(async () =>
+        {
+            var opt = StreamRig.DefaultOpt();
+            opt.ResendEnabled = resendEnabled;
+            opt.PacketRequestRatio = ratio;
+            await using var rig = new StreamRig(opt);
+            await rig.StartAsync();
+        });
+
+        var notes = logged.Where(l => l.Message.Contains("FrameRetentionMs") && l.Message.Contains("does not apply")).ToArray();
+        Assert.Equal(isResendOff ? 1 : 0, notes.Length);
+        if (isResendOff) Assert.Equal(GevLogLevel.Info, notes[0].Level);
+        Assert.Contains(logged, l => l.Message.StartsWith("Stream started") && l.Message.EndsWith(isResendOff ? "resend off." : "resend on."));
     }
 }

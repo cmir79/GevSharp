@@ -59,15 +59,24 @@ of this block, verbatim.
 | `0x0930` MessageChannelCapability | 4 | RO | 0 | — |
 | `0x0934` GvcpCapability | 4 | RO | concatenation \| write-mem \| packet-resend \| CCP-app-socket \| serial-number \| name-register; + pending-ack when `SupportPendingAck`. Heartbeat-disable is **not** set. | — |
 | `0x0938` HeartbeatTimeout | 4 | RW | `HeartbeatTimeoutMs` (3000). 0 = never expire. | `GevHeartbeatTimeout` (Integer → IntReg) |
-| `0x093C` / `0x0940` TimestampTickFreq | 8 | RO | `1_000_000_000` (1 GHz — ticks are nanoseconds) | `TimestampTickFrequency` (Integer → 8-byte IntReg) |
-| `0x0944` TimestampControl | 4 | W→0 | bit1 (value 2) resets the counter, bit0 (value 1) latches it | `TimestampLatch` (Command, value 1) |
-| `0x0948` / `0x094C` TimestampLatched | 8 | RO | 0 until the first latch | `TimestampLatchValue` (Integer → 8-byte IntReg, NoCache) |
+| `0x093C` / `0x0940` TimestampTickFreq | 8 | RO | `1_000_000_000` (1 GHz — ticks are nanoseconds) | `TimestampTickFrequency`, `GevTimestampTickFrequency` (Integer → 8-byte IntReg) |
+| `0x0944` TimestampControl | 4 | W→0 | value 1 restarts the counter at 0 (the latched value is left alone), value 2 latches it into `0x0948`; 3 does both, reset first | `TimestampReset`, `GevTimestampControlReset` (Command, value 1); `TimestampLatch`, `GevTimestampControlLatch` (Command, value 2) |
+| `0x0948` / `0x094C` TimestampLatched | 8 | RO | 0 until the first latch | `TimestampLatchValue`, `GevTimestampValue` (Integer → 8-byte IntReg, NoCache) |
 | `0x0950` DiscoveryAckDelay | 4 | RW | 0 (not honoured) | — |
 | `0x0954` GvcpConfig | 4 | RW | 0 (not honoured) | — |
 | `0x0958` PendingTimeout | 4 | RO | `PendingAckDelayMs` | — |
 | `0x0A00` CCP | 4 | RW (see below) | 0 | `GevCCP` (Integer → IntReg, NoCache) |
 | `0x0A04` PrimaryAppPort | 4 | RO | 0; the CCP writer's UDP port while controlled | — |
 | `0x0A14` PrimaryAppIp | 4 | RO | 0; the CCP writer's IPv4 while controlled | — |
+
+Timestamp nodes come in two naming families over the same registers, so host code written for either finds
+them: `TimestampReset`/`TimestampLatch`/`TimestampLatchValue`/`TimestampTickFrequency` (category
+`DeviceControl`) and the transport-layer names `GevTimestampControlReset`/`GevTimestampControlLatch`/
+`GevTimestampValue`/`GevTimestampTickFrequency` (category `TransportLayerControl`) — the latter are what GigE
+camera descriptions commonly carry, and what a host that pairs frames with the device clock looks up. The
+latch reads the same monotonic counter that stamps the image leaders. The control values follow those
+descriptions (reset 1, latch 2); earlier revisions of the simulator had them swapped, so a standard latch
+reset the counter instead.
 
 ## Stream channel 0 (`0x0D00`)
 
@@ -89,23 +98,23 @@ of this block, verbatim.
 |---|---|---|---|---|---|
 | `0x10000` | Width | RW | `Opt.Width` (640) | frame width in pixels | `Width` (Integer Min 8, pMax WidthMax, Inc 4, pIsLocked AcquisitionActive) → `WidthReg` |
 | `0x10004` | Height | RW | `Opt.Height` (480) | frame height in pixels | `Height` (Integer Min 8, pMax HeightMax, Inc 2, pIsLocked) → `HeightReg` |
-| `0x10008` | OffsetX | RW | 0 | copied into the leader | `OffsetX` (Integer 0..4088 Inc 4) → `OffsetXReg` |
-| `0x1000C` | OffsetY | RW | 0 | copied into the leader | `OffsetY` (Integer 0..4094 Inc 2) → `OffsetYReg` |
+| `0x10008` | OffsetX | RW | 0 | copied into the leader | `OffsetX` (Integer 0..4088 Inc 4, pIsLocked) → `OffsetXReg` |
+| `0x1000C` | OffsetY | RW | 0 | copied into the leader | `OffsetY` (Integer 0..4094 Inc 2, pIsLocked) → `OffsetYReg` |
 | `0x10010` | PixelFormat | RW | `Opt.PixelFormat` (Mono8 `0x01080001`) | PFNC code; bits 23..16 give bits per pixel for the frame size | `PixelFormat` (Enumeration: Mono8, Mono10, Mono12, Mono16, BayerRG8, RGB8; pIsLocked) → `PixelFormatReg` |
 | `0x10014` | ExposureTimeRaw | RW | 10 000 000 (10 ms) | exposure in timestamp ticks; no effect on timing | `ExposureTimeRaw` (Integer 1000..2e9) → `ExposureTimeRawReg`; `ExposureTime` (Converter, µs: `FormulaFrom = TO * 1000000.0 / TICKFREQ`, `FormulaTo = FROM * TICKFREQ / 1000000`, TICKFREQ = TimestampTickFrequency) |
 | `0x10018` | GainSelector | RW | 0 | index 0..2 into the GainRaw block | `GainSelector` (Enumeration AnalogAll/DigitalAll/DigitalRed, pSelected Gain, GainRaw) → `GainSelectorReg` |
 | `0x1001C` + 4·n | GainRaw[n], n = 0..2 | RW | 0 | 0.1 dB units | `GainRaw` (Integer 0..1023) → `GainRawReg` (Address 0x1001C, `pIndex Offset=4` GainSelectorReg); `Gain` (Converter dB: `FormulaFrom = TO / 10.0`, `FormulaTo = FROM * 10`) |
 | `0x10028` | TriggerControl | RW | 0 | integer bit 0 = TriggerMode (1 = On), bits 7..4 = TriggerSource (0 Software, 1 Line0, 2 Line1) | StructReg → `TriggerModeReg` (Bit 31), `TriggerSourceReg` (LSB 27 / MSB 24); `TriggerMode` (Enumeration Off/On), `TriggerSource` (Enumeration, pIsAvailable TriggerModeIsOn) |
-| `0x1002C` | AcquisitionMode | RW | 0 | 0 Continuous, 1 SingleFrame, 2 MultiFrame | `AcquisitionMode` (Enumeration) → `AcquisitionModeReg` |
+| `0x1002C` | AcquisitionMode | RW | 0 | 0 Continuous, 1 SingleFrame, 2 MultiFrame | `AcquisitionMode` (Enumeration, pIsLocked) → `AcquisitionModeReg` |
 | `0x10030` | AcquisitionStart | SC | 0 | 1 starts the sender thread | `AcquisitionStart` (Command value 1, PollingTime 10) → `AcquisitionStartReg` (NoCache) |
 | `0x10034` | AcquisitionStop | SC | 0 | 1 stops the sender and waits for it | `AcquisitionStop` (Command value 1, PollingTime 10) → `AcquisitionStopReg` (NoCache) |
-| `0x10038` | AcquisitionStatus | RO | 0 | 1 while the sender thread runs | `AcquisitionActive` (Integer, Guru) → `AcquisitionActiveReg` (NoCache); the pIsLocked predicate of Width/Height/PixelFormat |
+| `0x10038` | AcquisitionStatus | RO | 0 | 1 while the sender thread runs | `AcquisitionActive` (Integer, Guru) → `AcquisitionActiveReg` (NoCache); the pIsLocked predicate of AcquisitionMode, Width, Height, OffsetX, OffsetY, PixelFormat and ReverseX |
 | `0x1003C` | AcquisitionFrameRate | RW | `Opt.FrameRateHz` (30) as IEEE-754 binary32 big-endian | frame period in free-running mode; NaN/0/negative → 1 Hz | `AcquisitionFrameRate` (Float 1..1000 Hz) → `AcquisitionFrameRateReg` (FloatReg 4) |
 | `0x10040` | TestPattern | RW | 1 | 0 Off (all zero), 1 DiagonalRamp, 2 FrameCounter | `TestPattern` (Enumeration) → `TestPatternReg` |
 | `0x10044` | UserSetSelector | RW | 0 | 0 Default, 1 UserSet1 (both load the same defaults) | `UserSetSelector` (Enumeration, pSelected UserSetLoad) → `UserSetSelectorReg` |
 | `0x10048` | UserSetLoad | SC | 0 | 1 restores the feature page | `UserSetLoad` (Command value 1, PollingTime 10) → `UserSetLoadReg` (NoCache) |
 | `0x1004C` | AcquisitionFrameCount | RW | 1 | frames per start in MultiFrame mode | `AcquisitionFrameCount` (Integer 1..65535, pIsAvailable AcquisitionModeIsMultiFrame) → `AcquisitionFrameCountReg` |
-| `0x10050` | ReverseX | RW | 0 | 0/1; the pattern is not mirrored | `ReverseX` (Boolean) → `ReverseXReg` |
+| `0x10050` | ReverseX | RW | 0 | 0/1; the pattern is not mirrored | `ReverseX` (Boolean, pIsLocked) → `ReverseXReg` |
 | `0x10054` | WidthMax | RO | 4096 | — | `WidthMax` (Integer) → `WidthMaxReg` |
 | `0x10058` | HeightMax | RO | 4096 | — | `HeightMax` (Integer) → `HeightMaxReg` |
 | `0x1005C` | FrameCounter | RO | 0 | frames sent since construction | — |
@@ -137,6 +146,11 @@ the receiver reports `Stride` 0).
 
 - One server thread; commands are processed one at a time in arrival order. Every reply echoes `req_id`.
   `ack_required = 0` → no reply (the command is still executed). Replies come from the GVCP socket.
+- **No duplicate suppression.** The responder keeps no memory of `req_id`: a retransmitted command (same
+  bytes, same `req_id`) is executed again, and a self-clearing one (AcquisitionStart, TriggerSoftware,
+  UserSetLoad, TimestampControl) acts twice. The library resends with the same `req_id` when an ACK has not
+  arrived within `GvcpTimeoutMs`, so a round trip slower than that window runs the command twice — e.g. a
+  second SingleFrame start and one frame too many. Pinned by `SimGvcpTests.RetransmittedCommand_*`.
 - **DISCOVERY** → 248-byte `DISCOVERY_ACK`. Only unicast to `GvcpEndPoint` is answered, on whatever port the
   socket has. Broadcast DISCOVERY is never seen: the socket is bound to `BindAddress` (a unicast address), and a
   unicast-bound UDP socket does not receive datagrams sent to a broadcast address. `GvcpPort = 3956` only makes
@@ -160,6 +174,17 @@ the receiver reports `Stride` 0).
   (checked every ≤ 20 ms), CCP is cleared, `ControlOwner` becomes null, `HeartbeatTimeouts` increments and
   `ControlOwnerChanged(null)` fires. `HeartbeatTimeout = 0` disables expiry. Owner reads of CCP increment
   `HeartbeatObserved`.
+- **Reboot**: `Reboot()` emulates a power cycle without giving up the socket, so the endpoint stays the
+  same. Between two commands it stops acquisition, drops the owner (`ControlOwnerChanged(null)` fires if there
+  was one, on the calling thread and before the next command is handled, so it always precedes a new owner),
+  and returns every volatile register to its power-on value: CCP, PrimaryAppPort/Ip,
+  HeartbeatTimeout (`SimDeviceOpt.HeartbeatTimeoutMs`), GvcpConfig, TimestampControl, the latched timestamp,
+  SCP/SCPS/SCPD/SCDA/SCCFG, and the feature page (as `UserSetLoad`). The timestamp counter restarts at 0 and the
+  next frame is block 1. Persistent IP, `UserDefinedName`, the observation counters and `FrameCounter` survive.
+  A controlling host's next heartbeat reads CCP = 0 well within its device timeout, so `GevDevice` reports
+  control lost with the "... or the device restarted" reason, and a new session can take control at once.
+  The time a real camera spends offline while rebooting is not emulated. `Stop()`/`Start()` is **not** a
+  reboot: the owner, CCP and all registers survive, and with an ephemeral `GvcpPort` the port changes.
 - **PENDING_ACK** (`SupportPendingAck`): every acknowledged WRITEREG first gets `PENDING_ACK` with
   time = `PendingAckDelayMs`, then the real `WRITEREG_ACK` after that delay (the server thread sleeps).
 - **PACKETRESEND**: never acknowledged. Accepted only from the owner and for channel 0; anything else is
@@ -171,6 +196,20 @@ the receiver reports `Stride` 0).
   counted in `MalformedCount`; `LastError` describes the last problem in English. The receive buffer is
   65536 bytes, so every legal UDP datagram fits; should the socket ever report an oversize datagram
   (`MessageSize`) it is counted as malformed on every platform rather than as a socket error.
+
+## Host timing for tests against the simulator
+
+The simulator answers at once, but a loaded CI runner does not schedule anyone at once. `GevDeviceOpt`'s
+defaults are production values — `GvcpTimeoutMs` 500 with `GvcpRetries` 3, and `HeartbeatTimeoutMs` 3000,
+which makes the heartbeat period 1000 ms — and on a starved runner both have failed against the simulator,
+as recorded in `tests/GevSharp.Tests/Integration/SimRig.cs`: a loopback round trip took longer than a 1 s GVCP
+window, so the WRITEREG was resent and executed twice (see "No duplicate suppression" above), and a 1 s period
+against a 3 s device timeout lost control. `SimRig.DefaultDeviceOpt()` therefore uses `GvcpTimeoutMs` 3000
+with one retry, and `HeartbeatTimeoutMs` 10 000 with a 500 ms period; tests that exercise expiry set their own
+values. A downstream suite that drives the simulator should widen the same two settings rather than inherit the
+production defaults — otherwise its flaky failures look like its own bugs (an extra frame after a single grab,
+a spurious `ControlLost`). Widening costs nothing on the normal path: these are budgets for a missing reply,
+not expected response times.
 
 ## GVSP behaviour
 
@@ -210,8 +249,14 @@ the receiver reports `Stride` 0).
 - Unicast discovery only — broadcast DISCOVERY never reaches the unicast-bound socket, whatever `GvcpPort`
   is. `BindAddress` must be IPv4 (the constructor throws `ArgumentException` otherwise).
 - One stream channel, no message channel, no events, no actions, no chunk data, no manifest table.
-- Width/Height/PixelFormat are not refused while acquiring — the lock lives in the XML (`pIsLocked`); a
-  change takes effect from the next frame.
+- The acquisition lock lives in the XML only. `AcquisitionMode`, `Width`, `Height`, `OffsetX`, `OffsetY`,
+  `PixelFormat` and `ReverseX` carry `pIsLocked = AcquisitionActive`, so a node-map write while the sender runs
+  fails with a "locked" `GenApiException`, as on cameras that lock these features during acquisition. A raw
+  WRITEREG/WRITEMEM to the same registers is not refused (tests that drive `SimFeatureAddr` directly rely on
+  that); a format change made that way takes effect from the next frame. The lock follows `AcquisitionStatus`,
+  which drops as soon as a SingleFrame/MultiFrame run has sent its frames — the lock ends there, not at the
+  next `AcquisitionStop`. `TriggerMode`/`TriggerSource` are left unlocked: cameras differ there (some lock
+  them while acquiring, some only while `TLParamsLocked` is set), so the simulator does not pick one.
 - The device does not stop streaming when control is lost; SCP stays as written.
 - FORCEIP does not rebind sockets. `DiscoveryAckDelay`, `GvcpConfig`, SCPS bits 30/29 are stored but unused.
 - SCPD timing and the frame period are best effort on a general-purpose OS. A test may bound them only with a

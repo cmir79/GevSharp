@@ -41,17 +41,21 @@ public sealed partial class SimDevice
             {
                 if (!sock.Poll(20_000, SelectMode.SelectRead))
                 {
-                    CheckHeartbeat();
+                    lock (_commandGate) CheckHeartbeat();
                     continue;
                 }
 
                 int n = sock.ReceiveFrom(buf, ref ep);
                 var src = (IPEndPoint)ep;
                 var sender = new IPEndPoint(src.Address, src.Port);
-                CheckHeartbeat();
-                long handleStartNs = NowNs;
-                HandleGvcp(buf, n, sender);
-                ObserveCommandHandleTime(NowNs - handleStartNs);
+                // 명령 하나는 재부팅(Reboot)과 겹치지 않는다 — 처리 시간은 잠금을 얻은 뒤부터 잰다(재부팅을 기다린 시간은 빼고).
+                lock (_commandGate)
+                {
+                    CheckHeartbeat();
+                    long handleStartNs = NowNs;
+                    HandleGvcp(buf, n, sender);
+                    ObserveCommandHandleTime(NowNs - handleStartNs);
+                }
             }
             catch (ObjectDisposedException)
             {
@@ -457,10 +461,11 @@ public sealed partial class SimDevice
                 break;
 
             case GvbsAddr.TimestampControl:
-                // 값(LSB 기준): 2 = reset, 1 = latch. 쓰기 전용 성격이라 읽으면 0.
+                // 값(LSB 기준): 1 = reset, 2 = latch — 실제 장치의 기술이 GevTimestampControlReset/Latch 에 싣는 CommandValue 와 같다.
+                // 쓰기 전용 성격이라 읽으면 0. 둘 다 서 있으면 reset 뒤에 latch(래치 값은 거의 0).
                 Registers.WriteU32(addr, 0);
-                if ((value & 2) != 0) Volatile.Write(ref _timestampBaseNs, NowNs);
-                if ((value & 1) != 0)
+                if ((value & 1) != 0) Volatile.Write(ref _timestampBaseNs, NowNs);
+                if ((value & 2) != 0)
                 {
                     ulong ts = TimestampTicks;
                     Registers.WriteU32(GvbsAddr.TimestampLatchedHigh, (uint)(ts >> 32));

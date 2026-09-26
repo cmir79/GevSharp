@@ -64,6 +64,23 @@ public class GevDiscoveryTests
     }
 
     [Fact]
+    public async Task ProbeReturnsNullWhenTheDeviceAnswersWithAnErrorStatus()
+    {
+        // 문서가 밝힌 null 의 둘째 까닭 — 장치는 거기 있고 답도 했지만 오류 status 다. 예외로 새지 않고 null 이다
+        // (브로드캐스트 탐색도 같은 응답을 목록에 넣지 않는다). 예산을 크게 두어, null 이 예산을 다 쓴 무응답이 아니라
+        // 온 응답에서 나왔다는 것을 시간으로 가른다 — 굶주린 스케줄러의 고정 비용은 이 예산에 한참 못 미친다.
+        using var r = new GvcpTestResponder();
+        r.DiscoveryErrorStatus = GvcpConst.StatusBusy;
+        const int budgetMs = 10_000;
+        var sw = Stopwatch.StartNew();
+
+        Assert.Null(await GevDiscovery.ProbeAsync(r.EndPoint, budgetMs, default));
+
+        Assert.True(sw.ElapsedMilliseconds < budgetMs, $"probe took {sw.ElapsedMilliseconds} ms; the error-status reply should have ended it before the {budgetMs} ms budget");
+        Assert.Equal(GvcpConst.DiscoveryCmd, Assert.Single(r.Requests).Command);
+    }
+
+    [Fact]
     public async Task ProbeSkipsTruncatedDiscoveryAck()
     {
         using var r = new GvcpTestResponder();
@@ -270,6 +287,38 @@ public class GevDiscoveryTests
         Assert.True(sw.ElapsedMilliseconds < 10_000, $"discovery took {sw.ElapsedMilliseconds} ms for a 150 ms window");
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task DiscoverRejectsARepeatBelowOne(int repeat)
+    {
+        // TimeoutMs 와 같은 규칙이다 — 보낼 횟수가 1 미만인 설정 오류를 1 로 바꿔 조용히 넘기지 않는다.
+        // 인터페이스를 비워 두어, 검사가 없으면 창을 열지 않고 빈 목록으로 곧바로 돌아온다(네트워크를 타지 않는다).
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => GevDiscovery.DiscoverAsync(new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>(), Repeat = repeat }));
+        Assert.Contains("Repeat", ex.Message);
+    }
+
+    [Fact]
+    public async Task RepeatNeverStretchesTheWindow()
+    {
+        // 창보다 훨씬 많은 반복을 요구해도 전송은 창 안에서만 하고 창이 끝나면 돌아온다. 간격은 1 ms 아래로 내려가지 않으므로
+        // 한 대상에 보내는 횟수는 창 길이(ms)를 넘을 수 없다. 창을 넘겨 계속 보내는 회귀는 가드 토큰이 끊어 취소로 드러난다
+        // (가드가 없으면 그 회귀는 사실상 끝나지 않는다).
+        using var r = new GvcpTestResponder();
+        const int windowMs = 100;
+        using var guard = new CancellationTokenSource(15_000);
+        var sw = Stopwatch.StartNew();
+
+        await GevDiscovery.DiscoverAsync(LoopbackOpt(windowMs, 1_000_000, r.EndPoint), guard.Token);
+
+        // 상한은 창을 재려는 것이 아니라(과부하에서는 소켓·스레드 비용이 얹힌다) 반복이 창을 늘리는 회귀를 겨냥한다.
+        Assert.True(sw.ElapsedMilliseconds < 10_000, $"discovery took {sw.ElapsedMilliseconds} ms for a {windowMs} ms window");
+        await GvcpChannelTests.WaitUntilAsync(() => r.CountOf(GvcpConst.DiscoveryCmd) >= 1, timeoutMs: 10_000, what: "a DISCOVERY_CMD was logged");
+        await Task.Delay(50);   // 응답기의 기록이 따라잡을 틈을 준다
+        Assert.InRange(r.CountOf(GvcpConst.DiscoveryCmd), 1, windowMs);
+    }
+
     [Fact]
     public async Task DiscoverHonoursCancellation()
     {
@@ -286,7 +335,8 @@ public class GevDiscoveryTests
         var gw = IPAddress.Parse("192.168.1.1");
 
         await Assert.ThrowsAsync<ArgumentNullException>(() => GevDiscovery.ForceIpAsync(null!, ip, mask, gw));
-        await Assert.ThrowsAsync<GevException>(() => GevDiscovery.ForceIpAsync(mac, ip, mask, gw, new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>() }));
+        var noIface = await Assert.ThrowsAsync<GevException>(() => GevDiscovery.ForceIpAsync(mac, ip, mask, gw, new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>() }));
+        Assert.Contains("GevDiscoveryOpt.Interfaces is an empty list", noIface.Message);   // 탐색과 같은 까닭을 밝힌다
         await Assert.ThrowsAsync<GevException>(() => GevDiscovery.ForceIpAsync(mac, IPAddress.IPv6Loopback, mask, gw, new GevDiscoveryOpt { Interfaces = new[] { IPAddress.Loopback } }));
 
         // 루프백 인터페이스로는 브로드캐스트가 막힐 수 있다 — 보내졌거나 "보낼 길이 없다"로 끝나야 하고, 어느 쪽이든 멈추지 않는다.

@@ -23,7 +23,10 @@ public sealed class GevDeviceOpt
     public int GvcpRetries { get; set; } = 3;
     /// <summary>제어권을 잡을 때 GVBS 0x0938 에 쓰는 장치 쪽 하트비트 타임아웃.</summary>
     public int HeartbeatTimeoutMs { get; set; } = 3000;
-    /// <summary>하트비트(CCP 읽기) 주기. null = 장치가 받아들인 타임아웃 / 3.</summary>
+    /// <summary>
+    /// 하트비트(CCP 읽기) 주기. null = 장치가 받아들인 타임아웃 / 3. 장치가 0 이나 int 에 들어가지 않는 값(2^31 ms 이상)을
+    /// 되돌려 주면 <see cref="HeartbeatTimeoutMs"/> / 3.
+    /// </summary>
     public int? HeartbeatPeriodMs { get; set; }
     /// <summary>
     /// PENDING_ACK 이 늘릴 수 있는 추가 대기의 상한. PENDING_ACK 을 받은 요청 하나가 GVCP 줄을 붙드는 시간이 여기서 정해진다.
@@ -31,6 +34,10 @@ public sealed class GevDeviceOpt
     /// 자동 값은 하트비트를 시작하기 직전에 정해진다. 여는 동안에는 아직 하트비트가 없으므로 채널 기본값
     /// (<see cref="Gvcp.GvcpChannelOpt.DefaultMaxPendingAckWaitMs"/>)으로 열고, 하트비트가 없는
     /// <see cref="GevAccessMode.ReadOnly"/> 세션은 그 값을 그대로 쓴다.
+    /// 값을 주면 자동 계산은 꺼진다. 0 은 "상한 없음" 도 "PENDING_ACK 무시" 도 아니고 연장이 0 이라는 뜻이다 —
+    /// 장치가 PENDING_ACK 로 답한 명령은 응답 창(<see cref="GvcpTimeoutMs"/>) 하나 안에 끝나야 하고, 못 끝나면
+    /// <see cref="GvcpRetries"/> 와 무관하게 다시 보내지 않고 <see cref="GevTimeoutException"/> 으로 끝난다(PENDING_ACK 는 장치가
+    /// 명령을 받아 실행 중이라는 대답이라 재전송하면 두 번 실행될 수 있다). 응답 창 안에 온 본 응답은 그대로 받는다.
     /// </summary>
     public int? MaxPendingAckWaitMs { get; set; }
     /// <summary>GVCP 소켓을 묶을 호스트 주소. null = 자동(탐색 인터페이스 → 같은 서브넷 인터페이스 → OS 라우팅).</summary>

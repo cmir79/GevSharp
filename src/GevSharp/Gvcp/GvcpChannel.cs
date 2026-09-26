@@ -17,6 +17,7 @@ public sealed class GvcpChannelOpt
     /// <summary>
     /// PENDING_ACK 가 요청한 추가 대기의 상한(한 요청 누적). PENDING_ACK 를 받은 요청은 재전송하지 않으므로
     /// 한 요청에서 연장을 받는 시도는 하나뿐이고, 이 값이 곧 그 요청이 연장으로 쓸 수 있는 전부다.
+    /// 0 = 연장 없음: PENDING_ACK 를 받은 요청은 응답 창(<see cref="TimeoutMs"/>) 하나 안에 끝나야 하고, 못 끝나면 재전송 없이 시한 초과다.
     /// </summary>
     public int MaxPendingAckWaitMs { get; set; } = DefaultMaxPendingAckWaitMs;
 }
@@ -52,6 +53,13 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     /// </summary>
     public const string FailedIndexKey = "FailedIndex";
 
+    /// <summary>
+    /// PENDING_ACK 를 받은 요청이 허락된 연장 안에 끝나지 못해 난 <see cref="GevTimeoutException"/> 의 <see cref="Exception.Data"/> 에
+    /// 이 키로 true 를 넣는다. 형은 응답이 아예 없던 시한 초과와 같지만, 이쪽은 장치가 살아서 "받아서 실행 중" 이라고 답한 것이다 —
+    /// 그 차이로 "장치를 잃었다(다시 연결)" 를 가르는 자리(카메라 XML 적재)가 이 표식을 본다.
+    /// </summary>
+    internal const string PendingAckExpiredKey = "PendingAckExpired";
+
     private readonly Socket _socket;
     private readonly Thread _rxThread;
     private readonly SemaphoreSlim _reqLock = new(1, 1);
@@ -71,6 +79,8 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     private int _reqIdCounter;
     private volatile PendingRequest? _pending;
     private volatile bool _isDisposed;
+    /// <summary>수신 루프가 회복 불가로 채널을 스스로 닫을 때의 원인. 밖에서 닫았으면 null.</summary>
+    private Exception? _closeCause;
     private long _staleAckCount;
     private long _foreignPacketCount;
     private long _malformedPacketCount;
@@ -78,10 +88,15 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
 
     public GvcpChannel(IPEndPoint device, IPAddress? localAddress = null, GvcpChannelOpt? opt = null)
     {
-        DeviceEndPoint = device ?? throw new ArgumentNullException(nameof(device));
-        _logSrc = $"{LogSrc} {DeviceEndPoint.Address}";
+        if (device is null) throw new ArgumentNullException(nameof(device));
         if (device.AddressFamily != AddressFamily.InterNetwork)
             throw new GevException($"{device} is not an IPv4 endpoint; GVCP runs over IPv4 only");
+        // 호출자의 IPEndPoint 를 그대로 쥐지 않고 사본을 만든다 — IPEndPoint 는 바뀌는 객체라, 호출자가 같은 객체를 다음 장치에
+        // 다시 쓰면(Port·Address 변경) 송신 주소(아래 직렬화 사본)는 그대로인데 응답 대조(HandlePacket)·DeviceEndPoint·로그만
+        // 따라 바뀌어 진짜 장치의 응답이 전부 남의 패킷으로 버려진다. 아래는 전부 이 사본에서 끌어낸다.
+        device = new IPEndPoint(device.Address, device.Port);
+        _device = device;
+        _logSrc = $"{LogSrc} {_device.Address}";
         // 호출자가 준 인스턴스를 그대로 쥐지 않고 값만 옮겨 온다 — 채널이 세션에 맞춰 상한을 다시 정할 때(SetMaxPendingAckWaitMs)
         // 호출자의 객체를, 나아가 같은 객체로 만든 다른 채널까지 조용히 바꿔 놓지 않기 위해서다.
         // ⚠ GvcpChannelOpt 에 항목을 더하면 여기에도 더한다.
@@ -118,8 +133,22 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         GevLog.Debug(_logSrc, $"channel opened from {LocalEndPoint}");
     }
 
+    /// <summary>
+    /// 채널이 닫힐 때 한 번 불린다 — 누가 닫았든(쥔 세션의 닫기, 수신 소켓이 회복 불가로 스스로 닫음, 호출자가 직접 닫음).
+    /// 인자는 스스로 닫은 경우의 원인이고 그 밖에는 null. 닫는 스레드에서 동기로 불리므로 가볍게 처리한다.
+    /// 이 채널을 쥔 세션은 이것으로 "열려 있다고 답하면서 모든 요청이 ObjectDisposedException 으로 끝나는" 창을 닫는다.
+    /// </summary>
+    internal Action<Exception?>? OnClosed { get; set; }
+
     public IPEndPoint LocalEndPoint { get; }
-    public IPEndPoint DeviceEndPoint { get; }
+    /// <summary>
+    /// 이 채널이 겨냥하는 장치 끝점. 부를 때마다 새 사본을 돌려준다 — 생성자에 넘긴 객체도, 여기서 받은 객체도 뒤에 바꿔 봐야
+    /// 이 채널은 처음 연 장치에 묶여 있다(응답 대조는 채널 안의 사본으로 한다).
+    /// </summary>
+    public IPEndPoint DeviceEndPoint => new(_device.Address, _device.Port);
+
+    /// <summary>응답 대조·로그에 쓰는 장치 끝점 — 밖으로 내주지 않는다.</summary>
+    private readonly IPEndPoint _device;
     /// <summary>이 채널이 실제로 쓰는 타이밍 값(생성자에 넘긴 객체의 사본). 진단용으로 읽는다.</summary>
     public GvcpChannelOpt Opt => _opt;
     public bool IsDisposed => _isDisposed;
@@ -155,9 +184,11 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
             var reqId = NextReqId(ref _reqIdCounter);
             var length = cmd.Length;
             cmd.WriteTo(_sendBuf, reqId);
-            var attempts = 1 + _opt.Retries;
+            // 시도 횟수는 long 으로 센다 — Retries = int.MaxValue("끝없이 재시도")에서 1 + Retries 가 int 로는 음수로 감겨
+            // 루프가 한 번도 돌지 않고 아무것도 보내지 않은 채 시한 초과로 끝난다. 루프 변수도 같이 넓혀야 2^31 번째에서 감기지 않는다.
+            var attempts = 1L + _opt.Retries;
 
-            for (var attempt = 1; attempt <= attempts; attempt++)
+            for (var attempt = 1L; attempt <= attempts; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
                 var pending = new PendingRequest(reqId, cmd.ExpectedAck);
@@ -182,15 +213,20 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 // 같은 명령을 또 보내면 두 번 실행될 수 있다. 재시도마다 연장 예산이 다시 붙어 줄을 붙드는 시간이
                 // (1 + Retries) 배로 늘어나는 것도 여기서 끊는다 — 하트비트가 그 줄에 같이 서 있다.
                 if (Interlocked.Read(ref pending.PendingDeadlineMs) > 0)
-                    throw new GevTimeoutException(
-                        $"{cmd.Name} to {DeviceEndPoint} was answered with PENDING_ACK but never completed within its {pending.BudgetMs} ms budget; "
+                {
+                    var expired = new GevTimeoutException(
+                        $"{cmd.Name} to {_device} was answered with PENDING_ACK but never completed within its {pending.BudgetMs} ms budget; "
                         + "the command is not resent because the device has already taken it");
+                    // 장치는 답했다 — 무응답 시한 초과와 형은 같아도 장치 상실로 읽히지 않게 표식을 단다.
+                    expired.Data[PendingAckExpiredKey] = true;
+                    throw expired;
+                }
 
                 if (GevLog.IsEnabled(GevLogLevel.Debug))
                     GevLog.Debug(_logSrc, $"{cmd.Name} req_id {reqId}: no reply within {_opt.TimeoutMs} ms (attempt {attempt}/{attempts})");
             }
 
-            throw new GevTimeoutException($"{cmd.Name} to {DeviceEndPoint} timed out after {attempts} attempt(s) of {_opt.TimeoutMs} ms");
+            throw new GevTimeoutException($"{cmd.Name} to {_device} timed out after {attempts} attempt(s) of {_opt.TimeoutMs} ms");
         }
         finally
         {
@@ -210,7 +246,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
         catch (SocketException ex)
         {
-            throw new GevException($"GVCP send to {DeviceEndPoint} failed: {ex.SocketErrorCode}", ex);
+            throw new GevException($"GVCP send to {_device} failed: {ex.SocketErrorCode}", ex);
         }
     }
 
@@ -321,7 +357,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
         catch (SocketException ex)
         {
-            throw new GevException($"GVCP send to {DeviceEndPoint} failed: {ex.SocketErrorCode}", ex);
+            throw new GevException($"GVCP send to {_device} failed: {ex.SocketErrorCode}", ex);
         }
     }
 
@@ -402,7 +438,9 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 {
                     // 스스로 회복하지 않는 소켓 — 경고를 무한히 찍는 대신 채널을 닫아 요청 쪽이 즉시 실패하게 한다.
                     GevLog.Error(_logSrc, $"receive failed {consecutiveFailures} times in a row ({ex.SocketErrorCode}); closing the channel", ex);
-                    _pending?.Tcs.TrySetException(new GevException($"GVCP receive on {LocalEndPoint} kept failing ({ex.SocketErrorCode}); channel closed", ex));
+                    var failure = new GevException($"GVCP receive on {LocalEndPoint} kept failing ({ex.SocketErrorCode}); channel closed", ex);
+                    _pending?.Tcs.TrySetException(failure);
+                    _closeCause = failure;
                     Dispose();
                     break;
                 }
@@ -438,11 +476,11 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     private void HandlePacket(byte[] buf, int n, EndPoint from)
     {
         // 장치는 명령을 받은 그 소켓(주소+포트)에서 응답한다 — 다른 곳에서 온 것은 이 채널의 응답이 아니다.
-        if (from is not IPEndPoint fromIp || !fromIp.Equals(DeviceEndPoint))
+        if (from is not IPEndPoint fromIp || !fromIp.Equals(_device))
         {
             Interlocked.Increment(ref _foreignPacketCount);
             if (GevLog.IsEnabled(GevLogLevel.Trace))
-                GevLog.Trace(LogSrc, $"ignored {n} bytes from {from} (device is {DeviceEndPoint})");
+                GevLog.Trace(LogSrc, $"ignored {n} bytes from {from} (device is {_device})");
             return;
         }
 
@@ -494,7 +532,11 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         if (_isDisposed) throw new ObjectDisposedException(nameof(GvcpChannel));
     }
 
-    /// <summary>소켓을 닫고 수신 스레드가 끝나기를 기다린다. 대기 중인 요청은 <see cref="ObjectDisposedException"/> 으로 끝난다.</summary>
+    /// <summary>
+    /// 소켓을 닫고 수신 스레드가 끝나기를 기다린다. 대기 중인 요청은 <see cref="ObjectDisposedException"/> 으로 끝나고,
+    /// 그 뒤의 요청도 전부 <see cref="ObjectDisposedException"/> 이다. 이 채널을 쥔 <see cref="GevDevice"/> 가 아직 열려 있었다면
+    /// 그 세션은 이 자리에서 제어권 상실로 넘어간다.
+    /// </summary>
     public void Dispose()
     {
         if (_isDisposed) return;
@@ -509,11 +551,27 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
         }
 
         _pending?.Tcs.TrySetException(new ObjectDisposedException(nameof(GvcpChannel)));
+        NotifyClosed();
 
         if (Thread.CurrentThread != _rxThread && _rxThread.IsAlive && !_rxThread.Join(RxThreadJoinMs))
             GevLog.Warn(_logSrc, "receive thread did not stop within the join timeout");
 
         GevLog.Debug(_logSrc, $"channel closed (was {LocalEndPoint})");
+    }
+
+    /// <summary><see cref="OnClosed"/> 를 부른다. 받는 쪽의 실패가 닫기를 멈추지 않게 삼키고 남긴다.</summary>
+    private void NotifyClosed()
+    {
+        var callback = OnClosed;
+        if (callback is null) return;
+        try
+        {
+            callback(_closeCause);
+        }
+        catch (Exception ex)
+        {
+            GevLog.Error(_logSrc, "channel-closed callback threw", ex);
+        }
     }
 
     /// <summary>

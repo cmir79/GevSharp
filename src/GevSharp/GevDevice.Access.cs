@@ -223,7 +223,11 @@ public sealed partial class GevDevice
 
     // ------------------------------------------------------------------ IGevPort
 
-    /// <summary>GenApi 포트 읽기. 4바이트 정렬 4바이트는 READREG, 나머지는 READMEM. 32비트를 넘는 주소는 <see cref="GevException"/>.</summary>
+    /// <summary>
+    /// GenApi 포트 읽기. 4바이트 정렬 4바이트는 READREG, 나머지는 READMEM.
+    /// 32비트를 넘는 주소는 던지지 않고 하위 32비트로 좁혀 읽는다(주소마다 경고 한 번 — <see cref="ToGvcpAddress"/>).
+    /// 좁힌 범위의 끝이 32비트 공간을 넘을 때만 아무것도 보내기 전에 <see cref="GevException"/>.
+    /// </summary>
     async ValueTask IGevPort.ReadAsync(ulong address, Memory<byte> buffer, CancellationToken ct)
     {
         var addr = ToGvcpAddress(address, buffer.Length);
@@ -236,7 +240,7 @@ public sealed partial class GevDevice
         await ReadMemAsync(addr, buffer, ct).ConfigureAwait(false);
     }
 
-    /// <summary>GenApi 포트 쓰기. 4바이트 정렬 4바이트는 WRITEREG, 나머지는 WRITEMEM.</summary>
+    /// <summary>GenApi 포트 쓰기. 4바이트 정렬 4바이트는 WRITEREG, 나머지는 WRITEMEM. 32비트를 넘는 주소는 읽기와 같이 좁힌다.</summary>
     async ValueTask IGevPort.WriteAsync(ulong address, ReadOnlyMemory<byte> data, CancellationToken ct)
     {
         var addr = ToGvcpAddress(address, data.Length);

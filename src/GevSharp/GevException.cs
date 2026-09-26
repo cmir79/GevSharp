@@ -7,7 +7,22 @@ public class GevException : Exception
     public GevException(string message, Exception? inner) : base(message, inner) { }
 }
 
-/// <summary>GVCP 요청이 재시도까지 전부 응답 없이 끝났다.</summary>
+/// <summary>
+/// 기다리던 응답이 시한 안에 오지 않았다. 세 경우에 나고, 다시 시도해도 되는지가 경우마다 다르다(메시지가 어느 경우인지 밝힌다).
+/// <list type="bullet">
+/// <item>GVCP 요청이 재전송까지 전부 응답 없이 끝났다. 장치가 명령을 받았는지는 알 수 없다.</item>
+/// <item>장치가 PENDING_ACK 로 "받아서 실행 중" 이라고 답한 뒤 허락된 연장(<see cref="GevDeviceOpt.MaxPendingAckWaitMs"/>,
+/// <see cref="Gvcp.GvcpChannelOpt.MaxPendingAckWaitMs"/>) 안에 끝내지 못했다. 명령이 이미 장치에 있으므로 라이브러리는 재전송하지 않는다 —
+/// 장치가 그 명령을 실행했을 수 있으니, 호출자가 같은 명령을 다시 보내면 두 번 실행될 수 있다. 장치는 살아 있으므로 카메라 XML 적재는
+/// 이 경우를 장치 상실로 보지 않고 다른 URL 로 넘어간다.</item>
+/// <item>카메라 XML 을 HTTP 로 받다가 <see cref="Xml.GevXmlLoader.HttpTimeoutMs"/> 를 넘겼다(GVCP 와 무관). <c>GevXmlLoader.LoadFromUrlAsync</c> 는
+/// 이 예외를 그대로 던진다.</item>
+/// </list>
+/// First/Second URL 을 차례로 시도하는 <c>GevXmlLoader.LoadAsync</c>·<see cref="GevDevice.GetXmlAsync"/> 는 둘째·셋째 경우를 감싸지 않은 채
+/// 내지 않는다 — 두 URL 의 실패를 모은 <see cref="GevException"/> 으로 내고, 이 예외는 그 메시지에(마지막 실패였으면
+/// <see cref="Exception.InnerException"/> 으로도) 실린다. 그 둘이 감싸지 않고 던지는 이 예외는 첫째 경우, 곧 장치를 잃은 것뿐이다.
+/// <see cref="GevException"/> 에서 파생한다 — <see cref="TimeoutException"/> 이 아니므로 <c>catch (TimeoutException)</c> 에는 걸리지 않는다.
+/// </summary>
 public sealed class GevTimeoutException : GevException
 {
     public GevTimeoutException(string message) : base(message) { }
@@ -65,7 +80,10 @@ public sealed class GenApiException : GevException
     }
 }
 
-/// <summary>GVSP 스트림이 닫혔거나 시작되지 않은 상태에서 수신을 요청했다.</summary>
+/// <summary>
+/// GVSP 스트림이 닫혔거나 시작되지 않은 상태에서 수신을 요청했다. 닫힘에는 정지·해제 말고도 수신 스레드가 스스로 끝난
+/// 경우(스트림 소켓 사망 등)가 있다 — 그때는 <see cref="GevStream.IsStarted"/> 도 거짓이 되며, 스트림을 정지해 정리한다.
+/// </summary>
 public sealed class GevStreamClosedException : GevException
 {
     public GevStreamClosedException(string message) : base(message) { }

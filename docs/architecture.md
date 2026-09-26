@@ -105,7 +105,9 @@ That is a deliberate resting state, not a silent failure.
 public sealed class GevDiscoveryOpt
 {
     public int TimeoutMs { get; set; } = 1000;          // collect replies for this long
-    public int Repeat { get; set; } = 2;                // total DISCOVERY_CMD sends per target within the window, including the first (not "retries")
+    public int Repeat { get; set; } = 2;                // total DISCOVERY_CMD sends per target within the window, including the first (not "retries"); < 1 → ArgumentOutOfRangeException
+                                                        // sends are scheduled from the window start every min(200, TimeoutMs / Repeat) ms (1 ms floor); a send due
+                                                        // at or after the window end is dropped, so Repeat never stretches the window (Repeat > TimeoutMs → TimeoutMs sends)
     public IReadOnlyList<IPAddress>? Interfaces { get; set; }   // null = every IPv4 interface that is up
     public bool LimitedBroadcast { get; set; } = true;  // 255.255.255.255
     public bool DirectedBroadcast { get; set; } = true; // subnet broadcast of each interface
@@ -114,7 +116,9 @@ public sealed class GevDiscoveryOpt
 public static class GevDiscovery
 {
     public static Task<IReadOnlyList<GevDeviceInfo>> DiscoverAsync(GevDiscoveryOpt? opt = null, CancellationToken ct = default);
-    /// unicast DISCOVERY_CMD to one address (works across subnets and on loopback simulators)
+    /// unicast DISCOVERY_CMD to one address (works across subnets and on loopback simulators), sent once without retry.
+    /// null = no usable reply, not "no device": no reply in time (Debug), an error status (Warn) or a reply shorter than
+    /// the 248-byte block (Warn) — the same replies DiscoverAsync skips. Throws for bad arguments, cancellation and socket failures.
     public static Task<GevDeviceInfo?> ProbeAsync(IPAddress address, int timeoutMs = 1000, CancellationToken ct = default);
     public static Task ForceIpAsync(PhysicalAddress mac, IPAddress ip, IPAddress subnet, IPAddress gateway, GevDiscoveryOpt? opt = null, CancellationToken ct = default);
 }
@@ -146,6 +150,11 @@ Discovery details: one socket per interface bound to `(interfaceIp, 0)` with `En
 255.255.255.255:3956 and to the interface's directed broadcast; collect ACKs until the timeout; dedupe by
 MAC (keep the reply whose interface shares the device subnet if there are several). Truncated ACKs are
 logged and skipped, never turned into ghost entries. Flags byte = `FlagAckRequired | FlagAllowBroadcastAck`.
+An empty list is not only "nobody answered": with no interface to send on (`Interfaces` is an empty list, no
+non-loopback IPv4 interface is up — an unplugged or disabled NIC is not — or the interface list cannot be read)
+`DiscoverAsync` returns at once without waiting for the window, and when interfaces exist but no DISCOVERY_CMD
+left any of them (bind failure, no target, every send failed) the result is empty as well. Both cases log a Warn
+naming the cause; the return type stays a list rather than an exception.
 
 ### Device
 
@@ -158,27 +167,32 @@ public sealed class GevDeviceOpt
     public int GvcpTimeoutMs { get; set; } = 500;
     public int GvcpRetries { get; set; } = 3;
     public int HeartbeatTimeoutMs { get; set; } = 3000;      // written to GVBS 0x0938 when we control
-    public int? HeartbeatPeriodMs { get; set; }              // null = device-accepted timeout / 3; ReadOnly sessions run no heartbeat (GevDevice.HeartbeatPeriodMs = 0)
+    public int? HeartbeatPeriodMs { get; set; }              // null = device-accepted timeout / 3 (HeartbeatTimeoutMs / 3 when the device reads back 0 or a value beyond int range); ReadOnly sessions run no heartbeat (GevDevice.HeartbeatPeriodMs = 0)
     public IPAddress? LocalAddress { get; set; }             // null = auto (route lookup / discovery interface)
     public string? XmlCacheDir { get; set; }                 // null = no on-disk cache of the camera XML
     public bool AllowSwitchover { get; set; } = false;       // set CCP switchover-enable bit
     public int? MaxPendingAckWaitMs { get; set; }            // null = derived so a PENDING_ACK cannot hold the GVCP queue
-                                                             // past the device heartbeat timeout; setting a value turns that derivation off
+                                                             // past the device heartbeat timeout; setting a value turns that derivation off.
+                                                             // 0 = no extension (not "no cap"): a PENDING_ACK'd command must finish within one
+                                                             // GvcpTimeoutMs, else GevTimeoutException without a resend, whatever GvcpRetries says
 }
 
 public sealed class GevDevice : IGevPort, IAsyncDisposable
 {
     public static Task<GevDevice> OpenAsync(GevDeviceInfo info, GevDeviceOpt? opt = null, CancellationToken ct = default);
     public static Task<GevDevice> OpenAsync(IPAddress address, GevDeviceOpt? opt = null, CancellationToken ct = default);
+    public static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default);
+                                                             // non-standard GVCP port (simulator on loopback, NAT/port forwarding);
+                                                             // the port is used for the control channel only; port 0 → ArgumentOutOfRangeException
 
     public GevDeviceInfo Info { get; }             // re-read from bootstrap registers after open
     public IPAddress Address { get; }
     public IPAddress LocalAddress { get; }         // host address used for GVCP; also the SCDA for streams
     public GevAccessMode AccessMode { get; }
-    public bool IsOpen { get; }
+    public bool IsOpen { get; }                    // false after DisposeAsync or once control is lost (see "Errors" below)
     public uint GvcpCapability { get; }            // GVBS 0x0934
     public ulong TimestampTickFrequency { get; }   // GVBS 0x093C/0x0940 (0 if unreadable)
-    public int DeviceHeartbeatTimeoutMs { get; }   // GVBS 0x0938 read back after we wrote it
+    public int DeviceHeartbeatTimeoutMs { get; }   // GVBS 0x0938 read back after we wrote it; a uint register, saturated at int.MaxValue (never negative)
     public int HeartbeatPeriodMs { get; }          // 0 for a read-only session (no heartbeat runs)
     public event Action<GevDevice, Exception?>? ControlLost;   // heartbeat failed or CCP taken by someone else
 
@@ -192,7 +206,8 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
 
     public Task<GevXmlDoc> GetXmlAsync(CancellationToken ct = default);                // Xml module
     public Task<GenApiNodeMap> GetNodeMapAsync(CancellationToken ct = default);         // cached after first call
-    public Task SetTlParamsLockedAsync(bool locked, CancellationToken ct = default);    // host-side node, not a register; gates the acquisition commands
+    public Task<bool> SetTlParamsLockedAsync(bool locked, CancellationToken ct = default);   // host-side node, not a register; gates the acquisition commands.
+                                                                                            // false = nothing written: no TLParamsLocked (Debug log), or one that is not an integer node (Warn log)
     public Task<GevStream> OpenStreamAsync(GevStreamOpt? opt = null, CancellationToken ct = default);  // Gvsp module; channel 0
     public Task<GevStream> OpenStreamAsync(int streamChannel, GevStreamOpt? opt = null, CancellationToken ct = default);  // channel count from GVBS 0x0904
     // Both overloads need control: a ReadOnly session cannot write the stream-channel registers and is
@@ -217,6 +232,19 @@ seen. A cancelled or timed-out open may already have been applied by the device,
 locks the camera for a whole device heartbeat timeout (R21). The only case that must not release is
 `ACCESS_DENIED`, where the privilege belongs to another application.
 
+Errors. Device operations throw the `GevException` family (`GevTimeoutException` no reply,
+`GevStatusException` device refusal, `GevControlLostException` control lost) **and `ObjectDisposedException`,
+which is not a `GevException`**: every device access after `DisposeAsync` throws it — node operations of a
+node map taken earlier included, since the device is their port (`GetXmlAsync`/`GetNodeMapAsync` alone answer
+from the session cache) — and so does a request that reaches the channel after it closed while racing
+`DisposeAsync`. Cancellation is `OperationCanceledException`. A caller that means "any library failure"
+catches `GevException` and `ObjectDisposedException` together. If the control channel closes underneath an
+open session — its receive socket failed beyond recovery, or someone disposed `device.Gvcp` — the session
+turns control-lost on the spot: `IsOpen` becomes false, `ControlLost` fires, and later calls throw
+`GevControlLostException`, rather than answering "open" while every call fails with `ObjectDisposedException`
+until three heartbeats have failed (a read-only session, which runs no heartbeat, never left that state).
+Pinned by `DeviceLifecycleTests.Dispose_NodeMapTakenBefore_*` and `GvcpChannelClosedUnderAnOpenDevice_*`.
+
 `IGevPort` implementation: `ReadAsync`/`WriteAsync` map to READMEM/WRITEMEM; 4-byte-aligned 4-byte
 accesses may use READREG/WRITEREG. An address above `uint.MaxValue` is narrowed to its low 32 bits with a
 one-time warning per address — vendor descriptions declare such addresses (see `docs/protocol-notes.md`) and
@@ -237,7 +265,8 @@ public sealed class GvcpChannel : IDisposable
     /// req_id and the expected ACK command; PENDING_ACK extends the wait to the announced time plus one more
     /// TimeoutMs window (capped by MaxPendingAckWaitMs) — ending exactly at the announced time turns a reply that is
     /// late by the timer granularity into a timeout, and the retry makes the device execute the command twice;
-    /// retries on timeout.
+    /// retries on timeout, except once a PENDING_ACK was seen: the device has taken the command, so it is not resent
+    /// and GevTimeoutException is thrown (a caller that resends it may run it twice).
     public Task<GvcpAck> RequestAsync(GvcpCmd cmd, CancellationToken ct = default);
     /// fire-and-forget command with ack_required = 0 (PACKETRESEND). Thread-safe, no allocation on the hot path.
     public void SendNoAck(ReadOnlySpan<byte> packet);
@@ -267,11 +296,16 @@ public sealed class GevStreamOpt
     public PacketSizeMode PacketSizeMode { get; set; } = PacketSizeMode.Auto;   // Auto: probe with SCPS fire-test from the NIC MTU downwards
     public int PacketSize { get; set; } = 1500;               // used when Fixed; Auto stores the negotiated value here after StartAsync
     public int SocketBufferBytes { get; set; } = 32 * 1024 * 1024;
-    public bool ResendEnabled { get; set; } = true;
+    public bool ResendEnabled { get; set; } = true;           // false (or PacketRequestRatio = 0): no requests, FrameRetentionMs unused — see below
     public int InitialPacketTimeoutMs { get; set; } = 2;      // wait before the first resend request (reordering grace)
-    public int PacketTimeoutMs { get; set; } = 20;            // between resend requests for the same hole
-    public int FrameRetentionMs { get; set; } = 100;          // give up on a frame this long after its last packet
-    public double PacketRequestRatio { get; set; } = 0.25;    // never request more than this fraction of a frame's DISTINCT packets; asking for the same hole again does not spend more budget
+    public int PacketTimeoutMs { get; set; } = 20;            // between resend requests for the same hole; also the silence that marks a frame's tail as sent,
+                                                             // and the give-up time when there is nothing left to request (resend off, budget spent, device refused)
+    public int FrameRetentionMs { get; set; } = 100;          // give up on a frame this long after its last packet — only while resend is on and still asking,
+                                                             // or (resend on) for a frame already dropped for another reason whose trailer never came;
+                                                             // with resend off an incomplete frame goes after PacketTimeoutMs, or at once when a newer block starts,
+                                                             // and a dropped frame without its trailer goes after PacketTimeoutMs
+    public double PacketRequestRatio { get; set; } = 0.25;    // never request more than this fraction of a frame's DISTINCT packets; asking for the same hole again does not spend more budget.
+                                                             // 0 turns resend off (same as ResendEnabled = false); any value above 0 still allows at least one request
     public bool DeliverIncompleteFrames { get; set; } = false;
     public bool FirewallTraversal { get; set; } = true;       // one byte to the device's SCSP port after opening the channel
     public int FirewallTraversalIntervalMs { get; set; } = 15_000;   // re-send that byte after this much silence (0 = never)
@@ -289,7 +323,10 @@ public sealed class GevStream : IAsyncDisposable
     public int LocalPort { get; }
     public int PacketSize { get; }                            // negotiated SCPS
     public GevStreamStats Stats { get; }                      // live counters (Interlocked), snapshot via Stats.Snapshot()
-    public bool IsStarted { get; }                            // true between a successful StartAsync and StopAsync
+    public bool IsStarted { get; }                            // true from a successful StartAsync until StopAsync/DisposeAsync, or until the
+                                                             // receiver thread ends on its own (stream socket died) — then ReceiveAsync hands
+                                                             // out what is queued and throws GevStreamClosedException; the stream cannot be
+                                                             // restarted, and StopAsync is still needed to turn the device off and return buffers
     public event Action<GevFrameDiag>? FrameDropped;          // Reason is one of four: Incomplete / NoBuffer / Error / Unsupported (called on receiver thread — keep it cheap)
 
     public Task StartAsync(CancellationToken ct = default);   // bind + tune socket, write SCDA/SCP, negotiate SCPS, apply SCPD, start thread. Does NOT send AcquisitionStart.
@@ -300,7 +337,13 @@ public sealed class GevStream : IAsyncDisposable
     public Task StopAsync(CancellationToken ct = default);    // SCP = 0, SCDA = 0, close the socket to wake the thread, join it,
                                                              // then **drain the queue and Dispose every frame still in it** — skipping that
                                                              // leaves those pool buffers held forever — and complete pending receives
-                                                             // with GevStreamClosedException
+                                                             // with GevStreamClosedException. The token aborts no step: a cancelled (even
+                                                             // pre-cancelled) token still turns the device off, runs the whole local
+                                                             // cleanup and returns normally — a half-stopped stream is worse than either.
+                                                             // The two writes share one fixed budget of their own (2 × GvcpTimeoutMs, at most
+                                                             // 2 s) that depends on neither the token nor GvcpRetries, so a device that stopped
+                                                             // answering costs at most that (then a Warn, and local cleanup goes on); the join
+                                                             // is capped at 2 s. A failed start resets SCP within the same budget
     public ValueTask<GevFrame> ReceiveAsync(CancellationToken ct = default);  // waits until a frame, the token, or StopAsync/DisposeAsync —
                                                              // NOT until the device goes away (see "Stream lifetime" below)
     public bool TryReceive(out GevFrame? frame);
@@ -342,9 +385,13 @@ with the ordinary success status instead — one measured camera does (`docs/eva
 ```
 ```
 
-Receiver design: one dedicated background thread per stream. Blocking `Receive` (not `ReceiveFrom`: no
-per-packet `EndPoint` allocation; the deliberate consequence is that the datagram source is not checked
-against the device address — any host that can reach the bound UDP port feeds the reassembler) into a
+Receiver design: one dedicated background thread per stream. Non-blocking `Receive` while datagrams are
+queued, and `Poll` to wait (2 ms-class interval while a frame is being assembled, 200 ms idle) only when the
+socket is empty — never a socket receive timeout, because a timed-out blocking receive on Windows can lose
+the datagram arriving at that moment (measured: `docs/evaluation.md`, "Receive wait on Windows"). `Receive`,
+not `ReceiveFrom`: no per-packet `EndPoint` allocation; the deliberate consequence is that the datagram
+source is not checked against the device address — any host that can reach the bound UDP port feeds the
+reassembler. Datagrams go into a
 scratch `byte[]` (size = max(PacketSize, 9000) + slack), parse the 8/20-byte header, and copy the payload
 straight into the frame buffer at `(packetId - 1) * dataBytesPerPacket`. Track received packets per frame
 in a bit array. A hole is an id below the highest id received so far; the not-yet-transmitted tail becomes
@@ -369,7 +416,11 @@ new frame only when it is not evidently a duplicate — a resent copy (status 0x
 timestamp equals the closed frame's is dropped as a duplicate; a resent leader for a block older than the
 newest one in flight is ignored; any other leader with an "old" block id is treated as the device having
 restarted its block numbering (single-frame acquisitions restart at 1) and opens normally. Opening a block
-never marks the tail of a block that is not older than it. Only a few frames
+never marks the tail of a block that is not older than it. The newest frame that has received only its leader
+is exempt from `FrameRetentionMs` (a long exposure sends the leader first), so a restart can also land on a block
+id that is still in flight: a leader for that id that arrives after at least `PacketTimeoutMs` of silence, is not
+a resent copy and does not carry the same timestamp reopens the slot with the new leader; the leader-only frame
+is counted incomplete and raised through `FrameDropped` but never delivered. Only a few frames
 are in flight at once (leader of frame N+1 may arrive while N waits for resends); frames close in block
 order. Completed frames are pushed to a bounded queue; `ReceiveAsync` awaits it. When the pool is empty,
 the incoming frame is dropped and `FramesDroppedNoBuffer` increments — the receiver never reuses a buffer
@@ -469,6 +520,18 @@ three GVBS strings and the URL register to build the key, never the XML region.
 
 Read First URL (512 bytes) then Second URL as fallback. `Local:` addresses/lengths are hexadecimal without
 `0x`. Read memory in `MaxMemPayload` chunks, rounding the length up to a multiple of 4 and trimming.
+Failure types are kept so a caller can tell "reconnect" from "bad XML": when the port reports device loss
+(`GevControlLostException`, `GevTimeoutException`, `ObjectDisposedException`) while reading a URL register, the
+cache key (when the cache is on) or `Local:` memory, that exception is rethrown unwrapped at once and the other URL
+is not tried (it goes through the same port and would only spend another retry budget) — on the second attempt too.
+A timeout whose other end was alive is not device loss and still falls back: an http download timeout, and a read
+the device answered with PENDING_ACK but did not finish within the allowed extension. The two are told apart by a
+mark the throwing site puts on the exception (the loader on its http timeout, the channel on the PENDING_ACK one),
+not by the URL kind — an http URL still reads its cache key from the device. Otherwise, if every
+attempted URL failed with the same exception type more specific than `GevException`, the first of them is rethrown;
+failures of different kinds (an empty register counts as one) are aggregated into a `GevException` carrying both
+reasons, the last one as `InnerException`. Timeouts are left out of that same-type rethrow and always aggregated, so
+a bare `GevTimeoutException` out of `LoadAsync`/`GetXmlAsync` always means device loss (a GVCP request with no reply).
 Cache file name: `{Manufacturer}_{Model}_{DeviceVersion}_{FileName}` sanitized; cache is opt-in.
 
 ### GenApi (`GevSharp.GenApi`)
@@ -484,7 +547,9 @@ public partial class GenApiNodeMap
 ```
 
 **Transport-layer lock.** `GevDevice.SetTlParamsLockedAsync(bool locked, ct) → Task<bool>` writes the
-`TLParamsLocked` node (returns false when the description has none). That node is *not* a device register —
+`TLParamsLocked` node and returns true. It returns false, writing nothing, when the description has no such
+node (logged at Debug — such a device does not use the lock) or declares it as something other than an
+integer node (logged at Warn with the node kind — whatever the description gates on it stays as it was). That node is *not* a device register —
 it lives in the node map, and vendor descriptions gate features on it: on a Basler ace, `AcquisitionStart`
 carries `ImposedAccessMode=WO` plus `pIsLocked = (TLParamsLocked = 0)`, so it reads as a locked write-only
 node — i.e. `NotAvailable` — until the host sets the lock, and the format parameters (`Width`, `Height`,
@@ -557,8 +622,15 @@ model + port.
   `pValue` to an Integer or Float, `DisplayNotation`/`DisplayPrecision`/`Unit`.
 - Enumeration: entries with `Value`, `Symbolic`, `NumericValue`, own `pIsImplemented`/`pIsAvailable`;
   value comes from `pValue` (Integer/IntReg/MaskedIntReg) or `Value` literal.
-- Command: `CommandValue`/`pCommandValue` written to `pValue`; `IsDone` = read `pValue` and compare with the
-  command value when `PollingTime` is present, else true.
+- Command: `CommandValue`/`pCommandValue` written to `pValue`. `IsDone` is GevSharp's own rule, not checked
+  against a primary source: only when the Command node itself carries `PollingTime` (its presence is used, never
+  its interval) and the Command's effective access mode can read, `pValue` is re-read from the device and IsDone is
+  true once it no longer equals the command value (read as a self-clearing bit). Otherwise IsDone is true without
+  any wire read — no `PollingTime`, no `pValue`, or a write-only Command (also a locked one) — so on a description
+  without a Command-level `PollingTime` it is **not** a completion signal: a caller that must wait for a command
+  (a user-set load, say) reads a status node the device documents or waits a settle time of its own. When a
+  re-read is needed but the Command is not implemented or not available, IsDone throws `GenApiException` without
+  touching the port.
 - Boolean: `OnValue`/`OffValue` (default 1/0) over `pValue` or literal `Value`.
 - String: StringReg (fixed length, NUL-padded, ASCII/UTF-8 per device mode), literal `Value`.
 - Port: `pPort` on every register node → `IPortNode.Port`; ignore `ChunkID`/`SwapEndianess`/`CacheChunkData`
@@ -588,7 +660,13 @@ GenApi runtime — implementation notes where the behaviour is more specific tha
   written bytes; WriteAround/NoCache drop), and a chain walk stops at the written node so it is not undone.
   Registers that share bytes without a graph edge (StructReg entries, alias registers) are found by address
   overlap and dropped. `INode.Invalidate()` uses the same closure but includes the node itself and its whole
-  value chain.
+  value chain. A node *declared* stale — the node `Invalidate()` is called on (or whose write threw), a
+  `pInvalidator` listener, a `pSelected` target — also has its chain walked through formula inputs: the value
+  `pVariable`s of a SwissKnife/IntSwissKnife/Converter/IntConverter, so a value that an IntSwissKnife assembles
+  from two cacheable latch registers is re-read. A node reached only as a dependent is stale because of the input
+  that led there, which is dropped on its own; its other formula inputs stay cached. `.Entry.` variables are
+  bind-time constants and `.Min`/`.Max`/`.Inc` variables read limits, so neither is part of the value chain (like
+  `pMin`/`pMax`/`pInc`).
 - A write that **throws** is treated as "the device may hold the new value": a GVCP command leaves before its
   acknowledge is awaited, so a lost reply, a timeout after PENDING_ACK or a cancelled wait all arrive here with
   the device already changed. The register drops its own cache and every overlapping one, and the node drops
@@ -620,7 +698,7 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
 | Group | Types | Where it is specified |
 |---|---|---|
 | Discovery, device, stream | `GevDiscovery(Opt)`, `GevDeviceInfo`, `GevDevice`, `GevDeviceOpt`, `GevAccessMode`, `GevStream`, `GevStreamOpt`, `PacketSizeMode`, `GevFrame`, `GevStreamStats`, `GevStreamStatsSnap`, `GevFrameDiag`, `GevFrameDropReason` | the sections above |
-| Errors | `GevException`, `GevTimeoutException`, `GevStatusException`, `GevControlLostException`, `GevStreamClosedException`, `GenApiException` | "Errors" in CLAUDE.md; each carries the operation or node it failed on |
+| Errors | `GevException`, `GevTimeoutException`, `GevStatusException`, `GevControlLostException`, `GevStreamClosedException`, `GenApiException` | "Errors" in CLAUDE.md; each carries the operation or node it failed on. Outside this family, device operations also throw `ObjectDisposedException` (after `DisposeAsync`, or racing it) and `GevFrame.Data` does after the frame is disposed — "Device" above |
 | Logging | `GevLog`, `GevLogLevel` | a sink the host installs once; the library writes nowhere by itself |
 | Register boundary | `IGevPort` | the one seam between GenApi and a transport |
 | GVCP wire | `GvcpConst`, `GvbsAddr`, `GvcpPacket`, `GvcpCmd`, `GvcpAck`, `GvcpCmdHeader`, `GvcpAckHeader`, `GvcpChannel`, `GvcpChannelOpt` | "GVCP channel" above and `docs/protocol-notes.md` |
@@ -665,7 +743,7 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
   node map read/write, streaming with injected packet loss → resend recovery, incomplete-frame policy,
   buffer-pool exhaustion).
 - End-to-end tests live in `tests/GevSharp.Tests/Integration/`: `SimRig` starts one `SimDevice` on
-  `127.0.0.1:<ephemeral>` and opens a `GevDevice` through the internal `OpenAsync(IPEndPoint, ...)` overload;
+  `127.0.0.1:<ephemeral>` and opens a `GevDevice` through the `OpenAsync(IPEndPoint, ...)` overload;
   acquisition is driven by writing `SimFeatureAddr` registers directly (no node map). `RecordingPort` wraps
   the device's `IGevPort` to assert the order of stream-channel register accesses. Tests that assert exact
   frame sequences drive the simulator in software-trigger mode (`SimRig.TriggerAsync`) instead of relying
@@ -723,8 +801,8 @@ timings on a slow host; acquisition goes through the `AcquisitionStart`/`Acquisi
 transport-layer lock set around them — or through `--acq-start-addr`/`--acq-stop-addr` register writes when the node map
 is unavailable), `regtest` (alternating reads of two registers while the heartbeat runs; mismatches and latency), and
 `sim` (runs `GevSharp.Sim` as a standalone fake camera).
-Every `<ip>` accepts a `:port` suffix; a non-standard port uses the internal `OpenAsync(IPEndPoint)` /
-`ProbeAsync(IPEndPoint)` overloads, which `src/GevSharp/GevSharp.csproj` grants through
+Every `<ip>` accepts a `:port` suffix; a non-standard port uses the public `OpenAsync(IPEndPoint)` and the
+internal `ProbeAsync(IPEndPoint)` overload, which `src/GevSharp/GevSharp.csproj` grants through
 `InternalsVisibleTo("GevSharp.Cli")`. Tests live in `samples/GevSharp.Cli/Tests` (excluded from the executable by
 `<Compile Remove="Tests\**" />`) and are compiled into the suite by `tests/GevSharp.Tests` through a `ProjectReference`
 plus `<Compile Include="..\..\samples\GevSharp.Cli\Tests\**\*.cs" LinkBase="Cli" />`. They run against `GevSharp.Sim` on

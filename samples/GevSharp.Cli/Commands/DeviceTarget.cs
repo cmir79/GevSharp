@@ -5,7 +5,8 @@ namespace GevSharp.Cli.Commands;
 
 /// <summary>
 /// 명령의 &lt;ip&gt; 인자 — "192.168.1.10" 또는 "127.0.0.1:4000". 포트를 생략하면 표준 GVCP 포트(3956).
-/// 표준 포트는 공개 OpenAsync(IPAddress) 로 열고, 다른 포트(시뮬레이터 등)는 IPEndPoint 오버로드로 연다.
+/// 표준 포트는 공개 OpenAsync(IPAddress) 로 열고, 다른 포트(시뮬레이터 등)는 공개 OpenAsync(IPEndPoint) 로 연다.
+/// 프로브만은 포트를 받는 오버로드가 내부 멤버라 InternalsVisibleTo 로 쓴다.
 /// </summary>
 public sealed class DeviceTarget
 {
@@ -49,7 +50,10 @@ public sealed class DeviceTarget
             ? GevDevice.OpenAsync(Address, opt, ct)
             : GevDevice.OpenAsync(EndPoint, opt, ct);
 
-    /// <summary>유니캐스트 DISCOVERY_CMD 한 번. 응답이 없으면 null.</summary>
+    /// <summary>
+    /// 유니캐스트 DISCOVERY_CMD 한 번. 쓸 수 있는 응답이 없으면 null — 시간 안에 응답이 없을 때만이 아니라 장치가 오류 status 로 답했을 때,
+    /// 응답이 탐색 블록보다 짧을 때도 null 이다(뒤의 둘은 라이브러리가 Warn 로그로 남긴다). 예외는 <see cref="GevDiscovery.ProbeAsync(IPAddress, int, CancellationToken)"/> 와 같다.
+    /// </summary>
     public Task<GevDeviceInfo?> ProbeAsync(int timeoutMs, CancellationToken ct)
         => IsStandardPort
             ? GevDiscovery.ProbeAsync(Address, timeoutMs, ct)

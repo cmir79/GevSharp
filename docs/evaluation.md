@@ -222,8 +222,39 @@ resumes later, would otherwise see the stream go permanently silent with no erro
 Three defects were found here that no simulator run had shown, each now fixed and guarded by a test:
 the transport-layer lock (`TLParamsLocked`) that gates the acquisition commands, the host firewall that
 silently swallowed every GVSP packet, and GenApi addresses above 32 bits that made the whole File Access
-category unreadable. A fourth was cosmetic but real: a blocking receive can return `IOPending` on Windows,
-which the receiver logged as an error and answered with a sleep.
+category unreadable. A fourth looked cosmetic at the time: a blocking receive can return `IOPending` on Windows,
+which the receiver logged as an error and answered with a sleep. It was not cosmetic — see the next section.
+
+### Receive wait on Windows: a timed-out blocking receive loses datagrams (2026-09-26)
+
+*Bench measurement with the CLI harness (`samples/GevSharp.Cli`): protocol layer only, no consumer application in the path.*
+
+Up to 0.4.1 the receiver waited for packets with a blocking receive and a socket receive timeout
+(`SO_RCVTIMEO`), 2 ms while a frame is being assembled and 200 ms when idle, and treated `IOPending` like a
+timeout. Windows documents the socket state after a timed-out blocking receive as indeterminate, and in
+practice a datagram that arrives at the moment the timeout expires can be lost. A loopback probe under load
+lost exactly as many datagrams as it saw `IOPending` returns.
+
+On hardware the condition is packets spaced wider than the wait interval, so that every packet arrives just
+after a wait ends: slow senders, a large inter-packet delay (SCPD), bandwidth shared between cameras, or a
+device that sends the leader long before the payload. Basler acA2500-14gm, Mono8 2592x1944, SCPD 300000 ticks
+(about 2.4 ms between packets), resend off so a loss is not hidden, three concurrent test runs as CPU load,
+60 s per run:
+
+| Receiver | Run | Blocks | Incomplete | Missing packets |
+|---|---|---|---|---|
+| 0.3.0 CLI (`SO_RCVTIMEO` wait) | 1 | 46 | 9 | 10 |
+| 0.3.0 CLI (`SO_RCVTIMEO` wait) | 2 | 39 | 8 | 9 |
+| this tree (non-blocking receive + `Poll`) | 1 | 39 | 0 | 0 |
+| this tree (non-blocking receive + `Poll`) | 2 | 39 | 0 | 0 |
+
+With resend on, each such loss costs a resend request instead of a frame, which is why the full-rate runs
+above never showed it: back-to-back packets do not leave the 2 ms gaps. At full rate the new wait changes
+nothing measurable: 120 s, 1752 frames, 989,880 packets, 14.59 fps, 0 resend requests, the same as before.
+The receiver now receives non-blocking while data is queued and waits with `Poll` (which does not consume
+data) only when the socket is empty. `GevSharp.Tests` has an opt-in load test for the loopback case
+(`ReceiveWaitLossTests`, `GEVSHARP_STRESS=1`); it did not reproduce the loss in 2,800 frames on the old code,
+so the hardware table is the evidence.
 
 ### Odd-width GVSP Packed line rule — settled by measurement, and we had it wrong
 
@@ -272,6 +303,28 @@ clamped at the expected size. This matters since frame completion also requires 
 (R29): a device that sent exactly its own `PayloadSize` with no padding in the last packet would have every such
 frame closed as incomplete, with the one-time warning naming both sizes. Not observed on this camera; the rule
 is left as is until a device shows it, and the warning is what would surface it.
+
+**Blocks at acquisition stop (2026-09-26, reported through the CvInspect adapter — not a CLI harness run).** The
+same R29 check closes a block that a device cuts short with an early trailer. The consumer ran GevSharp 0.4.1
+through its adapter on this camera with single grabs, live bursts, 1 ms-timeout grabs that stop acquisition while
+a frame is in flight, and cancellations 0–3 ms after the call. The first run ended with 0 incomplete. The second
+run of the same procedure had **one cut block**: during the cancellation series, block 55 ended with a trailer
+after 431 payload packets — 3,856,896 of the 5,038,848 bytes the leader announced — and was closed as
+incomplete with the one-time warning. This is the first hardware observation of the case R29 guards: 0.4.0 would
+have delivered that frame as complete with the previous frame's pixels in its missing part. So this Basler
+**sometimes** cuts the block it is sending when acquisition is stopped; one clean run did not show it, and one
+such run is not evidence that a model never cuts. In the same run the next single grab timed out once (2 s).
+
+The consumer then ran a 0.4.0 control with the same adapter source and procedure (cancel 0–3 ms after the call ×20,
+then five normal grabs; eight rounds). Both versions saw the device cut blocks with an early trailer ("trailer sets
+packet count 563 -> 552" and similar), and some of the cut blocks were the frame of the **normal grab right after
+a cancellation round** — no packet was missing and no resend was asked; the device sent the trailer early.
+0.4.1 closed those frames as incomplete, so that grab timed out (packets arrived in the window, 0 completed,
+1 incomplete). 0.4.0 returned the cut frame as that grab's answer, marked complete, with its last 12–14 packets'
+worth of bytes still holding the previous frame. So the timeout is not a receiver regression: it is the same
+device behaviour, now reported instead of delivered as a wrong image. Scope: this one camera, grabs right after a
+cancelled grab, intermittent (2 of 8 rounds per version). Why the device cuts the next grab's block was not
+measured. Figures and raw logs are the consumer's (its `cvinspect-0290-cutloop` run); see its records.
 
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of

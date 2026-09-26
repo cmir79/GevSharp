@@ -18,7 +18,7 @@ public sealed class DiscoverCmd : ICliCommand
         "  --timeout ms        reply collection window in milliseconds (default 1000)\n" +
         "  --interface ip      host interface to scan; repeatable (default: every IPv4 interface that is up, loopback excluded)\n" +
         "  --probe ip[:port]   send one unicast DISCOVERY_CMD to that address instead of broadcasting. Reaches devices behind\n" +
-        "                      a router and loopback simulators, which never see a broadcast. Exit code 2 when nothing answers.\n" +
+        "                      a router and loopback simulators, which never see a broadcast. Exit code 2 when no usable reply comes back.\n" +
         "  Columns: IP, MAC, manufacturer, model, device version, serial number, user-defined name, interface that heard\n" +
         "  the reply. Everything shown comes from the discovery reply itself; no session is opened.";
 
@@ -37,7 +37,8 @@ public sealed class DiscoverCmd : ICliCommand
             var info = await target.ProbeAsync(timeoutMs, ct);
             if (info is null)
             {
-                Console.Error.WriteLine($"no reply from {target} within {timeoutMs} ms");
+                // null 은 무응답만이 아니다 — 오류 status·짧은 응답도 null 이고, 그 둘은 라이브러리가 경고로 남긴다(위에 찍힌다).
+                Console.Error.WriteLine($"no usable discovery reply from {target} within {timeoutMs} ms (a reply with an error status or a short payload is logged above)");
                 return CliExitCode.Device;
             }
             devices = new[] { info };

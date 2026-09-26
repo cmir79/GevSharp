@@ -19,7 +19,7 @@ namespace GevSharp;
 public sealed partial class GevStream
 {
     private const int MaxInFlightFrames = 4;
-    private const int IdleReceiveTimeoutMs = 200;
+    private const int IdleWaitMs = 200;
     private const int ScratchSlackBytes = 64;
     private const int RecentClosedCount = 8;
     /// <summary>한 프레임의 패킷 id 상한 — 비트·마감 배열 크기를 묶는다(576 바이트 패킷으로 140 MB 프레임까지).</summary>
@@ -42,7 +42,7 @@ public sealed partial class GevStream
     private long _punchIntervalTicks;
     private long _lastInboundTicks;
     private long _lastPunchTicks;
-    private int _activeReceiveTimeoutMs;
+    private int _activeWaitMs;
     private bool _isResendEnabled;
     private double _requestRatio;
     private bool _isDeliverIncomplete;
@@ -50,6 +50,7 @@ public sealed partial class GevStream
     private bool _hasLoggedChunkOverflow;
     private bool _hasLoggedShortLeader;
     private bool _hasLoggedShortBlock;
+    private bool _hasLoggedStrideChange;
 
     private readonly FrameSlot?[] _active = new FrameSlot?[MaxInFlightFrames];
     private readonly FrameSlot[] _freeSlots = new FrameSlot[MaxInFlightFrames];
@@ -60,7 +61,6 @@ public sealed partial class GevStream
     private readonly ulong[] _recentClosedTimestamp = new ulong[RecentClosedCount];
     private int _recentClosedNext;
     private int _recentClosedFilled;
-    private int _currentReceiveTimeoutMs = -1;
     private int _consecutiveReceiveErrors;
     private SocketError _receiveExitError;
     private uint _loggedUnsupportedPayloadTypes;
@@ -252,11 +252,12 @@ public sealed partial class GevStream
         _packetTimeoutTicks = MsToTicks(_opt.PacketTimeoutMs);
         _retentionTicks = MsToTicks(_opt.FrameRetentionMs);
         // 조립 중인 프레임이 있으면 가장 짧은 마감(유예) 간격으로 깨어나 구멍을 본다. 패킷이 흐르는 동안은 타임아웃이 걸리지 않는다.
-        _activeReceiveTimeoutMs = Math.Max(1, Math.Min(_opt.InitialPacketTimeoutMs, _opt.PacketTimeoutMs));
+        _activeWaitMs = Math.Max(1, Math.Min(_opt.InitialPacketTimeoutMs, _opt.PacketTimeoutMs));
         _maxPayloadBytes = Math.Min(_opt.MaxPayloadBytes, int.MaxValue - ScratchSlackBytes);
         _hasLoggedPayloadCeiling = false;
         _hasLoggedShortLeader = false;
         _hasLoggedShortBlock = false;
+        _hasLoggedStrideChange = false;
         _punchIntervalTicks = _opt.FirewallTraversal && _opt.FirewallTraversalIntervalMs > 0
             ? MsToTicks(_opt.FirewallTraversalIntervalMs)
             : 0;
@@ -275,7 +276,6 @@ public sealed partial class GevStream
         _activeCount = 0;
         _recentClosedNext = 0;
         _recentClosedFilled = 0;
-        _currentReceiveTimeoutMs = -1;
     }
 
     private static long MsToTicks(int ms) => (long)ms * Stopwatch.Frequency / 1000;
@@ -288,23 +288,53 @@ public sealed partial class GevStream
 
         try
         {
+            // 기다림은 소켓 수신 시한(SO_RCVTIMEO)이 아니라 Poll 로 한다. 시한을 건 블로킹 수신은 윈도우에서 만료되는 순간 막 도착한
+            // 데이터그램을 잃을 수 있다 — 만료 뒤 소켓 상태는 정해지지 않는다고 플랫폼이 밝히고 있고, 실기에서 패킷 간격이 대기
+            // 간격보다 넓을 때 옛 대기가 60 초에 9/46·8/39 장을 불완전으로 만들었다(지금 대기 0/39·0/39, docs/evaluation.md
+            // 「Receive wait on Windows」). 그래서 받을 것이 있을 때만 논블로킹으로 받고(흐르는 동안은 호출 하나로 끝난다), 비었을 때만
+            // Poll 로 기다린다. Poll 은 데이터를 건드리지 않고 기다리기만 하므로 경계에서 잃을 것이 없다.
+            // 비용: .NET Framework(netstandard2.0 자산)의 Poll 은 부를 때마다 작은 배열(약 40 B)을 할당한다 — 소켓이 빌 때마다 부르므로
+            // 최대 속도에서는 대략 패킷당 한 번이다. net6 이상은 0 B. 잃지 않는 쪽을 택했다.
+            try { socket.Blocking = false; }
+            catch (ObjectDisposedException) { return; }
+
             while (!_isStopRequested)
             {
                 int length;
+                SocketError error;
                 try
                 {
-                    // 타임아웃 조정도 try 안에서 — 정지 중 닫힌 소켓은 여기서도 ObjectDisposedException 을 내며, 그것은 오류가 아니라 정상 종료다.
-                    UpdateReceiveTimeout(socket);
-                    length = socket.Receive(_scratch, 0, _scratch.Length, SocketFlags.None);
+                    length = socket.Receive(_scratch, 0, _scratch.Length, SocketFlags.None, out error);
+                    if (error == SocketError.WouldBlock)
+                    {
+                        // 조립 중 대기 간격은 옵션에서 오므로 상한이 없다 — 한가할 때의 간격으로 묶어 마이크로초 환산이 넘치지 않게 하고,
+                        // 매우 긴 시한을 준 경우에도 방화벽 유지·마감 점검이 그 간격으로는 돈다.
+                        var waitMicros = Math.Min(_activeCount > 0 ? _activeWaitMs : IdleWaitMs, IdleWaitMs) * 1000;
+                        if (!socket.Poll(waitMicros, SelectMode.SelectRead))
+                        {
+                            OnWaitElapsed();
+                        }
+                        continue;
+                    }
                 }
                 catch (SocketException ex)
                 {
-                    if (_isStopRequested || !HandleReceiveError(ex)) break;
+                    // Poll 의 오류(닫히는 중인 소켓 등)는 예외로 온다 — 수신 오류와 같은 분류로 다룬다.
+                    if (_isStopRequested || !HandleReceiveError(ex.SocketErrorCode, ex)) break;
                     continue;
                 }
                 catch (ObjectDisposedException)
                 {
+                    // 정지가 아닌데 소켓이 닫혔다 — 사유를 "성공" 으로 남기지 않는다(플랫폼에 따라 Poll 이 예외 대신 참을 돌려주고
+                    // 다음 수신에서 여기로 온다).
+                    if (!_isStopRequested) _receiveExitError = SocketError.NotSocket;
                     break;
+                }
+
+                if (error != SocketError.Success)
+                {
+                    if (_isStopRequested || !HandleReceiveError(error, null)) break;
+                    continue;
                 }
 
                 _consecutiveReceiveErrors = 0;
@@ -314,6 +344,7 @@ public sealed partial class GevStream
         catch (Exception ex)
         {
             GevLog.Error(_logSrc, "Receiver thread terminated by an unexpected error.", ex);
+            MarkReceiverEnded();
             _queue?.Complete(new GevStreamClosedException("Receiver thread failed: " + ex.Message));
         }
         finally
@@ -322,30 +353,40 @@ public sealed partial class GevStream
             if (!_isStopRequested)
             {
                 // 정지 요청 없이 나왔다면 소켓이 죽은 것이다 — 소비자가 영원히 기다리지 않게 큐를 닫는다(이미 닫혔으면 무시된다).
+                MarkReceiverEnded();
                 _queue?.Complete(new GevStreamClosedException($"Receiver thread stopped: stream socket receive failed ({_receiveExitError})."));
             }
             GevLog.Debug(_logSrc, $"Receiver thread on port {LocalPort} exited.");
         }
     }
 
-    /// <summary>수신 오류 분류. 계속 돌아도 되면 true, 루프를 끝내야 하면 false.</summary>
-    private bool HandleReceiveError(SocketException ex)
+    /// <summary>
+    /// 수신 스레드가 정지 요청 없이 끝날 때 상태를 "시작됨" 에서 "스스로 끝남" 으로 내린다. 큐를 닫기 **전에** 불러야
+    /// 닫힘을 받은 소비자가 <see cref="IsStarted"/> 도 거짓으로 본다. 정지가 이미 상태를 가져갔으면 아무것도 바꾸지 않는다.
+    /// </summary>
+    private void MarkReceiverEnded() => Interlocked.CompareExchange(ref _state, StateFaulted, StateStarted);
+
+    /// <summary>기다림이 아무것도 받지 못하고 끝났다 — 방화벽 매핑을 살피고 조립 중인 프레임의 구멍·마감을 본다.</summary>
+    private void OnWaitElapsed()
     {
-        switch (ex.SocketErrorCode)
+        var now = Stopwatch.GetTimestamp();
+        MaybePunchFirewall(now);
+        OnTick(now);
+    }
+
+    /// <summary>수신 오류 분류. 계속 돌아도 되면 true, 루프를 끝내야 하면 false. ex 는 예외로 온 경우에만 있다(로그용).</summary>
+    private bool HandleReceiveError(SocketError code, SocketException? ex)
+    {
+        switch (code)
         {
             case SocketError.TimedOut:
             case SocketError.WouldBlock:
-            // IOPending 은 "겹친 수신이 아직 끝나지 않았다" 는 뜻이지 오류가 아니다 — 이번 호출에 데이터가 실려 오지 않았을 뿐이고
-            // 잃은 것도 없다. 윈도우에서 수신 타임아웃을 오가며 바꾸는 블로킹 소켓이 이따금 이 값을 돌려준다(실카메라 풀레이트
-            // 60 초에 7 회 관측, 그 구간에도 누락 패킷 0). 오류로 다루면 경고가 쌓이고 1 ms 를 자는 사이 침묵이 길어져
-            // 보내지도 않은 꼬리를 재요청하게 된다 — 타임아웃과 똑같이 "한 번 더 받아 보자" 로 넘긴다.
+            // IOPending 은 "겹친 수신이 아직 끝나지 않았다" 는 뜻이다 — 수신 시한을 건 블로킹 소켓이 윈도우에서 이따금 돌려주던 값이고,
+            // 지금의 논블로킹 수신 + Poll 대기에서는 나오지 않아야 한다. 그래도 나오면 오류로 쌓지 않고 기다림이 끝난 것으로 다룬다
+            // (1 ms 를 자면 침묵이 길어져 보내지도 않은 꼬리를 재요청하게 된다).
             case SocketError.IOPending:
-            {
-                var now = Stopwatch.GetTimestamp();
-                MaybePunchFirewall(now);
-                OnTick(now);
+                OnWaitElapsed();
                 return true;
-            }
             case SocketError.MessageSize:
                 _stats.IncPacketsIgnored();
                 if (!_hasLoggedOversize)
@@ -361,19 +402,19 @@ public sealed partial class GevStream
             case SocketError.OperationAborted:
             case SocketError.NotSocket:
             case SocketError.Shutdown:
-                _receiveExitError = ex.SocketErrorCode;
+                _receiveExitError = code;
                 return false;
             default:
                 // 분류되지 않은 오류 — 처음 한 번만 남기고 잠깐 쉬었다 다시 시도하되, 계속되면 수신을 포기한다(무한 재시도·로그 홍수 방지).
                 _consecutiveReceiveErrors++;
                 if (_consecutiveReceiveErrors == 1)
                 {
-                    GevLog.Warn(_logSrc, $"Stream socket receive failed: {ex.SocketErrorCode}; retrying.", ex);
+                    GevLog.Warn(_logSrc, $"Stream socket receive failed: {code}; retrying.", ex);
                 }
                 else if (_consecutiveReceiveErrors >= MaxConsecutiveReceiveErrors)
                 {
-                    GevLog.Error(_logSrc, $"Stream socket receive kept failing with {ex.SocketErrorCode} for {_consecutiveReceiveErrors} consecutive attempts; receiver stopped.", ex);
-                    _receiveExitError = ex.SocketErrorCode;
+                    GevLog.Error(_logSrc, $"Stream socket receive kept failing with {code} for {_consecutiveReceiveErrors} consecutive attempts; receiver stopped.", ex);
+                    _receiveExitError = code;
                     return false;
                 }
                 Thread.Sleep(1);
@@ -381,18 +422,10 @@ public sealed partial class GevStream
         }
     }
 
-    private void UpdateReceiveTimeout(Socket socket)
-    {
-        var desired = _activeCount > 0 ? _activeReceiveTimeoutMs : IdleReceiveTimeoutMs;
-        if (desired == _currentReceiveTimeoutMs) return;
-        socket.ReceiveTimeout = desired;
-        _currentReceiveTimeoutMs = desired;
-    }
-
     /// <summary>
     /// 인바운드가 오래 끊겼으면 방화벽 매핑을 살리는 한 바이트를 다시 보낸다. 상태 기반 방화벽의 매핑은 유휴로 두면 만료되고,
     /// 그러면 다시 흐르기 시작한 GVSP 가 통째로 버려진다 — 트리거 간격이 벌어지거나 획득을 멈춘 채 스트림을 열어 둔 경우다.
-    /// 패킷이 흐르는 동안에는 여기까지 오지 않는다(수신이 타임아웃될 때만 불린다).
+    /// 패킷이 흐르는 동안에는 여기까지 오지 않는다(수신 대기가 아무것도 받지 못하고 끝날 때만 불린다).
     /// </summary>
     private void MaybePunchFirewall(long now)
     {
@@ -464,6 +497,7 @@ public sealed partial class GevStream
         switch (view.ContentType)
         {
             case GvspConst.ContentLeader:
+                if (slot is not null && IsRestartOverLoneLeader(slot, in view, now)) ReopenOverLoneLeader(slot, in view, now);
                 if (slot is null)
                 {
                     if (!ShouldOpenForLeader(in view)) return;
@@ -566,6 +600,48 @@ public sealed partial class GevStream
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// 리더만 온 채 멈춘 프레임에 같은 블록 번호의 새 리더가 왔는지 — 장치가 그 블록을 버리고(정지) 촬영을 다시 시작해 번호를 다시 센 것이다.
+    /// 리더만 온 가장 새 프레임은 보존 시간으로도 닫히지 않으므로(<see cref="CheckCompletion"/>), 이것을 가리지 않으면 새 리더가 중복으로
+    /// 버려지고 새 페이로드가 옛 리더의 슬롯에 실려 옛 타임스탬프·기하로 완성 처리된다.
+    /// 증거가 있을 때만 그렇게 본다: 옛 프레임에 페이로드도 트레일러도 없고, 재요청 간격 이상 조용했으며, 새 리더가 리센드 사본이 아니고
+    /// 타임스탬프가 옛 리더와 같지 않아야 한다(같으면 늦게 도착한 사본이다). 재요청 간격 안에 다시 시작한 리더는 여전히 중복으로 버려진다.
+    /// </summary>
+    private bool IsRestartOverLoneLeader(FrameSlot slot, in GvspPacketView view, long now)
+    {
+        if (!slot.HasLeader || slot.HasTrailer || slot.HighestPacketId != 0 || slot.IsSkipped) return false;
+        if (view.IsResent || now - slot.LastPacketTicks < _packetTimeoutTicks) return false;
+        var timestamp = GvspImageLeader.TryRead(view.Data, out var leader) ? leader.Timestamp : 0;
+        return timestamp == 0 || timestamp != slot.Meta.Timestamp;
+    }
+
+    /// <summary>
+    /// 리더만 온 채 멈춘 프레임을 버리고 같은 슬롯을 새 리더를 받을 수 있게 비운다. 버린 프레임은 불완전 한 장으로 세고 <see cref="FrameDropped"/> 로 알린다.
+    /// 받은 이미지 바이트가 하나도 없으므로 <see cref="GevStreamOpt.DeliverIncompleteFrames"/> 여도 내보내지 않는다 — 이 슬롯 앞에서
+    /// 아직 조립 중인 더 오래된 프레임을 앞질러 내보내지 않기 위해서이기도 하다.
+    /// 닫고 새로 열지 않고 제자리에서 다시 쓰는 것은 닫힌 블록 기록에 옛 타임스탬프를 남기지 않기 위해서다 — 남기면 같은 번호의 새 프레임이
+    /// 닫힌 뒤 그 늦은 사본이 옛 기록과 비교돼 새 프레임으로 열린다.
+    /// </summary>
+    private void ReopenOverLoneLeader(FrameSlot slot, in GvspPacketView view, long now)
+    {
+        var expected = slot.ExpectedPackets;
+        if (GevLog.IsEnabled(GevLogLevel.Debug))
+        {
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: a new leader arrived after {(now - slot.LastPacketTicks) * 1000 / Stopwatch.Frequency} ms of silence "
+                + "over a frame that had received only its leader; the device restarted the block, so the old frame is dropped as incomplete.");
+        }
+        _stats.IncFramesIncomplete();
+        _stats.AddPacketsMissing(expected);
+        RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, expected, expected, 0);
+        if (slot.Buf is not null)
+        {
+            _pool.Return(slot.Buf, slot.BufVersion);
+            slot.Buf = null;
+        }
+        slot.Reset(view.BlockId, view.IsExtendedId, now);
+        slot.EnsureCapacity(1);
     }
 
     private static bool IsOlderBlock(ulong id, ulong newest, bool extendedIds)
@@ -862,6 +938,7 @@ public sealed partial class GevStream
     /// 패킷당 데이터 길이를 배운다. 기본은 SCPS 에서 계산한 값이고, 첫 페이로드(id 1)가 프레임보다 짧으면 그 길이가 진짜 값이다.
     /// id 1 을 못 받았으면 마지막이 아닌 것이 확실한 패킷(id &lt; 예상 수)의 길이로 배운다 — 아직 아무 바이트도 싣기 전이라 오프셋이 어긋나지 않는다.
     /// 기본값보다 긴 패킷이 오면 장치가 SCPS 를 무시하는 것이므로 그 길이를 따른다.
+    /// 어느 쪽이든 id 2 이상을 이미 옛 간격으로 실은 뒤에 배우면 늦었다 — <see cref="SetDataBytes"/> 가 그 프레임을 버린다.
     /// </summary>
     private void LearnDataBytes(FrameSlot slot, uint id, int length)
     {
@@ -905,8 +982,22 @@ public sealed partial class GevStream
         _payloadSizeHint = (int)bytes;
     }
 
+    /// <summary>
+    /// 패킷당 데이터 길이(= 패킷 간격)를 바꾼다. id 2 이상을 이미 옛 간격으로 실었다면 그 바이트는 틀린 자리에 있고 옮길 길이 없다
+    /// (id 1 만은 간격과 무관하게 0 에 실린다). 그런 프레임은 오류로 버린다 — 그대로 두면 받은 패킷 수는 다 차고, 받은 끝은
+    /// 가장 먼 끝이라 간격이 줄 때는 오히려 리더 크기를 넘고, 청크 프레임은 애초에 패킷 수로만 완성을 가리므로 어긋난 바이트와
+    /// 그 사이에 남은 이전 프레임 바이트가 완성 프레임으로 나간다. 리더와 id 1 이 함께 유실돼 협상값에서 구한 간격으로 먼저 실은
+    /// 뒤에야 진짜 간격을 배우는 경우다.
+    /// </summary>
     private void SetDataBytes(FrameSlot slot, int dataBytes)
     {
+        if (slot.HighestPacketId >= 2 && dataBytes != slot.DataBytes)
+        {
+            LogStrideChangeOnce(slot, dataBytes);
+            // 장치가 아니라 수신기 쪽 사정이다 — 협상값보다 짧거나(허용) 긴(무시) 패킷을 보내는 장치는 흔하고, 자리를 짐작한 것은 수신기다.
+            MarkSkipped(slot, GevFrameDropReason.Error, GvcpConst.StatusLocalProblem);
+            return;
+        }
         if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
             GevLog.Debug(_logSrc, $"Block {slot.BlockId}: payload bytes per packet {slot.DataBytes} -> {dataBytes}.");
@@ -1261,7 +1352,8 @@ public sealed partial class GevStream
     /// 오래된 순서로 슬롯을 본다. 완성됐거나 포기해야 할 프레임은 닫고, 아직 기다려야 하는 프레임을 만나면 그 뒤의 프레임은 닫지 않는다(순서 보존).
     /// 버퍼를 쥐지 않은(건너뛰기) 슬롯은 순서를 막지 않는다.
     /// 포기 시점: 리센드를 더 요청하지 않는 프레임(예산 소진·장치 거절·리센드 꺼짐)은 마지막 패킷 뒤 재요청 간격 하나만 더 기다리고,
-    /// 그 밖의 프레임은 보존 시간까지 기다린다. 기다리는 프레임은 마감이 되거나 꼬리가 확정될 때 구멍을 다시 본다.
+    /// 그 밖의 프레임은 보존 시간까지 기다린다. 버리기로 한 프레임은 트레일러를 받으면 곧바로, 못 받으면 리센드가 켜져 있을 때 보존 시간,
+    /// 꺼져 있을 때 재요청 간격 뒤에 닫는다. 기다리는 프레임은 마감이 되거나 꼬리가 확정될 때 구멍을 다시 본다.
     /// </summary>
     private void CheckCompletion(long now, FrameSlot? current)
     {
@@ -1275,7 +1367,11 @@ public sealed partial class GevStream
 
             if (slot.IsSkipped)
             {
-                if (slot.HasTrailer || idleTicks >= _retentionTicks)
+                // 버리기로 한 프레임은 트레일러를 받거나 조용해지면 닫는다. 리센드가 꺼져 있으면 보존 시간이 아니라 재요청 간격을 쓴다 —
+                // 옵션 설명과 시작 로그가 "보존 시간은 쓰이지 않는다" 고 알리는데 여기만 보존 시간을 쓰면, FrameDropped 와 버림 계수기가
+                // 그만큼 늦고 조립 슬롯 하나가 그동안 묶인다.
+                var skipGiveUpTicks = _isResendEnabled ? _retentionTicks : _packetTimeoutTicks;
+                if (slot.HasTrailer || idleTicks >= skipGiveUpTicks)
                 {
                     CloseSlot(i);
                     continue;
@@ -1299,7 +1395,8 @@ public sealed partial class GevStream
                     CloseSlot(i);
                     continue;
                 }
-                // 리더만 온 가장 새 프레임은 기다린다 — 노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다.
+                // 리더만 온 가장 새 프레임은 기다린다 — 노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다. 그 사이 장치가 같은 블록 번호로
+                // 다시 시작하면 OnPacket 이 새 리더로 이 슬롯을 다시 연다(IsRestartOverLoneLeader).
                 var isLoneLeader = isNewest && slot.HasLeader && slot.ReceivedPayloads == 0 && !slot.HasTrailer;
                 if (!isLoneLeader)
                 {
@@ -1344,9 +1441,20 @@ public sealed partial class GevStream
         => slot.HasLeader && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
             && (slot.ExpectedBytes < 0 || slot.ReceivedEnd >= slot.ExpectedBytes);
 
-    /// <summary>트레일러가 약속한 패킷은 다 받았는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 끊었고 더 올 것이 없다.</summary>
+    /// <summary>
+    /// 트레일러가 약속한 패킷은 다 받았는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 끊었고 더 올 것이 없다.
+    /// 트레일러가 id 1 로 왔으면(첫 페이로드 전에 끊겼다) 약속한 패킷 수는 0 이고 그것도 끊긴 블록이다 — 트레일러가 정한 0 은
+    /// "아직 모름" 이 아니므로 보존 시간까지 기다릴 까닭이 없다.
+    /// <para>
+    /// 트레일러를 잃은 프레임은 여기에 걸리지 않고 보존 시간(리센드가 꺼져 있으면 재요청 간격)까지 기다린다 — 리더가 알린 패킷을 다 받았는데 바이트만 모자라더라도
+    /// (크기 규칙이 장치보다 크게 셌을 때. 실기에서는 본 적 없다) 그렇다. 늦게 온 트레일러가 가변 높이의 실제 줄 수를 알리면
+    /// <see cref="ApplyTrailerHeight"/> 가 크기를 줄여 완성시킬 수 있으므로, 침묵만으로 일찍 닫으면 살릴 수 있던 프레임을 버린다.
+    /// 트레일러는 리센드로 묻지 않으므로(<see cref="CheckMissing"/> 는 예상 패킷 수까지만 훑는다) 끝내 안 오면 결과는 어차피 불완전이고,
+    /// 달라지는 것은 닫히는 시각(최대 보존 시간)뿐이다 — 어느 쪽이든 모자란 프레임을 완성으로 내보내지는 않는다.
+    /// </para>
+    /// </summary>
     private static bool IsCutShort(FrameSlot slot)
-        => slot.HasLeader && slot.HasTrailer && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
+        => slot.HasLeader && slot.HasTrailer && slot.Buf is not null && slot.ReceivedPayloads >= slot.ExpectedPackets
             && slot.ExpectedBytes >= 0 && slot.ReceivedEnd < slot.ExpectedBytes;
 
     /// <summary>
@@ -1365,6 +1473,23 @@ public sealed partial class GevStream
         else if (GevLog.IsEnabled(GevLogLevel.Debug))
         {
             GevLog.Debug(_logSrc, $"Block {slot.BlockId}: cut short at {slot.ReceivedEnd} of {slot.ExpectedBytes} bytes ({slot.ExpectedPackets} payload packets).");
+        }
+    }
+
+    /// <summary>간격을 잘못 짐작해 버린 프레임은 스트림당 한 번만 경고하고, 그 뒤로는 오류 통계·<see cref="FrameDropped"/> 로 센다.</summary>
+    private void LogStrideChangeOnce(FrameSlot slot, int dataBytes)
+    {
+        if (!_hasLoggedStrideChange)
+        {
+            _hasLoggedStrideChange = true;
+            GevLog.Warn(_logSrc, $"Block {slot.BlockId}: payload packets were already placed at {slot.DataBytes} bytes per packet before a packet showed "
+                + $"the device sends {dataBytes}; bytes already placed cannot be moved, so the frame is dropped as an error. This happens when the leader "
+                + "and the first payload packet are both lost and the device's packet length differs from the negotiated packet size. "
+                + "Further occurrences are counted but not logged.");
+        }
+        else if (GevLog.IsEnabled(GevLogLevel.Debug))
+        {
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: packet stride {slot.DataBytes} -> {dataBytes} after bytes were placed; frame dropped.");
         }
     }
 
@@ -1422,7 +1547,9 @@ public sealed partial class GevStream
         }
         RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, missing, expected, 0);
 
-        if (_isDeliverIncomplete && slot.HasLeader && buf is not null && slot.ExpectedPackets > 0)
+        // 트레일러가 페이로드 0 개로 끊은 블록도 크기는 리더가 알려 주었으므로 다른 끊긴 블록처럼 0 으로 채워 내보낸다.
+        if (_isDeliverIncomplete && slot.HasLeader && buf is not null
+            && (slot.ExpectedPackets > 0 || (slot.HasTrailer && slot.ExpectedBytes >= 0)))
         {
             ZeroHoles(slot);
             FinalizePayloadSize(slot);

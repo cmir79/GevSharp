@@ -214,6 +214,46 @@ public class GevDeviceTests
     }
 
     [Fact]
+    public async Task AHeartbeatTimeoutBeyondIntRangeIsSaturatedNotNegative()
+    {
+        // GVBS 0x0938 은 부호 없는 32비트다. int 로 그냥 옮기면 0xFFFFFFFF 가 -1(= Timeout.Infinite)이 되어,
+        // "장치가 적용한 타임아웃" 이라는 공개 값을 대기 시간으로 쓰는 호출자가 영영 기다린다.
+        using var r = new GvcpTestResponder();
+        r.WriteU32(GvbsAddr.HeartbeatTimeout, 0xFFFF_FFFF);
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o => o.AccessMode = GevAccessMode.ReadOnly));
+
+        Assert.Equal(int.MaxValue, dev.DeviceHeartbeatTimeoutMs);
+    }
+
+    [Fact]
+    public async Task AHeartbeatTimeoutBeyondIntRangeKeepsTheHeartbeatOnTheRequestedTimeout()
+    {
+        // 제어 세션에서 장치가 하트비트 타임아웃 쓰기를 받아 놓고 0xFFFFFFFF 를 고집한다. 공개 값은 포화될 뿐 음수가 아니고,
+        // 주기와 PENDING_ACK 상한은 그 값이 아니라 요청한 타임아웃(3000)으로 끌어낸다 — 포화된 값으로 끌어내면 하트비트가
+        // 8 일에 한 번이 된다. 제어권 상실 문구도 음수가 아니라 그 값을 싣는다.
+        using var r = new GvcpTestResponder();
+        r.WriteU32(GvbsAddr.HeartbeatTimeout, 0xFFFF_FFFF);
+        r.WriteIgnoredAddr = GvbsAddr.HeartbeatTimeout;
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o => o.HeartbeatPeriodMs = null));
+
+        Assert.True(HasWriteOf(r.Requests, GvbsAddr.HeartbeatTimeout, 3000), "the requested heartbeat timeout was not written");
+        Assert.Equal(0xFFFF_FFFFu, r.ReadU32(GvbsAddr.HeartbeatTimeout));
+        Assert.Equal(int.MaxValue, dev.DeviceHeartbeatTimeoutMs);
+        Assert.Equal(1000, dev.HeartbeatPeriodMs);                       // 3000 / 3
+        Assert.Equal(1400, dev.Gvcp.Opt.MaxPendingAckWaitMs);            // 3000 - 1000 - 2*300
+
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        dev.ControlLost += (d, ex) => lost.TrySetResult(ex);
+        r.WriteU32(GvbsAddr.Ccp, 0);
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.Same(lost.Task, done);
+
+        var lostEx = Assert.IsType<GevControlLostException>(await lost.Task);
+        Assert.Contains("another application", lostEx.Message);
+        Assert.True(lostEx.Message.Contains($"device timeout {int.MaxValue} ms"), lostEx.Message);
+    }
+
+    [Fact]
     public async Task ControlLostAfterAStallSaysSo_AndEveryLaterCallRepeatsTheReason()
     {
         // 디버거 중단·메모리 스냅샷·절전으로 프로세스가 멈추면 하트비트가 끊기고 장치는 시한 뒤에 CCP 를 놓는다. 라이브 화면은
@@ -323,6 +363,46 @@ public class GevDeviceTests
         Assert.Equal(1, dev.Gvcp.PendingAckCount);
         // 상한이 채널 기본값(10 s)이면 10 초 넘게, 시도마다 상한이 새로 붙으면 4 x (200 + 400) 만큼 붙들린다.
         Assert.True(sw.ElapsedMilliseconds < 2000, $"the stalled request held the GVCP channel for {sw.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
+    public async Task MaxPendingAckWaitZeroMeansNoExtensionAndNoResend()
+    {
+        // 0 은 "상한 없음" 도 "PENDING_ACK 무시" 도 아니다 — PENDING_ACK 이 늘려 줄 수 있는 시간이 0 이라는 뜻이다.
+        // 그런 명령은 응답 창 하나 안에 끝나야 하고, 장치가 "받아서 실행 중" 이라고 알렸으므로 재시도 설정과 무관하게
+        // 다시 보내지 않고 시한 초과로 끝난다. 하트비트는 시험 동안 돌지 않게 멀리 둔다(대조군의 침묵이 하트비트를 깨지 않게).
+        using var r = new GvcpTestResponder();
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o =>
+        {
+            o.GvcpTimeoutMs = 500; o.GvcpRetries = 3; o.MaxPendingAckWaitMs = 0;
+            o.HeartbeatTimeoutMs = 120_000; o.HeartbeatPeriodMs = 60_000;
+        }));
+        Assert.Equal(0, dev.Gvcp.Opt.MaxPendingAckWaitMs);   // 명시한 0 은 하트비트에 맞춘 자동 계산으로 바뀌지 않는다
+
+        // PENDING_ACK 뒤에 곧바로 온 본 응답은 응답 창 안이라 그대로 받는다 — 0 이 PENDING_ACK 를 받은 명령을 전부 실패시키는 것은 아니다.
+        r.WriteU32(0x4008, 0x1234_5678);
+        r.PendingAckAddr = 0x4008;
+        r.PendingAckMs = 5000;
+        Assert.Equal(0x1234_5678u, await dev.ReadRegAsync(0x4008));
+        r.PendingAckMs = 0;
+        r.PendingAckAddr = null;
+        Assert.Equal(1, dev.Gvcp.PendingAckCount);
+
+        r.PendingAckStallAddr = 0x4000;
+        var sw = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<GevTimeoutException>(() => dev.ReadRegAsync(0x4000));
+        sw.Stop();
+        r.PendingAckStallAddr = null;
+        // 상한은 "0 을 상한 없음으로 읽는" 회귀만 겨냥한다 — 그러면 장치가 예고한 60 s 를 다 기다린다. 응답 창(200 ms)을 재지는 않는다.
+        Assert.True(sw.ElapsedMilliseconds < 8000, $"a PENDING_ACK'd request held the channel for {sw.ElapsedMilliseconds} ms with MaxPendingAckWaitMs = 0");
+        Assert.Equal(1, r.CountOfReg(GvcpConst.ReadRegCmd, 0x4000));
+        Assert.Equal(2, dev.Gvcp.PendingAckCount);
+
+        // 대조: 같은 설정에서 PENDING_ACK 없이 무응답인 명령은 1 + 3 번 보낸다 — 위의 "한 번" 은 재시도가 꺼져서가 아니다.
+        r.IsSilent = true;
+        await Assert.ThrowsAsync<GevTimeoutException>(() => dev.ReadRegAsync(0x4004));
+        r.IsSilent = false;
+        Assert.Equal(4, r.CountOfReg(GvcpConst.ReadRegCmd, 0x4004));
     }
 
     [Fact]
@@ -790,5 +870,22 @@ public class GevDeviceTests
         var wide = warnings.Where(w => w.Contains("0xFFFF00002000")).ToArray();
         Assert.Single(wide);
         Assert.Contains("0x00002000", wide[0]);
+    }
+
+    [Fact]
+    public async Task AWideAddressWhoseNarrowedEndLeavesThe32BitSpaceIsRejectedBeforeSending()
+    {
+        // 좁히기는 상위 비트만 버린다. 좁힌 주소에서 끝이 32비트 공간을 넘으면 그건 장식이 아니라 잘못된 접근이라
+        // (벤더가 0xFFFFFFFF 를 "없음" 표식으로 쓰기도 한다) 넓은 주소여도 좁은 주소와 똑같이 보내기 전에 거절한다.
+        using var r = new GvcpTestResponder();
+        await using var dev = await GevDevice.OpenAsync(r.EndPoint, FastOpt(o => o.HeartbeatPeriodMs = 60_000));
+        IGevPort port = dev;
+        var before = r.Requests.Count;
+
+        await Assert.ThrowsAsync<GevException>(() => port.ReadAsync(0xFFFF_FFFF_FFFF_FFFEUL, new byte[4]).AsTask());
+        await Assert.ThrowsAsync<GevException>(() => port.WriteAsync(0x1_FFFF_FFFFUL, new byte[4]).AsTask());
+        await Assert.ThrowsAsync<GevException>(() => port.ReadAsync(0x1_FFFF_FF00UL, new byte[1024]).AsTask());
+
+        Assert.Empty(r.Requests.Skip(before));
     }
 }
