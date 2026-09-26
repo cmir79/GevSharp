@@ -289,9 +289,12 @@ public sealed partial class GevStream
         try
         {
             // 기다림은 소켓 수신 시한(SO_RCVTIMEO)이 아니라 Poll 로 한다. 시한을 건 블로킹 수신은 윈도우에서 만료되는 순간 막 도착한
-            // 데이터그램을 잃을 수 있다 — 만료 뒤 소켓 상태는 정해지지 않는다고 플랫폼이 밝히고 있고, 루프백 부하 시험에서 잃은 수가
-            // IOPending 반환 수와 같았다. 그래서 받을 것이 있을 때만 논블로킹으로 받고(흐르는 동안은 호출 하나로 끝난다), 비었을 때만
+            // 데이터그램을 잃을 수 있다 — 만료 뒤 소켓 상태는 정해지지 않는다고 플랫폼이 밝히고 있고, 실기에서 패킷 간격이 대기
+            // 간격보다 넓을 때 옛 대기가 60 초에 9/46·8/39 장을 불완전으로 만들었다(지금 대기 0/39·0/39, docs/evaluation.md
+            // 「Receive wait on Windows」). 그래서 받을 것이 있을 때만 논블로킹으로 받고(흐르는 동안은 호출 하나로 끝난다), 비었을 때만
             // Poll 로 기다린다. Poll 은 데이터를 건드리지 않고 기다리기만 하므로 경계에서 잃을 것이 없다.
+            // 비용: .NET Framework(netstandard2.0 자산)의 Poll 은 부를 때마다 작은 배열(약 40 B)을 할당한다 — 소켓이 빌 때마다 부르므로
+            // 최대 속도에서는 대략 패킷당 한 번이다. net6 이상은 0 B. 잃지 않는 쪽을 택했다.
             try { socket.Blocking = false; }
             catch (ObjectDisposedException) { return; }
 
@@ -304,7 +307,9 @@ public sealed partial class GevStream
                     length = socket.Receive(_scratch, 0, _scratch.Length, SocketFlags.None, out error);
                     if (error == SocketError.WouldBlock)
                     {
-                        var waitMicros = (_activeCount > 0 ? _activeWaitMs : IdleWaitMs) * 1000;
+                        // 조립 중 대기 간격은 옵션에서 오므로 상한이 없다 — 한가할 때의 간격으로 묶어 마이크로초 환산이 넘치지 않게 하고,
+                        // 매우 긴 시한을 준 경우에도 방화벽 유지·마감 점검이 그 간격으로는 돈다.
+                        var waitMicros = Math.Min(_activeCount > 0 ? _activeWaitMs : IdleWaitMs, IdleWaitMs) * 1000;
                         if (!socket.Poll(waitMicros, SelectMode.SelectRead))
                         {
                             OnWaitElapsed();
@@ -320,6 +325,9 @@ public sealed partial class GevStream
                 }
                 catch (ObjectDisposedException)
                 {
+                    // 정지가 아닌데 소켓이 닫혔다 — 사유를 "성공" 으로 남기지 않는다(플랫폼에 따라 Poll 이 예외 대신 참을 돌려주고
+                    // 다음 수신에서 여기로 온다).
+                    if (!_isStopRequested) _receiveExitError = SocketError.NotSocket;
                     break;
                 }
 

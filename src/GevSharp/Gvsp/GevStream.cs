@@ -10,7 +10,7 @@ namespace GevSharp;
 /// GVSP 스트림 수신기. 소켓 하나·수신 스레드 하나로 패킷을 받아 풀 버퍼에 조립하고, 완성된 프레임을 유한 큐로 넘긴다.
 /// 시작 순서: 소켓 바인드 → SCDA/SCP → SCPS 플래그 읽기 → 패킷 크기 협상 → SCPS/SCPD → 스레드. AcquisitionStart 는 보내지 않는다(GenApi 쪽 몫).
 /// SCPS 는 크기 외에 장치가 켜 둔 플래그(단편화 금지·빅엔디언)를 지키고, Auto 협상은 단편화 금지로 검증했으므로 스트리밍도 같은 조건으로 쓴다.
-/// 정지 순서: SCP = 0, SCDA = 0 → 소켓 닫기(수신 블로킹 해제) → 스레드 합류 → 큐를 <see cref="GevStreamClosedException"/> 으로 닫기.
+/// 정지 순서: SCP = 0, SCDA = 0 → 소켓 닫기(수신 대기 해제) → 스레드 합류 → 큐를 <see cref="GevStreamClosedException"/> 으로 닫기.
 /// </summary>
 public sealed partial class GevStream : IAsyncDisposable
 {
@@ -298,7 +298,7 @@ public sealed partial class GevStream : IAsyncDisposable
             _thread = null;
             if (thread is not null && thread.IsAlive)
             {
-                // 상한 없이 기다리지 않는다. 소켓을 닫으면 블로킹 수신이 깨어나는 것이 보통이지만 그것을 보장하는 규격은 없고,
+                // 상한 없이 기다리지 않는다. 소켓을 닫으면 수신 대기(Poll)가 깨어나는 것이 보통이지만 그것을 보장하는 규격은 없고,
                 // 여기서 무한히 기다리면 정지가 영영 돌아오지 않는다. 게다가 이 대기는 스레드풀 스레드를 하나 붙들고 있어서,
                 // 코어가 적은 기계에서 정지가 몇 개 겹치면 풀이 고갈된다. 제어 채널은 이미 같은 상한을 두고 있다.
                 // 시한을 넘겨도 할 일은 그대로 한다 — 소켓은 이미 닫혔고 아래에서 큐를 비워 버퍼를 돌려준다.
@@ -588,7 +588,8 @@ public sealed partial class GevStream : IAsyncDisposable
 
     /// <summary>
     /// 정지 요청 없이 스트림 소켓을 닫는다 — NIC 가 내려가 소켓이 죽은 것과 같은 자리를 만들어, 수신 스레드가
-    /// 스스로 끝나는 실제 경로(수신 오류 → 루프 종료 → 큐 닫기)를 밟게 한다.
+    /// 스스로 끝나는 실제 경로(대기·수신 실패 → 루프 종료 → 큐 닫기)를 밟게 한다. 어느 갈래로 오는지는 플랫폼이 정한다 —
+    /// 대기(Poll)가 예외를 내면 수신 오류 분류로, 참을 돌려주면 다음 수신의 ObjectDisposedException 으로 온다.
     /// </summary>
     internal void KillSocketForTest() => _socket?.Close();
 
