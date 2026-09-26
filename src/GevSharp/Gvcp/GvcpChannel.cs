@@ -53,6 +53,13 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     /// </summary>
     public const string FailedIndexKey = "FailedIndex";
 
+    /// <summary>
+    /// PENDING_ACK 를 받은 요청이 허락된 연장 안에 끝나지 못해 난 <see cref="GevTimeoutException"/> 의 <see cref="Exception.Data"/> 에
+    /// 이 키로 true 를 넣는다. 형은 응답이 아예 없던 시한 초과와 같지만, 이쪽은 장치가 살아서 "받아서 실행 중" 이라고 답한 것이다 —
+    /// 그 차이로 "장치를 잃었다(다시 연결)" 를 가르는 자리(카메라 XML 적재)가 이 표식을 본다.
+    /// </summary>
+    internal const string PendingAckExpiredKey = "PendingAckExpired";
+
     private readonly Socket _socket;
     private readonly Thread _rxThread;
     private readonly SemaphoreSlim _reqLock = new(1, 1);
@@ -194,9 +201,14 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
                 // 같은 명령을 또 보내면 두 번 실행될 수 있다. 재시도마다 연장 예산이 다시 붙어 줄을 붙드는 시간이
                 // (1 + Retries) 배로 늘어나는 것도 여기서 끊는다 — 하트비트가 그 줄에 같이 서 있다.
                 if (Interlocked.Read(ref pending.PendingDeadlineMs) > 0)
-                    throw new GevTimeoutException(
+                {
+                    var expired = new GevTimeoutException(
                         $"{cmd.Name} to {DeviceEndPoint} was answered with PENDING_ACK but never completed within its {pending.BudgetMs} ms budget; "
                         + "the command is not resent because the device has already taken it");
+                    // 장치는 답했다 — 무응답 시한 초과와 형은 같아도 장치 상실로 읽히지 않게 표식을 단다.
+                    expired.Data[PendingAckExpiredKey] = true;
+                    throw expired;
+                }
 
                 if (GevLog.IsEnabled(GevLogLevel.Debug))
                     GevLog.Debug(_logSrc, $"{cmd.Name} req_id {reqId}: no reply within {_opt.TimeoutMs} ms (attempt {attempt}/{attempts})");

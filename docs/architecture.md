@@ -513,10 +513,12 @@ Read First URL (512 bytes) then Second URL as fallback. `Local:` addresses/lengt
 Failure types are kept so a caller can tell "reconnect" from "bad XML": when the port reports device loss
 (`GevControlLostException`, `GevTimeoutException`, `ObjectDisposedException`) while reading a URL register or
 `Local:` memory, that exception is rethrown unwrapped at once and the other URL is not tried (it goes through the
-same port and would only spend another retry budget) — on the second attempt too. An http download timeout is not
-device loss and still falls back. Otherwise, if every attempted URL failed with the same exception type more
-specific than `GevException`, the first of them is rethrown; failures of different kinds (an empty register counts
-as one) are aggregated into a `GevException` carrying both reasons, the last one as `InnerException`.
+same port and would only spend another retry budget) — on the second attempt too. A timeout whose other end was
+alive is not device loss and still falls back: an http download timeout, and a read the device answered with
+PENDING_ACK but did not finish within the allowed extension (the channel marks that timeout). Otherwise, if every
+attempted URL failed with the same exception type more specific than `GevException`, the first of them is rethrown;
+failures of different kinds (an empty register counts as one) are aggregated into a `GevException` carrying both
+reasons, the last one as `InnerException`.
 Cache file name: `{Manufacturer}_{Model}_{DeviceVersion}_{FileName}` sanitized; cache is opt-in.
 
 ### GenApi (`GevSharp.GenApi`)

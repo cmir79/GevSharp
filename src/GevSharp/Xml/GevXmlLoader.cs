@@ -46,7 +46,8 @@ public static class GevXmlLoader
     /// 포트가 장치를 잃었다고 알리면(<see cref="GevControlLostException"/>, <see cref="GevTimeoutException"/>,
     /// <see cref="ObjectDisposedException"/> — URL 레지스터 읽기나 Local: 메모리 읽기에서) 다른 URL 로 넘어가지 않고 그 예외를
     /// 감싸지 않은 채 그대로 던진다(다른 URL 도 같은 포트를 거쳐 재시도 예산만 한 번 더 쓴다). 두 번째 시도에서 잃었어도 같다.
-    /// http 내려받기의 시한 초과는 장치가 아니라 서버 쪽 사정이라 여기에 들지 않는다 — 다른 URL 로 넘어간다.
+    /// 시한 초과라도 상대가 살아 있던 것은 여기에 들지 않는다 — 다른 URL 로 넘어간다: http 내려받기의 시한 초과(장치가 아니라 서버 쪽 사정),
+    /// 장치가 PENDING_ACK 로 "받아서 실행 중" 이라고 답한 뒤 허락된 연장 안에 끝내지 못한 읽기.
     /// 그 밖에 시도한 URL 이 모두 같은 구체 형(예: 둘 다 <see cref="GevStatusException"/>)으로 실패했으면 첫 실패를 그대로 던지고,
     /// 종류가 다르면(빈 레지스터 포함) 두 사유를 모두 실은 <see cref="GevException"/>(마지막 실패가 InnerException).
     /// 취소는 그대로 전파된다.
@@ -152,11 +153,15 @@ public static class GevXmlLoader
     /// 포트가 장치를 잃었다는 실패인지 — 제어 상실, 응답 없는 시한 초과, 해제된 장치. 이런 실패 뒤에는 다른 URL 도 같은 포트를 거쳐
     /// 같은 이유로 실패하므로 넘어가지 않고 원래 형 그대로 던진다. fetchKind 는 가져오기 단계의 URL 종류(URL 레지스터 읽기 단계면 null) —
     /// http 내려받기의 시한 초과는 서버 쪽 사정이라 장치 상실이 아니다.
+    /// 장치가 PENDING_ACK 로 답한 뒤 연장 안에 끝내지 못한 시한 초과(<see cref="GvcpChannel.PendingAckExpiredKey"/> 표식)도 상실이 아니다 —
+    /// 장치는 살아 있고 이 읽기만 못 끝났으니, 다른 URL 은 끝날 수 있다.
     /// </summary>
     internal static bool IsDeviceLoss(Exception ex, GevXmlUrlKind? fetchKind)
         => ex is GevControlLostException
             || ex is ObjectDisposedException
-            || (ex is GevTimeoutException && fetchKind != GevXmlUrlKind.Http);
+            || (ex is GevTimeoutException
+                && fetchKind != GevXmlUrlKind.Http
+                && ex.Data[GvcpChannel.PendingAckExpiredKey] is not true);
 
     // 예외가 하나 이상이고 전부 GevException 보다 구체적인 같은 형인지.
     private static bool IsSameSpecificKind(List<Exception> errors)
@@ -176,6 +181,7 @@ public static class GevXmlLoader
     /// 적중하면 XML 본문 전송 없이 캐시 텍스트를 돌려준다. 캐시 읽기·쓰기 실패는 경고 로그로만 남고 결과에는 영향이 없다.
     /// 가져오기 실패는 사유와 출처를 실은 <see cref="GevException"/> 이되, Local: 메모리 읽기 중 포트가 장치를 잃었다고 알린
     /// <see cref="GevControlLostException"/>·<see cref="GevTimeoutException"/>·<see cref="ObjectDisposedException"/> 은 감싸지 않고 그대로 던진다.
+    /// 장치가 PENDING_ACK 로 답한 뒤 연장 안에 끝내지 못한 메모리 읽기는 장치를 잃은 것이 아니라 다른 읽기 실패처럼 감싼다.
     /// http 내려받기가 시한을 넘기면 <see cref="GevTimeoutException"/>.
     /// </summary>
     public static Task<GevXmlDoc> LoadFromUrlAsync(IGevPort port, GevXmlUrl url, string? cacheDir = null, CancellationToken ct = default)

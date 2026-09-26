@@ -13,7 +13,8 @@ public class GevException : Exception
 /// <item>GVCP 요청이 재전송까지 전부 응답 없이 끝났다. 장치가 명령을 받았는지는 알 수 없다.</item>
 /// <item>장치가 PENDING_ACK 로 "받아서 실행 중" 이라고 답한 뒤 허락된 연장(<see cref="GevDeviceOpt.MaxPendingAckWaitMs"/>,
 /// <see cref="Gvcp.GvcpChannelOpt.MaxPendingAckWaitMs"/>) 안에 끝내지 못했다. 명령이 이미 장치에 있으므로 라이브러리는 재전송하지 않는다 —
-/// 장치가 그 명령을 실행했을 수 있으니, 호출자가 같은 명령을 다시 보내면 두 번 실행될 수 있다.</item>
+/// 장치가 그 명령을 실행했을 수 있으니, 호출자가 같은 명령을 다시 보내면 두 번 실행될 수 있다. 장치는 살아 있으므로 카메라 XML 적재는
+/// 이 경우를 장치 상실로 보지 않고 다른 URL 로 넘어간다.</item>
 /// <item>카메라 XML 을 HTTP 로 받다가 <see cref="Xml.GevXmlLoader.HttpTimeoutMs"/> 를 넘겼다(GVCP 와 무관). <c>GevXmlLoader.LoadFromUrlAsync</c> 는
 /// 이 예외를 그대로 던지고, First/Second URL 을 차례로 시도하는 <c>GevXmlLoader.LoadAsync</c>·<see cref="GevDevice.GetXmlAsync"/> 에서는
 /// 두 URL 의 실패를 모은 <see cref="GevException"/> 의 <see cref="Exception.InnerException"/> 으로 실려 올 수 있다.</item>
