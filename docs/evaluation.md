@@ -282,9 +282,18 @@ after 431 payload packets — 3,856,896 of the 5,038,848 bytes the leader announ
 incomplete with the one-time warning. This is the first hardware observation of the case R29 guards: 0.4.0 would
 have delivered that frame as complete with the previous frame's pixels in its missing part. So this Basler
 **sometimes** cuts the block it is sending when acquisition is stopped; one clean run did not show it, and one
-such run is not evidence that a model never cuts. In the same run the next single grab timed out once (2 s);
-whether that is the receiver missing the following block or the device starting late after a mid-block stop was
-still being separated with a 0.4.0 control at the time of writing. Figures are the consumer's; see its records.
+such run is not evidence that a model never cuts. In the same run the next single grab timed out once (2 s).
+
+The consumer then ran a 0.4.0 control with the same adapter source and procedure (cancel 0–3 ms after the call ×20,
+then five normal grabs; eight rounds). Both versions saw the device cut blocks with an early trailer ("trailer sets
+packet count 563 -> 552" and similar), and some of the cut blocks were the frame of the **normal grab right after
+a cancellation round** — no packet was missing and no resend was asked; the device sent the trailer early.
+0.4.1 closed those frames as incomplete, so that grab timed out (packets arrived in the window, 0 completed,
+1 incomplete). 0.4.0 returned the cut frame as that grab's answer, marked complete, with its last 12–14 packets'
+worth of bytes still holding the previous frame. So the timeout is not a receiver regression: it is the same
+device behaviour, now reported instead of delivered as a wrong image. Scope: this one camera, grabs right after a
+cancelled grab, intermittent (2 of 8 rounds per version). Why the device cuts the next grab's block was not
+measured. Figures and raw logs are the consumer's (its `cvinspect-0290-cutloop` run); see its records.
 
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of
