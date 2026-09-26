@@ -1417,6 +1417,13 @@ public sealed partial class GevStream
     /// 트레일러가 약속한 패킷은 다 받았는데 리더가 알린 바이트에 못 미친다 — 장치가 블록을 끊었고 더 올 것이 없다.
     /// 트레일러가 id 1 로 왔으면(첫 페이로드 전에 끊겼다) 약속한 패킷 수는 0 이고 그것도 끊긴 블록이다 — 트레일러가 정한 0 은
     /// "아직 모름" 이 아니므로 보존 시간까지 기다릴 까닭이 없다.
+    /// <para>
+    /// 트레일러를 잃은 프레임은 여기에 걸리지 않고 보존 시간(리센드가 꺼져 있으면 재요청 간격)까지 기다린다 — 리더가 알린 패킷을 다 받았는데 바이트만 모자라더라도
+    /// (크기 규칙이 장치보다 크게 셌을 때. 실기에서는 본 적 없다) 그렇다. 늦게 온 트레일러가 가변 높이의 실제 줄 수를 알리면
+    /// <see cref="ApplyTrailerHeight"/> 가 크기를 줄여 완성시킬 수 있으므로, 침묵만으로 일찍 닫으면 살릴 수 있던 프레임을 버린다.
+    /// 트레일러는 리센드로 묻지 않으므로(<see cref="CheckMissing"/> 는 예상 패킷 수까지만 훑는다) 끝내 안 오면 결과는 어차피 불완전이고,
+    /// 달라지는 것은 닫히는 시각(최대 보존 시간)뿐이다 — 어느 쪽이든 모자란 프레임을 완성으로 내보내지는 않는다.
+    /// </para>
     /// </summary>
     private static bool IsCutShort(FrameSlot slot)
         => slot.HasLeader && slot.HasTrailer && slot.Buf is not null && slot.ReceivedPayloads >= slot.ExpectedPackets
