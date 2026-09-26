@@ -207,6 +207,21 @@ public class GvcpChannelTests
     }
 
     [Fact]
+    public async Task RetriesAtIntMaxValueStillSendsTheRequest()
+    {
+        // "끝없이 재시도" 로 흔히 고르는 값이다. 총 시도 횟수(1 + Retries)를 int 로 셈하면 음수로 감겨 루프가 한 번도
+        // 돌지 않고, 장치에 아무것도 보내지 않은 채 "-2147483648 attempt(s)" 시한 초과로 끝난다.
+        using var r = new GvcpTestResponder();
+        using var ch = Open(r, timeoutMs: 300, retries: int.MaxValue);
+        r.WriteU32(0x1000, 0x5A5A5A5A);
+
+        var ack = await ch.RequestAsync(GvcpCmd.ReadReg(0x1000));
+
+        Assert.Equal(0x5A5A5A5Au, ack.GetRegValue(0));
+        Assert.Equal(1, r.CountOf(GvcpConst.ReadRegCmd));
+    }
+
+    [Fact]
     public async Task CancellationAbortsTheWaitAndReleasesTheChannel()
     {
         using var r = new GvcpTestResponder();

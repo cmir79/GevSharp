@@ -155,9 +155,11 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
             var reqId = NextReqId(ref _reqIdCounter);
             var length = cmd.Length;
             cmd.WriteTo(_sendBuf, reqId);
-            var attempts = 1 + _opt.Retries;
+            // 시도 횟수는 long 으로 센다 — Retries = int.MaxValue("끝없이 재시도")에서 1 + Retries 가 int 로는 음수로 감겨
+            // 루프가 한 번도 돌지 않고 아무것도 보내지 않은 채 시한 초과로 끝난다. 루프 변수도 같이 넓혀야 2^31 번째에서 감기지 않는다.
+            var attempts = 1L + _opt.Retries;
 
-            for (var attempt = 1; attempt <= attempts; attempt++)
+            for (var attempt = 1L; attempt <= attempts; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
                 var pending = new PendingRequest(reqId, cmd.ExpectedAck);

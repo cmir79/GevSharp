@@ -118,8 +118,10 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
     /// </summary>
     internal static int AutoPendingAckWaitMs(int deviceTimeoutMs, int periodMs, int gvcpTimeoutMs)
     {
-        var budgetMs = deviceTimeoutMs - periodMs - 2 * gvcpTimeoutMs;
-        if (budgetMs >= gvcpTimeoutMs) return budgetMs;
+        // long 으로 센다 — 응답 창이 int.MaxValue / 2 를 넘으면 2 × 응답 창이 int 로는 음수로 감겨, 여유가 없는 설정이
+        // 경고 없이 수십억 ms 의 상한을 얻는다. 결과가 응답 창 이상이면 deviceTimeoutMs 보다 작으므로 int 로 되돌려도 안전하다.
+        var budgetMs = (long)deviceTimeoutMs - periodMs - 2L * gvcpTimeoutMs;
+        if (budgetMs >= gvcpTimeoutMs) return (int)budgetMs;
         GevLog.Warn(LogSrc, $"GVCP response window {gvcpTimeoutMs} ms leaves no PENDING_ACK budget inside the device heartbeat timeout {deviceTimeoutMs} ms (heartbeat period {periodMs} ms); capping the PENDING_ACK wait at {gvcpTimeoutMs} ms, control may drop on a slow command");
         return gvcpTimeoutMs;
     }
