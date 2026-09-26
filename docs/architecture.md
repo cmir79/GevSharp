@@ -105,7 +105,9 @@ That is a deliberate resting state, not a silent failure.
 public sealed class GevDiscoveryOpt
 {
     public int TimeoutMs { get; set; } = 1000;          // collect replies for this long
-    public int Repeat { get; set; } = 2;                // total DISCOVERY_CMD sends per target within the window, including the first (not "retries")
+    public int Repeat { get; set; } = 2;                // total DISCOVERY_CMD sends per target within the window, including the first (not "retries"); < 1 → ArgumentOutOfRangeException
+                                                        // sends are scheduled from the window start every min(200, TimeoutMs / Repeat) ms (1 ms floor); a send due
+                                                        // at or after the window end is dropped, so Repeat never stretches the window (Repeat > TimeoutMs → TimeoutMs sends)
     public IReadOnlyList<IPAddress>? Interfaces { get; set; }   // null = every IPv4 interface that is up
     public bool LimitedBroadcast { get; set; } = true;  // 255.255.255.255
     public bool DirectedBroadcast { get; set; } = true; // subnet broadcast of each interface

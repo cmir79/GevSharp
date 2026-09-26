@@ -270,6 +270,38 @@ public class GevDiscoveryTests
         Assert.True(sw.ElapsedMilliseconds < 10_000, $"discovery took {sw.ElapsedMilliseconds} ms for a 150 ms window");
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task DiscoverRejectsARepeatBelowOne(int repeat)
+    {
+        // TimeoutMs 와 같은 규칙이다 — 보낼 횟수가 1 미만인 설정 오류를 1 로 바꿔 조용히 넘기지 않는다.
+        // 인터페이스를 비워 두어, 검사가 없으면 창을 열지 않고 빈 목록으로 곧바로 돌아온다(네트워크를 타지 않는다).
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => GevDiscovery.DiscoverAsync(new GevDiscoveryOpt { Interfaces = Array.Empty<IPAddress>(), Repeat = repeat }));
+        Assert.Contains("Repeat", ex.Message);
+    }
+
+    [Fact]
+    public async Task RepeatNeverStretchesTheWindow()
+    {
+        // 창보다 훨씬 많은 반복을 요구해도 전송은 창 안에서만 하고 창이 끝나면 돌아온다. 간격은 1 ms 아래로 내려가지 않으므로
+        // 한 대상에 보내는 횟수는 창 길이(ms)를 넘을 수 없다. 창을 넘겨 계속 보내는 회귀는 가드 토큰이 끊어 취소로 드러난다
+        // (가드가 없으면 그 회귀는 사실상 끝나지 않는다).
+        using var r = new GvcpTestResponder();
+        const int windowMs = 100;
+        using var guard = new CancellationTokenSource(15_000);
+        var sw = Stopwatch.StartNew();
+
+        await GevDiscovery.DiscoverAsync(LoopbackOpt(windowMs, 1_000_000, r.EndPoint), guard.Token);
+
+        // 상한은 창을 재려는 것이 아니라(과부하에서는 소켓·스레드 비용이 얹힌다) 반복이 창을 늘리는 회귀를 겨냥한다.
+        Assert.True(sw.ElapsedMilliseconds < 10_000, $"discovery took {sw.ElapsedMilliseconds} ms for a {windowMs} ms window");
+        await GvcpChannelTests.WaitUntilAsync(() => r.CountOf(GvcpConst.DiscoveryCmd) >= 1, timeoutMs: 10_000, what: "a DISCOVERY_CMD was logged");
+        await Task.Delay(50);   // 응답기의 기록이 따라잡을 틈을 준다
+        Assert.InRange(r.CountOf(GvcpConst.DiscoveryCmd), 1, windowMs);
+    }
+
     [Fact]
     public async Task DiscoverHonoursCancellation()
     {

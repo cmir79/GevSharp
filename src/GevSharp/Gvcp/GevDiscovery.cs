@@ -10,7 +10,15 @@ public sealed class GevDiscoveryOpt
 {
     /// <summary>응답을 모으는 시간.</summary>
     public int TimeoutMs { get; set; } = 1000;
-    /// <summary>창 안에서 DISCOVERY_CMD 를 보내는 총 횟수(첫 전송 포함). 늦게 켜진 장치·유실된 첫 패킷을 잡는다.</summary>
+    /// <summary>
+    /// 창 안에서 DISCOVERY_CMD 를 보내는 총 횟수(첫 전송 포함, 대상마다). 늦게 켜진 장치·유실된 첫 패킷을 잡는다.
+    /// 1 이상이어야 한다 — 1 미만이면 <see cref="GevDiscovery.DiscoverAsync"/> 가 <see cref="ArgumentOutOfRangeException"/> 을 던진다.
+    /// <para>
+    /// 전송은 창이 열린 시각부터 일정한 간격(창 길이 ÷ Repeat, 최대 200 ms, 최소 1 ms)으로 예약하고, 예약 시각이 창 밖으로 나가는
+    /// 전송은 보내지 않는다 — 반복이 창을 늘리지 않는다. 그래서 Repeat 가 <see cref="TimeoutMs"/> 보다 크면 실제 전송은
+    /// Repeat 번이 아니라 TimeoutMs 번(간격 1 ms)으로 줄어든다. 그 밖에는 Repeat 번을 모두 보낸다.
+    /// </para>
+    /// </summary>
     public int Repeat { get; set; } = 2;
     /// <summary>null = 동작 중인 모든 IPv4 인터페이스(루프백 제외).</summary>
     public IReadOnlyList<IPAddress>? Interfaces { get; set; }
@@ -43,7 +51,8 @@ public static class GevDiscovery
     {
         opt ??= new GevDiscoveryOpt();
         if (opt.TimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(opt), "TimeoutMs must be positive");
-        var repeat = Math.Max(1, opt.Repeat);
+        if (opt.Repeat < 1) throw new ArgumentOutOfRangeException(nameof(opt), "Repeat must be at least 1");
+        var repeat = opt.Repeat;
 
         var ifaces = SelectInterfaces(opt.Interfaces);
         if (ifaces.Count == 0)
@@ -130,11 +139,28 @@ public static class GevDiscovery
         {
             var receiveTask = ReceiveDiscoveryRepliesAsync(client, iface.Address, found);
             var startMs = GevClock.NowMs();
+            var windowEndMs = startMs + opt.TimeoutMs;
+            // r 번째 전송은 창이 열린 시각 + r × 간격에 예약한다. 앞 대기가 타이머 눈금만큼 늦게 깨어도 뒤 예약이 밀려 쌓이지 않고,
+            // 예약 시각이 창 밖인 전송은 보내지 않으므로 반복이 창을 늘리지 않는다. 간격은 1 ms 아래로 내리지 않아
+            // Repeat 가 창 길이(ms)보다 크면 창 길이만큼만 보낸다. 그 밖에는 (Repeat-1) × 간격 < 창 이라 Repeat 번을 모두 보낸다.
+            // 건너뛸지는 실제로 깬 시각이 아니라 예약 시각으로 가른다 — 굶주린 스케줄러가 늦게 깨웠다고 창 안에 예약된 전송을
+            // 빠뜨리면 보내는 횟수가 부하에 따라 달라진다. 늦게 깬 몫은 곧바로 보내므로 창을 넘기는 것은 늦게 깬 한 번뿐이다.
             var intervalMs = Math.Min(RepeatIntervalMs, Math.Max(1, opt.TimeoutMs / repeat));
+            var rounds = 0;
             try
             {
                 for (var r = 0; r < repeat; r++)
                 {
+                    if (r > 0)
+                    {
+                        var dueMs = startMs + (long)r * intervalMs;
+                        if (dueMs >= windowEndMs) break;
+                        var waitMs = dueMs - GevClock.NowMs();
+                        if (waitMs > 0)
+                            await Task.Delay((int)waitMs, ct).ConfigureAwait(false);
+                        else
+                            ct.ThrowIfCancellationRequested();
+                    }
                     foreach (var target in targets)
                     {
                         try
@@ -146,11 +172,12 @@ public static class GevDiscovery
                             GevLog.Warn(LogSrc, $"{iface}: DISCOVERY_CMD to {target} failed ({ex.SocketErrorCode})");
                         }
                     }
-                    if (r < repeat - 1)
-                        await Task.Delay(intervalMs, ct).ConfigureAwait(false);
+                    rounds++;
                 }
+                if (rounds < repeat && GevLog.IsEnabled(GevLogLevel.Debug))
+                    GevLog.Debug(LogSrc, $"{iface}: {rounds} of {repeat} DISCOVERY_CMD round(s) fit in the {opt.TimeoutMs} ms window at a {intervalMs} ms interval; the rest were not sent");
                 // 시계 값이 어긋나도 창 길이를 넘겨 기다리지 않는다.
-                var remainingMs = Math.Min(opt.TimeoutMs - (GevClock.NowMs() - startMs), opt.TimeoutMs);
+                var remainingMs = Math.Min(windowEndMs - GevClock.NowMs(), opt.TimeoutMs);
                 if (remainingMs > 0)
                     await Task.Delay((int)remainingMs, ct).ConfigureAwait(false);
             }
