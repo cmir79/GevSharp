@@ -578,6 +578,23 @@ public class FloatNodeTests
     }
 
     [Fact]
+    public async Task Converter_EndpointThatOverflowsIsAnOpenEnd()
+    {
+        // 대상 한계가 크면(4 바이트 레지스터의 최대 4294967295) dB → 선형 변환이 실수 범위를 넘는다. 그 끝은 "한계 없음" 이다 —
+        // 무한대를 한계값으로 내놓지 않고, 예외로 쓰기 전체를 막지도 않는다.
+        var port = new MemoryPort();
+        var body = "<Converter Name=\"G\"><FormulaTo>ROUND(200 * LG(FROM))</FormulaTo><FormulaFrom>10 ** (TO / 200)</FormulaFrom><pValue>Raw</pValue><Slope>Increasing</Slope></Converter>"
+            + "<Integer Name=\"Raw\"><pValue>RawReg</pValue><Min>0</Min><Max>4294967295</Max></Integer>"
+            + IntReg("RawReg", "0x10");
+        var g = Bind(body, port).GetFloat("G");
+
+        Assert.Equal(1.0, await g.GetMinAsync());
+        Assert.Equal(double.MaxValue, await g.GetMaxAsync());
+        await g.SetAsync(5.0);
+        Assert.Equal(140u, port.U32(0x10));                 // ROUND(200 * LG(5)) = 140
+    }
+
+    [Fact]
     public async Task Converter_WriteWithinRealLimitsIsAcceptedAndReadsBack()
     {
         var port = new MemoryPort();

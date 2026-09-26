@@ -211,12 +211,18 @@ internal sealed class FormulaScope
         }
     }
 
-    /// <summary>대상 한계값 한쪽을 FormulaFrom 으로 옮긴 값. 선언되지 않은 한계면 수식을 평가하지 않고 열린 끝(null)으로 둔다.</summary>
+    /// <summary>
+    /// 대상 한계값 한쪽을 FormulaFrom 으로 옮긴 값. 선언되지 않은 한계면 수식을 평가하지 않고 열린 끝(null)으로 둔다.
+    /// 옮긴 값이 실수 범위를 넘으면(대상의 큰 한계를 지수 변환에 넣은 경우 — 4 바이트 레지스터 최대를 dB 로 읽는 식) 그것도 열린 끝이다:
+    /// 무한대를 한계값으로 내놓으면 "한계 없음" 을 뜻하는 값이 둘이 되고, 예외로 막으면 그 노드의 쓰기가 통째로 막힌다.
+    /// </summary>
     private async ValueTask<GenApiValue?> EndpointAsync(NodeBase target, LimitKind kind, Formula formulaFrom, CancellationToken ct)
     {
         var limit = await target.ReadLimitAsync(kind, ct).ConfigureAwait(false);
         if (IsOpenEnd(limit, kind)) return null;
-        return await EvaluateAsync(formulaFrom, "TO", limit, ct).ConfigureAwait(false);
+        var mapped = await EvaluateAsync(formulaFrom, "TO", limit, ct).ConfigureAwait(false);
+        if (mapped.IsDouble && (double.IsInfinity(mapped.AsDouble) || double.IsNaN(mapped.AsDouble))) return null;
+        return mapped;
     }
 
     /// <summary>한계값이 "선언 안 됨" 을 뜻하는 극단인지 — 정수 노드는 long 의 양끝, 실수 노드는 double 의 양끝(무한대 포함).</summary>

@@ -168,7 +168,7 @@ internal sealed class FormulaBinaryNode : FormulaNode
             FormulaBinOp.Sub => FormulaOps.Subtract(l, r, site, isReal),
             FormulaBinOp.Mul => FormulaOps.Multiply(l, r, site, isReal),
             FormulaBinOp.Div => FormulaOps.Divide(l, r, site, isReal),
-            FormulaBinOp.Mod => FormulaOps.Modulo(l, r, site),
+            FormulaBinOp.Mod => FormulaOps.Modulo(l, r, site, isReal),
             FormulaBinOp.Pow => FormulaOps.Pow(l, r, site, isReal),
             FormulaBinOp.BitAnd => FormulaOps.BitAnd(l, r, site, isReal),
             FormulaBinOp.BitOr => FormulaOps.BitOr(l, r, site, isReal),

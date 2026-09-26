@@ -548,12 +548,13 @@ public class FormulaTests
     [InlineData("(N / 4) << 1", 10L, 4L)]               // 2.5 → 2 → 4
     [InlineData("1 << (N / 2)", 9L, 16L)]               // 시프트 수도 같은 규칙: 4.5 → 4
     [InlineData("~(N / 2)", 4L, -3L)]
+    [InlineData("(N / 2) & 1", -7L, 1L)]                // 음수도 같다: -3.5 → -3
     public void RealModeBitOperatorsTruncateRealOperands(string text, long n, long expected)
     {
         var v = EvalReal(text, ("N", n));
         Assert.True(v.IsInteger);
         Assert.Equal(expected, v.AsInt64);
-        // 대조군: 정수 규칙은 나눗셈이 이미 정수라 같은 답이 나온다(음이 아닌 값에서)
+        // 대조군: 정수 규칙은 나눗셈이 이미 정수라 같은 답이 나온다(두 규칙 모두 0 방향 절삭이라 부호와 무관 — 2^53 이하에서)
         Assert.Equal(expected, Eval(text, ("N", n)).AsInt64);
     }
 
@@ -566,6 +567,46 @@ public class FormulaTests
         Assert.Contains("64-bit", big.Message);
         // 정수 규칙은 실수 피연산자를 비트 연산에 받지 않는다(그대로)
         Assert.Contains("requires integer", Assert.Throws<GenApiException>(() => Eval("A & 1", ("A", 2.0))).Message);
+    }
+
+    [Theory]
+    [InlineData("(N / 2) % 2", 7L, 1L)]                 // 3.5 → 3, 3 % 2 = 1 — 정수 나눗셈 뒤 나머지와 같다
+    [InlineData("(N / 2) % 2", -7L, -1L)]
+    [InlineData("N % (7 / 2)", 10L, 1L)]                // 제수도 같은 규칙: 3.5 → 3
+    public void RealModeRemainderTruncatesRealOperandsLikeBitOperators(string text, long n, long expected)
+    {
+        var v = EvalReal(text, ("N", n));
+        Assert.True(v.IsInteger, $"{text} = {v}");
+        Assert.Equal(expected, v.AsInt64);
+        Assert.Equal(expected, Eval(text, ("N", n)).AsInt64);   // 대조군: 정수 규칙과 같은 답
+    }
+
+    [Fact]
+    public void IntegerModeRemainderOfRealsStaysFmod()
+    {
+        // 공개 규칙(정수 규칙)의 실수 나머지는 그대로다
+        Assert.Equal(1.5, Eval("7.5 % 2").AsDouble);
+        Assert.Contains("NaN", Assert.Throws<GenApiException>(() => EvalReal("A % 2", ("A", double.NaN))).Message);
+    }
+
+    [Theory]
+    [InlineData("B ** (X / 2)", 0L, -2L, "zero")]       // 0 ** -1.0 — 지수가 나눗셈에서 실수로 와도 0 나눗셈이다
+    [InlineData("B ** (1 / X)", -8L, 3L, "undefined")]  // (-8) ** (1/3) — 음수의 분수 거듭제곱은 실수가 아니다
+    public void RealModePowerRejectsZeroBaseNegativeExponentAndNaN(string text, long b, long x, string expected)
+    {
+        // (변수 이름에 E 를 쓰지 않는다 — E 는 상수 e 다)
+        var ex = Assert.Throws<GenApiException>(() => EvalReal(text, ("B", b), ("X", x)));
+        Assert.Contains(expected, ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PowerOfRealOperandsNeverReturnsNaNOrDivisionByZero()
+    {
+        // 정수 규칙에서도 실수 피연산자의 거듭제곱은 무한대·NaN 을 값으로 흘리지 않는다
+        Assert.Contains("zero", Assert.Throws<GenApiException>(() => Eval("0.0 ** -1")).Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("undefined", Assert.Throws<GenApiException>(() => Eval("(-4.0) ** 0.5")).Message);
+        Assert.Equal(0.25, Eval("0.5 ** 2").AsDouble);  // 대조군: 정상 값은 그대로
+        Assert.Equal(1.0, Eval("0.0 ** 0").AsDouble);
     }
 
     [Fact]

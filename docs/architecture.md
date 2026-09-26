@@ -520,12 +520,16 @@ the formula (`FormulaMode`, a required argument of `FormulaScope`):
   integer ⊕ integer stays integer (`/` truncates, `**` integer when exponent ≥ 0, overflow throws); any
   double promotes; bitwise operators reject doubles.
 - *Real* — `SwissKnife` and `Converter` (the formula, its `Expression`s and the Converter limit mapping):
-  the value is a float, so `/` and `**` give real results even between integers (`1000000 / N`,
-  `10 ** ((TO / 10) / 20)` with an integer register `TO`). `+ - *` between integers stay exact integers but
-  continue in double instead of throwing on overflow. Bitwise operators and shifts truncate double operands
-  toward zero (so `(N / 2) & 1` gives what integer division then `&` gave); NaN/out-of-range still throws.
+  the value is a float, so `/` gives a real result even between integers (`1000000 / N`,
+  `10 ** ((TO / 10) / 20)` with an integer register `TO`). `+ - *` and `**` with a non-negative exponent stay
+  exact integers between integers but continue in double instead of throwing on overflow. Bitwise operators,
+  shifts and `%` truncate double operands toward zero, so `(N / 2) & 1` and `(N / 2) % 2` give what integer
+  division followed by that operator gave (either sign, while the operands fit 2^53); NaN/out-of-range throws.
 
-Division by zero and invalid operations throw `GenApiException` — never return 0 silently. Parse depth is bounded; variable names are identifiers
+Division by zero and invalid operations throw `GenApiException` — never return 0 silently. That includes
+`**`: a zero base with a negative exponent throws in both rules, and an undefined real result (a negative base
+with a fractional exponent) throws instead of returning NaN. A magnitude beyond `double` stays ±Infinity like
+any other double arithmetic; the Converter limit mapping reads such an endpoint as an open end. Parse depth is bounded; variable names are identifiers
 (letters, digits, `_`, `.`) and are resolved by the caller from `<pVariable Name="X">Node</pVariable>`.
 
 Runtime layer (`GenApi/Runtime`): concrete node classes implementing the public interfaces over the
