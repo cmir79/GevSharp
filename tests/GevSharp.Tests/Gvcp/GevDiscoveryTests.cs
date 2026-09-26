@@ -64,6 +64,23 @@ public class GevDiscoveryTests
     }
 
     [Fact]
+    public async Task ProbeReturnsNullWhenTheDeviceAnswersWithAnErrorStatus()
+    {
+        // 문서가 밝힌 null 의 둘째 까닭 — 장치는 거기 있고 답도 했지만 오류 status 다. 예외로 새지 않고 null 이다
+        // (브로드캐스트 탐색도 같은 응답을 목록에 넣지 않는다). 예산을 크게 두어, null 이 예산을 다 쓴 무응답이 아니라
+        // 온 응답에서 나왔다는 것을 시간으로 가른다 — 굶주린 스케줄러의 고정 비용은 이 예산에 한참 못 미친다.
+        using var r = new GvcpTestResponder();
+        r.DiscoveryErrorStatus = GvcpConst.StatusBusy;
+        const int budgetMs = 10_000;
+        var sw = Stopwatch.StartNew();
+
+        Assert.Null(await GevDiscovery.ProbeAsync(r.EndPoint, budgetMs, default));
+
+        Assert.True(sw.ElapsedMilliseconds < budgetMs, $"probe took {sw.ElapsedMilliseconds} ms; the error-status reply should have ended it before the {budgetMs} ms budget");
+        Assert.Equal(GvcpConst.DiscoveryCmd, Assert.Single(r.Requests).Command);
+    }
+
+    [Fact]
     public async Task ProbeSkipsTruncatedDiscoveryAck()
     {
         using var r = new GvcpTestResponder();

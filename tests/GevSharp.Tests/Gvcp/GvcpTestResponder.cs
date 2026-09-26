@@ -50,6 +50,7 @@ internal sealed class GvcpTestResponder : IDisposable
     private long _pendingAckAddr = -1;
     private volatile bool _isCcpHeldByOther;
     private volatile int _truncateDiscoveryTo;
+    private volatile int _discoveryErrorStatus;
     private long _errorAddr = -1;
     private volatile int _errorStatus = GvcpConst.StatusWriteProtect;
     private volatile bool _isAckEmptyForWrites;
@@ -76,6 +77,8 @@ internal sealed class GvcpTestResponder : IDisposable
     public bool IsCcpHeldByOther { get => _isCcpHeldByOther; set => _isCcpHeldByOther = value; }
     /// <summary>0 보다 크면 DISCOVERY_ACK 페이로드를 이 길이로 자른다.</summary>
     public int TruncateDiscoveryTo { get => _truncateDiscoveryTo; set => _truncateDiscoveryTo = value; }
+    /// <summary>0 이 아니면 DISCOVERY_CMD 에 페이로드 없이 이 오류 status 로 답한다 — 거기 있지만 탐색을 거절하는 장치.</summary>
+    public ushort DiscoveryErrorStatus { get => (ushort)_discoveryErrorStatus; set => _discoveryErrorStatus = value; }
     /// <summary>이 주소를 건드리는 요청에 <see cref="ErrorStatus"/> 로 답한다. null = 없음.</summary>
     public uint? ErrorAddr
     {
@@ -269,6 +272,8 @@ internal sealed class GvcpTestResponder : IDisposable
         {
             case GvcpConst.DiscoveryCmd:
             {
+                if (DiscoveryErrorStatus != 0)
+                    return Error(reply, GvcpConst.DiscoveryAck, reqId, DiscoveryErrorStatus);
                 var len = TruncateDiscoveryTo > 0 ? TruncateDiscoveryTo : GvbsAddr.DiscoveryDataLen;
                 Header(reply, GvcpConst.StatusSuccess, GvcpConst.DiscoveryAck, (ushort)len, reqId);
                 Memory.AsSpan(0, len).CopyTo(reply.AsSpan(8));

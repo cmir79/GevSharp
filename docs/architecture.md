@@ -116,7 +116,9 @@ public sealed class GevDiscoveryOpt
 public static class GevDiscovery
 {
     public static Task<IReadOnlyList<GevDeviceInfo>> DiscoverAsync(GevDiscoveryOpt? opt = null, CancellationToken ct = default);
-    /// unicast DISCOVERY_CMD to one address (works across subnets and on loopback simulators)
+    /// unicast DISCOVERY_CMD to one address (works across subnets and on loopback simulators), sent once without retry.
+    /// null = no usable reply, not "no device": no reply in time (Debug), an error status (Warn) or a reply shorter than
+    /// the 248-byte block (Warn) — the same replies DiscoverAsync skips. Throws for bad arguments, cancellation and socket failures.
     public static Task<GevDeviceInfo?> ProbeAsync(IPAddress address, int timeoutMs = 1000, CancellationToken ct = default);
     public static Task ForceIpAsync(PhysicalAddress mac, IPAddress ip, IPAddress subnet, IPAddress gateway, GevDiscoveryOpt? opt = null, CancellationToken ct = default);
 }

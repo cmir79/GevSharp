@@ -338,14 +338,34 @@ public static class GevDiscovery
 
     // ------------------------------------------------------------------ probe
 
-    /// <summary>주소 하나에 유니캐스트 DISCOVERY_CMD 를 보낸다. 서브넷을 넘어서도, 루프백 시뮬레이터에도 통한다. 응답이 없으면 null.</summary>
+    /// <summary>
+    /// 주소 하나에 유니캐스트 DISCOVERY_CMD 를 한 번 보내고(재시도 없음) <paramref name="timeoutMs"/> 동안 응답을 기다린다.
+    /// 서브넷을 넘어서도, 루프백 시뮬레이터에도 통한다.
+    /// </summary>
+    /// <returns>
+    /// 온전한 DISCOVERY_ACK 가 오면 그 장치 정보. 아래 셋이면 null 이다 — null 은 "장치가 없다" 가 아니라 "쓸 수 있는 응답이 없었다" 다.
+    /// <list type="number">
+    /// <item>시간 안에 응답이 없다. 닫힌 포트, 기다리던 것이 아닌 명령의 ack(버린다), PENDING_ACK 로 답한 뒤 끝내 완료하지 않은 경우도
+    /// 여기 든다. Debug 로그.</item>
+    /// <item>장치가 오류 status 로 답했다 — 장치는 거기 있지만 탐색을 거절했다. Warn 로그에 status 를 남긴다.</item>
+    /// <item>응답이 탐색 블록(248 바이트)보다 짧다. Warn 로그.</item>
+    /// </list>
+    /// 브로드캐스트 탐색(<see cref="DiscoverAsync"/>)도 같은 응답(오류 status·짧은 응답)을 목록에 넣지 않고 건너뛴다 — 프로브는
+    /// 그 탐색을 주소 하나에 보내는 것이라 같은 응답을 같게 다룬다. 둘째·셋째를 "없음" 과 가려야 하는 호출자는 Warn 을 받는
+    /// <see cref="GevLog.Sink"/> 를 붙인다.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="address"/> 가 null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeoutMs"/> 가 0 이하.</exception>
+    /// <exception cref="GevException">IPv4 주소가 아니거나, 보내기·받기가 소켓 오류로 실패했거나, 장치로 나가는 로컬 주소를 정할 수 없다.</exception>
+    /// <exception cref="SocketException">프로브용 소켓을 만들거나 묶지 못했다(드묾 — 이 경우만 감싸지 않고 그대로 나온다).</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> 가 취소됐다.</exception>
     public static Task<GevDeviceInfo?> ProbeAsync(IPAddress address, int timeoutMs = 1000, CancellationToken ct = default)
     {
         if (address is null) throw new ArgumentNullException(nameof(address));
         return ProbeAsync(new IPEndPoint(address, GvcpConst.Port), timeoutMs, ct);
     }
 
-    /// <summary>포트를 지정한 프로브 — 표준 포트가 아닌 시뮬레이터용.</summary>
+    /// <summary>포트를 지정한 프로브 — 표준 포트가 아닌 시뮬레이터용. null 이 되는 경우와 예외는 공개 오버로드와 같다.</summary>
     internal static async Task<GevDeviceInfo?> ProbeAsync(IPEndPoint endpoint, int timeoutMs, CancellationToken ct)
     {
         if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
@@ -355,20 +375,22 @@ public static class GevDiscovery
         {
             ack = await channel.RequestAsync(GvcpCmd.Discovery(allowBroadcastAck: false), ct).ConfigureAwait(false);
         }
-        catch (GevTimeoutException)
+        catch (GevTimeoutException ex)
         {
-            GevLog.Debug(LogSrc, $"probe {endpoint}: no reply within {timeoutMs} ms");
+            // 무응답·PENDING_ACK 뒤 미완료 — 채널의 메시지가 어느 쪽인지 말해 준다.
+            GevLog.Debug(LogSrc, $"probe {endpoint}: {ex.Message}; returning null");
             return null;
         }
         catch (GevStatusException ex)
         {
-            GevLog.Warn(LogSrc, $"probe {endpoint}: {ex.Message}");
+            // 장치는 거기 있고 답도 했다 — null 이 "없음" 으로 읽히지 않게 경고로 남긴다.
+            GevLog.Warn(LogSrc, $"probe {endpoint}: {ex.Message}; the device is there but refused discovery, returning null");
             return null;
         }
 
         if (ack.PayloadLength < GvbsAddr.DiscoveryDataLen)
         {
-            GevLog.Warn(LogSrc, $"probe {endpoint}: truncated DISCOVERY_ACK ({ack.PayloadLength} of {GvbsAddr.DiscoveryDataLen} bytes); ignored");
+            GevLog.Warn(LogSrc, $"probe {endpoint}: truncated DISCOVERY_ACK ({ack.PayloadLength} of {GvbsAddr.DiscoveryDataLen} bytes); returning null");
             return null;
         }
         var local = GevNet.ResolveLocalAddress(endpoint.Address);
