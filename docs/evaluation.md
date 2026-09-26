@@ -338,17 +338,19 @@ What was measured are rules, not the device's internal mechanism:
 This model does not expose a readable acquisition status (`AcquisitionActive` was "not available" in every
 probe), so when the stop actually takes effect has not been observed; "a stop that stays pending in the device" is
 an interpretation that fits the rules, not an observation. The practical consequence is measured: a consumer
-that restarts right after a cancelled grab and waits until *previous start + exposure + transfer* first avoided
+that restarts shortly after a cancelled grab and waits until *previous start + exposure + transfer* first avoided
 it — 80 cancelled grabs at a 30 ms gap, 0 of 40 timed out with that settle time, 7 of 40 without. This is device
 behaviour, not a library fix; the library's part is to report such a frame as incomplete (R29) rather than deliver
 it.
 
-It also showed up in a *continuous* acquisition started right after a cancelled grab. Conditions: Basler
+It also showed up in a *continuous* acquisition started tens of milliseconds after a cancelled grab (starting it
+immediately, with no delay, was never affected: 0 of 35). Conditions: Basler
 acA2500-14gm (this one camera), exposure 30 ms, cancel 2–7 ms after the call, `StartContinuous` 75 ms later, 1 s of
 live, counting only runs in which the start went out, through the consumer's GevCam layer on GevSharp 0.5.0:
 5 of 43 runs got 0–1 whole frames, every block ending with a trailer at 254 of 563 packets until acquisition was
 stopped and started again; with the settle time, 0 of 42. In the same run, exposure 5 ms with a 25 ms delay: 4 of
-27 (first frame only); exposure 100 ms with a 100 ms delay: 2 of 24 (first frame only); no delay: 0 of 35.
+27 (first frame only); exposure 100 ms with a 100 ms delay: 2 of 24 (first frame only); no delay: 0 of 35. Of the
+11 affected runs, 6 lost only the first frame and 5 lost every frame.
 For shortfalls of whole packets like these the one-time warning now says the device ended the block early; the
 size-rule hint is kept for shortfalls below one packet. Crevis was not measured. All figures are the consumer's
 (its `cvinspect-cutmech` runs and `cvinspect-0290-cutloop` A/B).

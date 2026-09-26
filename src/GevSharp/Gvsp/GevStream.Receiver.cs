@@ -1466,9 +1466,9 @@ public sealed partial class GevStream
     /// 끊긴 블록은 스트림당 한 번만 경고한다 — 획득을 멈출 때마다 끊는 장치라면 단발 그랩마다 한 줄씩 쌓인다. 그 뒤로는 불완전 프레임
     /// 통계·<see cref="FrameDropped"/> 로 세고, 프레임마다의 자세한 줄은 Debug 로 남긴다.
     /// 경고는 모자란 양으로 원인을 안내한다: 한 패킷에 못 미치게 모자라면 리더에서 계산한 크기가 장치와 어긋난 것(이 픽셀 포맷의 크기 규칙)이고,
-    /// 패킷 단위로 모자라면 장치가 블록을 일찍 끝낸 것이다. 후자는 전송 도중 정지할 때와, 정지 직후 다시 건 취득에서 관측됐다(하류 실측 —
-    /// 대개 그 취득의 첫 장만, 일부 회차에서는 멈췄다 다시 걸 때까지 모든 장). 장치 안에서 무엇이 그렇게 만드는지는 관측되지 않았으므로
-    /// 문구는 관측만, 관측된 빈도의 범위로 적는다.
+    /// 패킷 단위로 모자라면 장치가 블록을 일찍 끝낸 것이다. 후자는 전송 도중 정지할 때와, 정지 뒤 수십 ms(25~100 ms)에 다시 건 취득에서
+    /// 관측됐다(하류 실측 — 문제 회차의 절반쯤은 첫 장만, 절반쯤은 멈췄다 다시 걸 때까지 모든 장; 정지 직후 곧장 건 경우는 0/35).
+    /// 장치 안에서 무엇이 그렇게 만드는지는 관측되지 않았으므로 문구는 관측만, 관측된 빈도의 범위로 적는다.
     /// </summary>
     private void LogCutShort(FrameSlot slot)
     {
@@ -1478,7 +1478,7 @@ public sealed partial class GevStream
             var shortfall = slot.ExpectedBytes - slot.ReceivedEnd;
             var cause = shortfall < slot.DataBytes
                 ? $"It is {shortfall} byte(s) short, less than one packet: if every frame ends this way, the size computed from the leader does not match what the device sends for this pixel format."
-                : $"It is {shortfall} byte(s) short: the device ended the block early. This has been observed when acquisition is stopped while a frame is on the wire, and in an acquisition started right after a stop (usually only its first frame; in some tries every frame until acquisition was stopped and started again).";
+                : $"It is {shortfall} byte(s) short: the device ended the block early. This has been observed when acquisition is stopped while a frame is on the wire, and in an acquisition started shortly after a stop, tens of milliseconds later (sometimes only its first frame, sometimes every frame until acquisition was stopped and started again).";
             GevLog.Warn(_logSrc, $"Block {slot.BlockId}: the trailer ended the block after {slot.ExpectedPackets} payload packet(s) ({slot.ReceivedEnd} bytes) "
                 + $"but the leader announced {slot.ExpectedBytes} bytes; the frame is closed as incomplete. {cause} Further occurrences are counted as incomplete frames but not logged.");
         }
