@@ -92,8 +92,9 @@ public abstract record NodeDef
     public bool IsDeprecated { get; init; }
 
     /// <summary>
-    /// PollingTime(ms). 레지스터 노드에서는 읽기 캐시를 쓰지 말라는 뜻(장치가 값을 스스로 바꾼다), Command 에서는 완료 폴링 주기.
-    /// 어느 요소에나 올 수 있어 공통 필드로 둔다. 없으면 null.
+    /// PollingTime(ms). 런타임은 값이 아니라 있는지만 본다 — 레지스터 노드에서는 읽기 캐시를 쓰지 말라는 뜻(장치가 값을 스스로 바꾼다),
+    /// Command 에서는 IsDone 이 pValue 를 되읽는다는 뜻(자기 소거 비트로 본다 — 이 라이브러리 고유 규칙). 주기 자체는 어디서도 쓰지 않으며
+    /// 폴링 간격은 호출자가 정한다. 어느 요소에나 올 수 있어 공통 필드로 둔다. 없으면 null.
     /// </summary>
     public long? PollingTimeMs { get; init; }
 

@@ -576,8 +576,15 @@ model + port.
   `pValue` to an Integer or Float, `DisplayNotation`/`DisplayPrecision`/`Unit`.
 - Enumeration: entries with `Value`, `Symbolic`, `NumericValue`, own `pIsImplemented`/`pIsAvailable`;
   value comes from `pValue` (Integer/IntReg/MaskedIntReg) or `Value` literal.
-- Command: `CommandValue`/`pCommandValue` written to `pValue`; `IsDone` = read `pValue` and compare with the
-  command value when `PollingTime` is present, else true.
+- Command: `CommandValue`/`pCommandValue` written to `pValue`. `IsDone` is GevSharp's own rule, not checked
+  against a primary source: only when the Command node itself carries `PollingTime` (its presence is used, never
+  its interval) and the Command's effective access mode can read, `pValue` is re-read from the device and IsDone is
+  true once it no longer equals the command value (read as a self-clearing bit). Otherwise IsDone is true without
+  any wire read — no `PollingTime`, no `pValue`, or a write-only Command (also a locked one) — so on a description
+  without a Command-level `PollingTime` it is **not** a completion signal: a caller that must wait for a command
+  (a user-set load, say) reads a status node the device documents or waits a settle time of its own. When a
+  re-read is needed but the Command is not implemented or not available, IsDone throws `GenApiException` without
+  touching the port.
 - Boolean: `OnValue`/`OffValue` (default 1/0) over `pValue` or literal `Value`.
 - String: StringReg (fixed length, NUL-padded, ASCII/UTF-8 per device mode), literal `Value`.
 - Port: `pPort` on every register node → `IPortNode.Port`; ignore `ChunkID`/`SwapEndianess`/`CacheChunkData`

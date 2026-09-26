@@ -249,6 +249,70 @@ public class OtherNodeTests
         Assert.True(await start.IsDoneAsync());
     }
 
+    // 완료 되읽기는 명령 자신의 접근 모드를 따른다 — 내부 값 경로는 검사 없이 포트를 부르므로, 거르지 않으면
+    // 쓰기 전용 주소나 없는 기능의 주소에 READREG 가 나가고 장치 거절이 전송 예외로 올라온다.
+
+    [Fact]
+    public async Task Command_WithPollingTime_WriteOnlyRegister_IsDoneWithoutReading()
+    {
+        var port = new MemoryPort();
+        var body = "<Command Name=\"Start\"><pValue>R</pValue><CommandValue>1</CommandValue><PollingTime>10</PollingTime></Command>"
+            + IntReg("R", "0x10", access: "WO");
+        var start = Bind(body, port).GetCommand("Start");
+
+        await start.ExecuteAsync();
+        Assert.True(await start.IsDoneAsync());             // 되읽을 길이 없다 — PollingTime 이 없을 때와 같은 뜻
+        Assert.Equal(0, port.ReadsAt(0x10));
+    }
+
+    [Fact]
+    public async Task Command_WithPollingTime_ImposedWriteOnly_IsDoneWithoutReading()
+    {
+        var port = new MemoryPort();
+        var body = "<Command Name=\"Start\"><ImposedAccessMode>WO</ImposedAccessMode><pValue>R</pValue><CommandValue>1</CommandValue><PollingTime>10</PollingTime></Command>"
+            + IntReg("R", "0x10");
+        var start = Bind(body, port).GetCommand("Start");
+
+        await start.ExecuteAsync();
+        Assert.True(await start.IsDoneAsync());
+        Assert.Equal(0, port.ReadsAt(0x10));
+    }
+
+    [Fact]
+    public async Task Command_WithPollingTime_LockedWriteOnly_IsDoneWithoutReading()
+    {
+        // 잠긴 쓰기 전용 명령은 접근 모드가 NotAvailable 로 합성된다. 잠금은 쓰기만 막으므로 되읽기 판단에서는 여전히 쓰기 전용이다 —
+        // 없는 기능처럼 던지지 않고, 읽지도 않는다.
+        var port = new MemoryPort();
+        port.U32(0x10, 1);
+        var body = "<Command Name=\"Start\"><ImposedAccessMode>WO</ImposedAccessMode><pIsLocked>Locked</pIsLocked><pValue>R</pValue><CommandValue>1</CommandValue><PollingTime>10</PollingTime></Command>"
+            + "<Integer Name=\"Locked\"><Value>1</Value></Integer>" + IntReg("R", "0x10");
+        var map = Bind(body, port);
+        var start = map.GetCommand("Start");
+
+        Assert.Equal(AccessMode.NotAvailable, await start.GetAccessModeAsync());
+        Assert.True(await start.IsDoneAsync());
+        Assert.Equal(0, port.ReadsAt(0x10));
+    }
+
+    [Theory]
+    [InlineData("pIsImplemented", "not implemented")]
+    [InlineData("pIsAvailable", "not available")]
+    public async Task Command_WithPollingTime_NotImplementedOrNotAvailable_ThrowsWithoutReading(string guard, string reason)
+    {
+        var port = new MemoryPort();
+        port.U32(0x10, 1);
+        var body = $"<Command Name=\"Start\"><{guard}>Gate</{guard}><pValue>R</pValue><CommandValue>1</CommandValue><PollingTime>10</PollingTime></Command>"
+            + "<Integer Name=\"Gate\"><Value>0</Value></Integer>" + IntReg("R", "0x10");
+        var start = Bind(body, port).GetCommand("Start");
+
+        var ex = await Assert.ThrowsAsync<GenApiException>(() => start.IsDoneAsync().AsTask());
+
+        Assert.Contains(reason, ex.Message);
+        Assert.Equal("Start", ex.NodeName);
+        Assert.Equal(0, port.ReadsAt(0x10));
+    }
+
     [Fact]
     public async Task Command_WithoutRegister_ExecutesLocally()
     {

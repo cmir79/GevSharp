@@ -243,7 +243,10 @@ into a node map is a later milestone.
   `<pSelected>` on selector features (the selected features are those listed).
 - Guards: `<pIsImplemented>`, `<pIsAvailable>`, `<pIsLocked>` (Integer/Boolean/SwissKnife nodes: non-zero = true),
   `<ImposedAccessMode>`, `<pInvalidator>` (nodes whose write invalidates this node's cache), `<Streamable>`.
-- Commands: `<CommandValue>` / `<pCommandValue>` written to `<pValue>`; `<PollingTime>` marks self-clearing bits.
+- Commands: `<CommandValue>` / `<pCommandValue>` written to `<pValue>`. `<PollingTime>` on a Command is *read by
+  GevSharp* as marking a self-clearing bit that `IsDone` may poll — GevSharp's own reading, not a rule taken from a
+  primary source (none checked). Descriptions often leave it out, also on commands that take time to finish
+  (a user-set load), and others put it on exactly those commands.
 - Booleans: `<OnValue>` / `<OffValue>` (default 1 / 0).
 - Strings: `<StringReg>` fixed `Length`, `<String>` literal or `pValue`.
 - Floats: `<FloatReg>` Length 4/8 IEEE; `<Converter>`; `<Float>` with `Min/Max/Inc/Unit/Representation/DisplayNotation/DisplayPrecision`.

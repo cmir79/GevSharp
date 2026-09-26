@@ -86,7 +86,7 @@ all four float kinds → `Float`, `Node`/`Unknown` → `Unknown`).
 | `IsStreamable` | bool | `Streamable` | default false |
 | `PErrors` | IReadOnlyList\<string\> | `pError`* | |
 | `IsDeprecated` | bool | `IsDeprecated` | default false |
-| `PollingTimeMs` | long? | `PollingTime` | register nodes: treat reads as NoCache; Command: completion polling |
+| `PollingTimeMs` | long? | `PollingTime` | only its presence is used, never the interval: register nodes treat reads as NoCache; a Command's `IsDone` re-reads `pValue` (GevSharp's own rule). The caller picks the polling interval |
 | `PSelected` | IReadOnlyList\<string\> | `pSelected`* | accepted on any kind; meaningful on Integer kinds, Enumeration, Boolean. `pSelecting` is derived by the runtime |
 
 `MergePriority`/`ExposeStatic` attributes and `<Extension>` are ignored.

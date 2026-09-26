@@ -224,6 +224,19 @@ internal abstract class NodeBase : INode
         throw new GenApiException($"Node '{Name}' cannot be read: {Reason(mode, false, detail)}.", Name);
     }
 
+    /// <summary>
+    /// 값을 되읽어 확인할 수 있는지 — 읽을 수 있으면 참, 쓰기 전용이면 거짓. 잠금은 쓰기만 막으므로 읽기 판정에 끼지 않는다:
+    /// 잠긴 쓰기 전용 노드는 접근 모드가 NotAvailable 로 합성되지만 여기서는 쓰기 전용(거짓)이다.
+    /// 구현되지 않았거나 가용하지 않으면(값 출처 없음 포함) 노드 이름과 사유를 담아 <see cref="GenApiException"/> — what 은 메시지의 동작 이름.
+    /// </summary>
+    internal async ValueTask<bool> CanReadBackAsync(string what, CancellationToken ct)
+    {
+        var (mode, isLockDegraded, detail) = await ComputeAccessAsync(ct).ConfigureAwait(false);
+        if (CanRead(mode)) return true;
+        if (mode == AccessMode.WriteOnly || isLockDegraded) return false;
+        throw new GenApiException($"Node '{Name}' cannot be {what}: {Reason(mode, false, detail)}.", Name);
+    }
+
     /// <summary>쓸 수 없으면 노드 이름과 사유("not implemented"/"not available"/"locked"/"read-only"/값 출처 없음)를 담아 던진다.</summary>
     internal async ValueTask EnsureWritableAsync(CancellationToken ct)
     {

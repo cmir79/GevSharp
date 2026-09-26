@@ -418,7 +418,9 @@ internal sealed class EnumerationNode : NodeBase, IEnumeration
 /// <summary>
 /// &lt;Command&gt; — 실행은 CommandValue(또는 pCommandValue 값, 둘 다 없으면 1)를 pValue 에 쓰는 것. pValue 가 없으면 리터럴 Value 자리의
 /// 호스트 측 변수에 남는다(Integer/Boolean 의 리터럴 Value 와 같은 규칙).
-/// PollingTime 이 있으면 <see cref="IsDoneAsync"/> 가 pValue 를 새로 읽어 명령 값에서 돌아왔는지 본다(자기 소거 비트); 없으면 항상 완료.
+/// <see cref="IsDoneAsync"/> 는 이 라이브러리 고유 규칙이다(표준 문서와 대조하지 않았다): 이 노드 자신에 PollingTime 이 있고 접근 모드로
+/// pValue 를 읽을 수 있을 때만 새로 읽어 명령 값에서 벗어났는지 본다(자기 소거 비트로 본다). 그 밖에는 장치에 묻지 않고 참 — 완료 신호가 아니다.
+/// PollingTime 의 값은 쓰지 않고 있는지만 본다.
 /// </summary>
 internal sealed class CommandNode : NodeBase, ICommand
 {
@@ -469,6 +471,9 @@ internal sealed class CommandNode : NodeBase, ICommand
     public async ValueTask<bool> IsDoneAsync(CancellationToken ct = default)
     {
         if (_def.PollingTimeMs is null || _pValue is null) return true;
+        // 되읽기는 이 명령의 접근 모드(pValue 의 모드·ImposedAccessMode·술어를 합친 것)를 따른다 — 아래 내부 값 경로는 검사 없이 포트를 부른다.
+        // 쓰기 전용이면 완료를 볼 길이 없어 PollingTime 이 없을 때와 같이 참, 구현·가용하지 않으면 사유를 담아 던진다. 어느 쪽도 포트에 닿지 않는다.
+        if (!await CanReadBackAsync("polled for completion", ct).ConfigureAwait(false)) return true;
         DropCacheChain(_pValue);
         var current = await ReadInt64FromAsync(_pValue, ct).ConfigureAwait(false);
         var command = await CommandValueAsync(ct).ConfigureAwait(false);

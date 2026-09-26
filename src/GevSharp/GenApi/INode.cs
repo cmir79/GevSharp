@@ -142,7 +142,18 @@ public interface IEnumeration : INode
 public interface ICommand : INode
 {
     ValueTask ExecuteAsync(CancellationToken ct = default);
-    /// <summary>실행이 끝났는지(레지스터가 CommandValue 에서 돌아왔는지). 폴링 정보가 없으면 항상 true.</summary>
+    /// <summary>
+    /// 실행이 끝났는지 — 이 라이브러리 고유의 규칙이며 표준 문서의 규칙과 대조하지 않았다.
+    /// Command 노드 자신에 PollingTime 이 있고 명령의 접근 모드로 pValue 를 읽을 수 있을 때만 pValue 를 장치에서 새로 읽어,
+    /// 명령 값에서 벗어났으면 true 다(자기 소거 비트로 본다). PollingTime 의 값(주기)은 쓰지 않고 있는지만 본다 — 폴링 간격과 시한은 호출자가 정한다.
+    /// <para>
+    /// 그 밖에는 — PollingTime 이 없거나, pValue 가 없거나, 명령이 쓰기 전용이면(잠긴 쓰기 전용 포함) — 장치에 묻지 않고 항상 true 다.
+    /// 이때 true 는 "끝났다" 가 아니라 "이 라이브러리가 볼 수 있는 진행 중 표시가 없다" 는 뜻이라 완료 신호로 쓸 수 없다.
+    /// 끝나기를 기다려야 하는 명령(사용자 설정 불러오기 등)의 설명에 Command 수준 PollingTime 이 없으면, 장치 문서가 정한 상태 노드를
+    /// 읽거나 호출자가 정한 안정 시간을 기다린다.
+    /// </para>
+    /// 되읽어야 하는데 명령이 구현되지 않았거나 가용하지 않으면 포트에 닿지 않고 <see cref="GenApiException"/>.
+    /// </summary>
     ValueTask<bool> IsDoneAsync(CancellationToken ct = default);
 }
 
