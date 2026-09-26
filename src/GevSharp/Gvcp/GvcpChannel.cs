@@ -88,10 +88,15 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
 
     public GvcpChannel(IPEndPoint device, IPAddress? localAddress = null, GvcpChannelOpt? opt = null)
     {
-        DeviceEndPoint = device ?? throw new ArgumentNullException(nameof(device));
-        _logSrc = $"{LogSrc} {DeviceEndPoint.Address}";
+        if (device is null) throw new ArgumentNullException(nameof(device));
         if (device.AddressFamily != AddressFamily.InterNetwork)
             throw new GevException($"{device} is not an IPv4 endpoint; GVCP runs over IPv4 only");
+        // 호출자의 IPEndPoint 를 그대로 쥐지 않고 사본을 만든다 — IPEndPoint 는 바뀌는 객체라, 호출자가 같은 객체를 다음 장치에
+        // 다시 쓰면(Port·Address 변경) 송신 주소(아래 직렬화 사본)는 그대로인데 응답 대조(HandlePacket)·DeviceEndPoint·로그만
+        // 따라 바뀌어 진짜 장치의 응답이 전부 남의 패킷으로 버려진다. 아래는 전부 이 사본에서 끌어낸다.
+        device = new IPEndPoint(device.Address, device.Port);
+        DeviceEndPoint = device;
+        _logSrc = $"{LogSrc} {DeviceEndPoint.Address}";
         // 호출자가 준 인스턴스를 그대로 쥐지 않고 값만 옮겨 온다 — 채널이 세션에 맞춰 상한을 다시 정할 때(SetMaxPendingAckWaitMs)
         // 호출자의 객체를, 나아가 같은 객체로 만든 다른 채널까지 조용히 바꿔 놓지 않기 위해서다.
         // ⚠ GvcpChannelOpt 에 항목을 더하면 여기에도 더한다.
@@ -136,6 +141,7 @@ public sealed class GvcpChannel : IDisposable, IGvcpResendPort
     internal Action<Exception?>? OnClosed { get; set; }
 
     public IPEndPoint LocalEndPoint { get; }
+    /// <summary>이 채널이 겨냥하는 장치 끝점 — 생성자에 넘긴 객체의 사본이라, 그 객체를 뒤에 바꿔도 이 채널은 처음 연 장치에 묶여 있다.</summary>
     public IPEndPoint DeviceEndPoint { get; }
     /// <summary>이 채널이 실제로 쓰는 타이밍 값(생성자에 넘긴 객체의 사본). 진단용으로 읽는다.</summary>
     public GvcpChannelOpt Opt => _opt;

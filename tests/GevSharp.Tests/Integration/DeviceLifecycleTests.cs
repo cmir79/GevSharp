@@ -537,6 +537,29 @@ public class DeviceLifecycleTests
         Assert.Equal("device", ex.ParamName);
     }
 
+    [Fact]
+    public async Task OpenAsync_EndPoint_KeepsItsOwnCopy_SoReusingTheCallersEndPointChangesNothing()
+    {
+        // IPEndPoint 는 바뀌는 객체다. 호출자가 같은 객체를 다음 장치(다른 시뮬레이터·포워딩 포트)에 다시 쓰면,
+        // 송신 주소는 열 때 직렬화해 둔 사본이라 그대로인데 응답 대조가 호출자의 객체를 보고 있으면 진짜 장치의 응답이
+        // 전부 남의 패킷으로 버려진다 — 요청마다 시한 초과, 끝내 "하트비트 실패" 로 제어권 상실이 나고 원인은 어디에도 안 남는다.
+        using var sim = SimRig.StartSim();
+        var ep = new IPEndPoint(sim.GvcpEndPoint.Address, sim.GvcpEndPoint.Port);
+        await using var dev = await GevDevice.OpenAsync(ep, SimRig.DefaultDeviceOpt());
+        var foreignBefore = dev.Gvcp.ForeignPacketCount;
+
+        ep.Port = 1;
+        ep.Address = IPAddress.Parse("127.0.0.2");
+
+        // 동작 단정을 먼저 둔다 — 사본을 쥐지 않는 회귀는 여기서 GevTimeoutException 으로 드러난다.
+        Assert.Equal(0x0002_0000u, await dev.ReadRegAsync(GvbsAddr.Version));
+        Assert.Equal(foreignBefore, dev.Gvcp.ForeignPacketCount);
+        Assert.True(dev.IsOpen);
+        // 진단에 드러나는 주소(DeviceEndPoint·로그)도 연 장치 그대로다.
+        Assert.NotSame(ep, dev.Gvcp.DeviceEndPoint);
+        Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
+    }
+
     // ---------------------------------------------------------------- stream vs. device lifetime
 
     [Fact]
