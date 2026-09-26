@@ -239,7 +239,8 @@ public sealed class GvcpChannel : IDisposable
     /// req_id and the expected ACK command; PENDING_ACK extends the wait to the announced time plus one more
     /// TimeoutMs window (capped by MaxPendingAckWaitMs) — ending exactly at the announced time turns a reply that is
     /// late by the timer granularity into a timeout, and the retry makes the device execute the command twice;
-    /// retries on timeout.
+    /// retries on timeout, except once a PENDING_ACK was seen: the device has taken the command, so it is not resent
+    /// and GevTimeoutException is thrown (a caller that resends it may run it twice).
     public Task<GvcpAck> RequestAsync(GvcpCmd cmd, CancellationToken ct = default);
     /// fire-and-forget command with ack_required = 0 (PACKETRESEND). Thread-safe, no allocation on the hot path.
     public void SendNoAck(ReadOnlySpan<byte> packet);
