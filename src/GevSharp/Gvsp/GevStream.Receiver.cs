@@ -1333,6 +1333,12 @@ public sealed partial class GevStream
     /// 완성 = 리더가 있고, 예상 패킷을 다 받았고, 리더가 크기를 알렸으면 그 바이트 끝까지 실제로 받았다. 패킷 수만 보면 안 된다 —
     /// 패킷 수는 트레일러가 정하는데, 블록을 중간에 끊은 장치의 트레일러는 적은 수를 알리므로 안 온 꼬리(풀에서 다시 쓰는 버퍼라
     /// 이전 프레임의 픽셀이 남아 있다)가 완성으로 나간다. 마지막 패킷은 짧을 수 있어 패킷 수 × 패킷 크기가 아니라 받은 끝으로 본다.
+    /// <para>
+    /// 이 검사는 리더에서 계산한 크기가 장치가 실제로 보내는 크기보다 크면 모든 프레임을 불완전으로 만든다. 알려진 자리가 하나 있다 —
+    /// GVSP Packed 에서 픽셀 수가 홀수면 우리 규칙이 묶음으로 올려 장치의 PayloadSize 보다 1 바이트 크다(Mono12Packed 2591×1943 실측:
+    /// 장치 7,551,470, 계산 7,551,471). 그 장치는 마지막 패킷을 그보다 길게 채워 보내므로 복사가 한계에서 잘려 완성된다(11/11).
+    /// 마지막 패킷을 채우지 않는 장치라면 여기서 걸린다 — 그때는 <see cref="LogCutShort"/> 의 경고가 두 크기를 함께 적는다.
+    /// </para>
     /// </summary>
     private static bool IsComplete(FrameSlot slot)
         => slot.HasLeader && slot.Buf is not null && slot.ExpectedPackets > 0 && slot.ReceivedPayloads >= slot.ExpectedPackets
@@ -1353,7 +1359,8 @@ public sealed partial class GevStream
         {
             _hasLoggedShortBlock = true;
             GevLog.Warn(_logSrc, $"Block {slot.BlockId}: the trailer ended the block after {slot.ExpectedPackets} payload packet(s) ({slot.ReceivedEnd} bytes) "
-                + $"but the leader announced {slot.ExpectedBytes} bytes; the frame is closed as incomplete. Further occurrences are counted as incomplete frames but not logged.");
+                + $"but the leader announced {slot.ExpectedBytes} bytes; the frame is closed as incomplete. Further occurrences are counted as incomplete frames but not logged. "
+                + "If every frame ends this way, the device sends fewer bytes than its leader geometry implies (a size mismatch for this pixel format, not a cut block).");
         }
         else if (GevLog.IsEnabled(GevLogLevel.Debug))
         {

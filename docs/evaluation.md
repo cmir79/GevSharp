@@ -263,6 +263,16 @@ the "no byte stride" signal, and the sidecar records it. Widening to 2592 puts i
 branch: `PayloadSize` 248,832, `Stride` 3888, 0 incomplete. Both branches were exercised against hardware,
 not only against the simulator.
 
+**Odd pixel total (2026-09-26).** Every geometry above has an even `width x height`, so `w*h*12/8` is a whole
+number. At 2591 x 1943 Mono12Packed (5,034,313 pixels, odd) the device's `PayloadSize` is **7,551,470** =
+`ceil(p x 1.5)` — the lone last pixel takes two bytes — while the receiver's continuous-run rule still rounds to
+a whole group and expects **7,551,471**, one byte more. Frames nevertheless complete: 10 frames streamed, 11
+completed, 0 incomplete, because the device's last packet carries at least that many bytes and the copy is
+clamped at the expected size. This matters since frame completion also requires every byte the leader implies
+(R29): a device that sent exactly its own `PayloadSize` with no padding in the last packet would have every such
+frame closed as incomplete, with the one-time warning naming both sizes. Not observed on this camera; the rule
+is left as is until a device shows it, and the warning is what would surface it.
+
 `PixelFormatInfo.FrameBytes` is the single definition of that and `GvspImageLeader.ImageBytes` routes
 through it, so the receiver sizes a frame the way the device does. Where a line is not a whole number of
 bytes and there is no line padding there is no stride at all, and saying so is part of the fix:
