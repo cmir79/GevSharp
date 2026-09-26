@@ -169,6 +169,16 @@ the receiver reports `Stride` 0).
   (checked every ≤ 20 ms), CCP is cleared, `ControlOwner` becomes null, `HeartbeatTimeouts` increments and
   `ControlOwnerChanged(null)` fires. `HeartbeatTimeout = 0` disables expiry. Owner reads of CCP increment
   `HeartbeatObserved`.
+- **Reboot**: `Reboot()` emulates a power cycle without giving up the socket, so the endpoint stays the
+  same. Between two commands it stops acquisition, drops the owner (`ControlOwnerChanged(null)` fires if there
+  was one), and returns every volatile register to its power-on value: CCP, PrimaryAppPort/Ip,
+  HeartbeatTimeout (`SimDeviceOpt.HeartbeatTimeoutMs`), GvcpConfig, TimestampControl, the latched timestamp,
+  SCP/SCPS/SCPD/SCDA/SCCFG, and the feature page (as `UserSetLoad`). The timestamp counter restarts at 0 and the
+  next frame is block 1. Persistent IP, `UserDefinedName`, the observation counters and `FrameCounter` survive.
+  A controlling host's next heartbeat reads CCP = 0 well within its device timeout, so `GevDevice` reports
+  control lost with the "... or the device restarted" reason, and a new session can take control at once.
+  The time a real camera spends offline while rebooting is not emulated. `Stop()`/`Start()` is **not** a
+  reboot: the owner, CCP and all registers survive, and with an ephemeral `GvcpPort` the port changes.
 - **PENDING_ACK** (`SupportPendingAck`): every acknowledged WRITEREG first gets `PENDING_ACK` with
   time = `PendingAckDelayMs`, then the real `WRITEREG_ACK` after that delay (the server thread sleeps).
 - **PACKETRESEND**: never acknowledged. Accepted only from the owner and for channel 0; anything else is

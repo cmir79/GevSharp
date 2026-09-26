@@ -277,6 +277,47 @@ public class DeviceLifecycleTests
         }
     }
 
+    [Fact]
+    public async Task SimReboot_DropsControl_HostReportsARestart_AndANewSessionTakesOver()
+    {
+        // 전원을 껐다 켠 장치: 주소·포트는 그대로, CCP 는 0, 휘발 상태는 켜진 직후. 호스트의 다음 하트비트가 CCP = 0 을 읽는다 —
+        // 마지막 하트비트가 장치 시한(10 s)보다 한참 전이 아니므로 사유는 "다른 애플리케이션이 놓았거나 가져갔거나, 장치가 재시작" 이어야 한다.
+        await using var rig = await SimRig.StartAsync(device: o => o.HeartbeatPeriodMs = 100);
+        var lost = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Device.ControlLost += (_, ex) => lost.TrySetResult(ex);
+        var owners = new List<IPEndPoint?>();
+        rig.Sim.ControlOwnerChanged += o => { lock (owners) owners.Add(o); };
+        var endPoint = rig.EndPoint;
+
+        await rig.Device.WriteRegAsync(SimFeatureAddr.Width, 256);
+        await rig.Device.WriteRegAsync(GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset), 50_000);
+        await rig.Device.WriteRegAsync(SimFeatureAddr.AcquisitionStart, 1);
+        Assert.True(rig.Sim.IsAcquiring);
+
+        rig.Sim.Reboot();
+
+        Assert.Equal(endPoint, rig.Sim.GvcpEndPoint);                 // 같은 자리로 돌아온다 — 호스트가 그대로 닿는다
+        Assert.Null(rig.Sim.ControlOwner);
+        Assert.Equal(0u, rig.Sim.Registers.ReadU32(GvbsAddr.Ccp));
+        Assert.Equal(0u, rig.Sim.Registers.ReadU32(GvbsAddr.PrimaryAppPort));
+        lock (owners) Assert.Equal(new IPEndPoint?[] { null }, owners);
+        Assert.False(rig.Sim.IsAcquiring);
+        Assert.Equal(128u, rig.Sim.Registers.ReadU32(SimFeatureAddr.Width));   // 피처·스트림 채널·하트비트 시한은 켜진 직후 값
+        Assert.Equal(0u, rig.ReadStreamReg(GvbsAddr.ScpOffset));
+        Assert.Equal((uint)rig.Sim.Opt.HeartbeatTimeoutMs, rig.Sim.Registers.ReadU32(GvbsAddr.HeartbeatTimeout));
+        Assert.Equal(0ul, rig.Sim.LastBlockId);                          // 다음 프레임은 블록 1
+
+        var done = await Task.WhenAny(lost.Task, Task.Delay(10_000));
+        Assert.True(ReferenceEquals(done, lost.Task), "ControlLost did not fire after the simulator rebooted");
+        var ex = Assert.IsType<GevControlLostException>(await lost.Task);
+        Assert.Contains("device restarted", ex.Message);
+        Assert.False(rig.Device.IsOpen);
+
+        // 재부팅한 장치는 새 세션(다른 소켓)이 기다림 없이 잡는다.
+        await using var next = await GevDevice.OpenAsync(rig.EndPoint, SimRig.DefaultDeviceOpt());
+        Assert.Equal(next.Gvcp.LocalEndPoint, rig.Sim.ControlOwner);
+    }
+
     // ---------------------------------------------------------------- dispose
 
     [Fact]

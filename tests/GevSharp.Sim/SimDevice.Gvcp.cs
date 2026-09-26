@@ -41,17 +41,21 @@ public sealed partial class SimDevice
             {
                 if (!sock.Poll(20_000, SelectMode.SelectRead))
                 {
-                    CheckHeartbeat();
+                    lock (_commandGate) CheckHeartbeat();
                     continue;
                 }
 
                 int n = sock.ReceiveFrom(buf, ref ep);
                 var src = (IPEndPoint)ep;
                 var sender = new IPEndPoint(src.Address, src.Port);
-                CheckHeartbeat();
-                long handleStartNs = NowNs;
-                HandleGvcp(buf, n, sender);
-                ObserveCommandHandleTime(NowNs - handleStartNs);
+                // 명령 하나는 재부팅(Reboot)과 겹치지 않는다 — 처리 시간은 잠금을 얻은 뒤부터 잰다(재부팅을 기다린 시간은 빼고).
+                lock (_commandGate)
+                {
+                    CheckHeartbeat();
+                    long handleStartNs = NowNs;
+                    HandleGvcp(buf, n, sender);
+                    ObserveCommandHandleTime(NowNs - handleStartNs);
+                }
             }
             catch (ObjectDisposedException)
             {
