@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using GevSharp.Gvcp;
 
@@ -40,7 +41,16 @@ public static class GevXmlLoader
     /// <summary>
     /// First URL(0x0200) 을 읽어 XML 을 가져오고, 읽기·해석·가져오기 어느 단계든 실패하면 Second URL(0x0400) 로 넘어간다.
     /// Second URL 이 First URL 과 같은 문자열이면 같은 실패를 되풀이할 뿐이라(HTTP 시한·긴 메모리 읽기가 두 배가 된다) 다시 시도하지 않는다.
-    /// 둘 다 실패하면 두 사유를 모두 실은 <see cref="GevException"/>. 취소는 그대로 전파된다.
+    /// <para>
+    /// 던지는 것 — 호출자가 형으로 "다시 연결" 과 "XML 이 틀렸다" 를 가를 수 있게 원래 형을 지킨다:
+    /// 포트가 장치를 잃었다고 알리면(<see cref="GevControlLostException"/>, <see cref="GevTimeoutException"/>,
+    /// <see cref="ObjectDisposedException"/> — URL 레지스터 읽기나 Local: 메모리 읽기에서) 다른 URL 로 넘어가지 않고 그 예외를
+    /// 감싸지 않은 채 그대로 던진다(다른 URL 도 같은 포트를 거쳐 재시도 예산만 한 번 더 쓴다). 두 번째 시도에서 잃었어도 같다.
+    /// http 내려받기의 시한 초과는 장치가 아니라 서버 쪽 사정이라 여기에 들지 않는다 — 다른 URL 로 넘어간다.
+    /// 그 밖에 시도한 URL 이 모두 같은 구체 형(예: 둘 다 <see cref="GevStatusException"/>)으로 실패했으면 첫 실패를 그대로 던지고,
+    /// 종류가 다르면(빈 레지스터 포함) 두 사유를 모두 실은 <see cref="GevException"/>(마지막 실패가 InnerException).
+    /// 취소는 그대로 전파된다.
+    /// </para>
     /// </summary>
     public static Task<GevXmlDoc> LoadAsync(IGevPort port, string? cacheDir = null, CancellationToken ct = default)
         => LoadAsync(port, cacheDir, null, ct);
@@ -56,7 +66,10 @@ public static class GevXmlLoader
         if (port is null) throw new ArgumentNullException(nameof(port));
 
         var failures = new List<string>(2);
-        Exception? last = null;
+        var errors = new List<Exception>(2);
+        // 예외 없이 끝난 실패(빈 레지스터)가 있었는지 — 그것도 한 종류라 "모두 같은 종류" 판정에 낀다.
+        // First URL 과 같아서 다시 시도하지 않은 Second URL 은 첫 실패와 같은 실패라 따로 세지 않는다.
+        var hadEmptyRegister = false;
         string? firstRaw = null;
         for (var i = 0; i < 2; i++)
         {
@@ -70,6 +83,7 @@ public static class GevXmlLoader
                 var raw = await ReadUrlRegisterAsync(port, regAddr, ct).ConfigureAwait(false);
                 if (raw.Length == 0)
                 {
+                    hadEmptyRegister = true;
                     failures.Add($"{regName}: register is empty");
                     GevLog.Debug(logSrc ?? LogSrc, $"{regName} register is empty.");
                     continue;
@@ -90,9 +104,14 @@ public static class GevXmlLoader
             {
                 throw;
             }
+            catch (Exception ex) when (IsDeviceLoss(ex, null))
+            {
+                GevLog.Warn(logSrc ?? LogSrc, $"Lost the device while reading the {regName} register; not trying the other URL: {ex.Message}", ex);
+                throw;
+            }
             catch (Exception ex)
             {
-                last = ex;
+                errors.Add(ex);
                 failures.Add($"{regName}: {ex.Message}");
                 GevLog.Warn(logSrc ?? LogSrc, $"Could not read or parse the {regName} register: {ex.Message}", ex);
                 continue;
@@ -106,20 +125,58 @@ public static class GevXmlLoader
             {
                 throw;
             }
+            catch (Exception ex) when (IsDeviceLoss(ex, url.Kind))
+            {
+                GevLog.Warn(logSrc ?? LogSrc, $"Lost the device while loading the camera XML from the {regName} '{url.Raw}'; not trying the other URL: {ex.Message}", ex);
+                throw;
+            }
             catch (Exception ex)
             {
-                last = ex;
+                errors.Add(ex);
                 failures.Add($"{regName} '{url.Raw}': {ex.Message}");
                 GevLog.Warn(logSrc ?? LogSrc, $"Could not load the camera XML from the {regName} '{url.Raw}': {ex.Message}", ex);
             }
         }
 
-        throw new GevException("Could not load the camera XML from the First/Second URL registers: " + string.Join(" | ", failures), last);
+        // 시도한 URL 이 모두 같은 구체 형으로 실패했으면 그 형이 곧 답이다 — 첫 실패를 스택까지 그대로 던진다(다른 사유는 경고 로그에 있다).
+        // 형이 GevException 그 자체면 두 사유를 합쳐도 형이 같으므로 합친 쪽을 낸다.
+        if (!hadEmptyRegister && IsSameSpecificKind(errors))
+            ExceptionDispatchInfo.Capture(errors[0]).Throw();
+
+        throw new GevException(
+            "Could not load the camera XML from the First/Second URL registers: " + string.Join(" | ", failures),
+            errors.Count == 0 ? null : errors[errors.Count - 1]);
+    }
+
+    /// <summary>
+    /// 포트가 장치를 잃었다는 실패인지 — 제어 상실, 응답 없는 시한 초과, 해제된 장치. 이런 실패 뒤에는 다른 URL 도 같은 포트를 거쳐
+    /// 같은 이유로 실패하므로 넘어가지 않고 원래 형 그대로 던진다. fetchKind 는 가져오기 단계의 URL 종류(URL 레지스터 읽기 단계면 null) —
+    /// http 내려받기의 시한 초과는 서버 쪽 사정이라 장치 상실이 아니다.
+    /// </summary>
+    internal static bool IsDeviceLoss(Exception ex, GevXmlUrlKind? fetchKind)
+        => ex is GevControlLostException
+            || ex is ObjectDisposedException
+            || (ex is GevTimeoutException && fetchKind != GevXmlUrlKind.Http);
+
+    // 예외가 하나 이상이고 전부 GevException 보다 구체적인 같은 형인지.
+    private static bool IsSameSpecificKind(List<Exception> errors)
+    {
+        if (errors.Count == 0) return false;
+        var type = errors[0].GetType();
+        if (type == typeof(GevException)) return false;
+        foreach (var e in errors)
+        {
+            if (e.GetType() != type) return false;
+        }
+        return true;
     }
 
     /// <summary>
     /// 해석된 URL 하나로 XML 을 가져온다(First/Second 폴백 없음). cacheDir 가 있으면 장치 식별 문자열로 캐시 파일을 찾고,
     /// 적중하면 XML 본문 전송 없이 캐시 텍스트를 돌려준다. 캐시 읽기·쓰기 실패는 경고 로그로만 남고 결과에는 영향이 없다.
+    /// 가져오기 실패는 사유와 출처를 실은 <see cref="GevException"/> 이되, Local: 메모리 읽기 중 포트가 장치를 잃었다고 알린
+    /// <see cref="GevControlLostException"/>·<see cref="GevTimeoutException"/>·<see cref="ObjectDisposedException"/> 은 감싸지 않고 그대로 던진다.
+    /// http 내려받기가 시한을 넘기면 <see cref="GevTimeoutException"/>.
     /// </summary>
     public static Task<GevXmlDoc> LoadFromUrlAsync(IGevPort port, GevXmlUrl url, string? cacheDir = null, CancellationToken ct = default)
         => LoadFromUrlAsync(port, url, cacheDir, null, ct);
@@ -226,6 +283,11 @@ public static class GevXmlLoader
         }
         catch (OperationCanceledException)
         {
+            throw;
+        }
+        catch (Exception ex) when (IsDeviceLoss(ex, GevXmlUrlKind.Local))
+        {
+            // 장치 상실은 파일 이름을 붙여 감싸지 않는다 — 형이 곧 호출자의 판단 근거다(다시 연결).
             throw;
         }
         catch (Exception ex)

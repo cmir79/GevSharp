@@ -10,6 +10,7 @@ public sealed partial class GevDevice
     /// <summary>
     /// 카메라 XML 을 받아(<see cref="GetXmlAsync"/>) 이 장치를 포트로 바인딩한 노드맵을 만든다. 세션 동안 한 번만 만들고 캐시한다.
     /// 레지스터를 노드맵 밖에서 직접 썼다면 <see cref="GenApiNodeMap.InvalidateAll"/> 로 캐시를 버린다.
+    /// XML 적재 실패는 <see cref="GetXmlAsync"/> 와 같은 예외다(장치 상실은 그 형 그대로), XML 해석·바인딩 실패는 <see cref="GenApiException"/>.
     /// </summary>
     public async Task<GenApiNodeMap> GetNodeMapAsync(CancellationToken ct = default)
     {
