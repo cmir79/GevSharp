@@ -181,6 +181,9 @@ public sealed class GevDevice : IGevPort, IAsyncDisposable
 {
     public static Task<GevDevice> OpenAsync(GevDeviceInfo info, GevDeviceOpt? opt = null, CancellationToken ct = default);
     public static Task<GevDevice> OpenAsync(IPAddress address, GevDeviceOpt? opt = null, CancellationToken ct = default);
+    public static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default);
+                                                             // non-standard GVCP port (simulator on loopback, NAT/port forwarding);
+                                                             // the port is used for the control channel only; port 0 → ArgumentOutOfRangeException
 
     public GevDeviceInfo Info { get; }             // re-read from bootstrap registers after open
     public IPAddress Address { get; }
@@ -725,7 +728,7 @@ nowhere — every public type of `GevSharp` belongs to exactly one line here.
   node map read/write, streaming with injected packet loss → resend recovery, incomplete-frame policy,
   buffer-pool exhaustion).
 - End-to-end tests live in `tests/GevSharp.Tests/Integration/`: `SimRig` starts one `SimDevice` on
-  `127.0.0.1:<ephemeral>` and opens a `GevDevice` through the internal `OpenAsync(IPEndPoint, ...)` overload;
+  `127.0.0.1:<ephemeral>` and opens a `GevDevice` through the `OpenAsync(IPEndPoint, ...)` overload;
   acquisition is driven by writing `SimFeatureAddr` registers directly (no node map). `RecordingPort` wraps
   the device's `IGevPort` to assert the order of stream-channel register accesses. Tests that assert exact
   frame sequences drive the simulator in software-trigger mode (`SimRig.TriggerAsync`) instead of relying
@@ -783,8 +786,8 @@ timings on a slow host; acquisition goes through the `AcquisitionStart`/`Acquisi
 transport-layer lock set around them — or through `--acq-start-addr`/`--acq-stop-addr` register writes when the node map
 is unavailable), `regtest` (alternating reads of two registers while the heartbeat runs; mismatches and latency), and
 `sim` (runs `GevSharp.Sim` as a standalone fake camera).
-Every `<ip>` accepts a `:port` suffix; a non-standard port uses the internal `OpenAsync(IPEndPoint)` /
-`ProbeAsync(IPEndPoint)` overloads, which `src/GevSharp/GevSharp.csproj` grants through
+Every `<ip>` accepts a `:port` suffix; a non-standard port uses the public `OpenAsync(IPEndPoint)` and the
+internal `ProbeAsync(IPEndPoint)` overload, which `src/GevSharp/GevSharp.csproj` grants through
 `InternalsVisibleTo("GevSharp.Cli")`. Tests live in `samples/GevSharp.Cli/Tests` (excluded from the executable by
 `<Compile Remove="Tests\**" />`) and are compiled into the suite by `tests/GevSharp.Tests` through a `ProjectReference`
 plus `<Compile Include="..\..\samples\GevSharp.Cli\Tests\**\*.cs" LinkBase="Cli" />`. They run against `GevSharp.Sim` on

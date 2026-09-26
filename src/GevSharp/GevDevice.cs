@@ -112,10 +112,16 @@ public sealed partial class GevDevice : IGevPort, IAsyncDisposable
         return OpenCoreAsync(new IPEndPoint(address, GvcpConst.Port), opt?.LocalAddress, opt, ct);
     }
 
-    /// <summary>포트를 지정해 연다 — 표준 포트가 아닌 시뮬레이터용.</summary>
-    internal static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default)
+    /// <summary>
+    /// 주소와 GVCP 포트로 연다 — 표준 포트(3956)가 아닌 곳에서 답하는 장치용: 루프백의 시뮬레이터, 포트를 옮겨 둔 NAT·포워딩 뒤의 장치 등.
+    /// 로컬 주소는 옵션 → 같은 서브넷 인터페이스 → OS 라우팅 순으로 정한다. IPv4 만 받는다.
+    /// 이 포트는 제어 채널(레지스터 접근·하트비트·리센드 요청)에만 쓰인다 — 스트림은 장치가 자기 설정대로 보내는 곳에서 받는다.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">포트가 0 이다.</exception>
+    public static Task<GevDevice> OpenAsync(IPEndPoint device, GevDeviceOpt? opt = null, CancellationToken ct = default)
     {
         if (device is null) throw new ArgumentNullException(nameof(device));
+        if (device.Port == 0) throw new ArgumentOutOfRangeException(nameof(device), "The GVCP port of the device end point must be 1..65535.");
         return OpenCoreAsync(device, opt?.LocalAddress, opt, ct);
     }
 

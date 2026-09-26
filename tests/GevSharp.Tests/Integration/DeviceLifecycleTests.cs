@@ -512,6 +512,31 @@ public class DeviceLifecycleTests
         Assert.Equal(0, sim.WriteMemCount);
     }
 
+    // ---------------------------------------------------------------- open by end point
+
+    [Fact]
+    public async Task OpenAsync_EndPoint_IsPublic_AndOpensADeviceOnANonStandardPort()
+    {
+        // 표준 포트가 아닌 곳의 장치(루프백 시뮬레이터, NAT 뒤 장치)를 공개 API 만으로 열 수 있어야 한다 — 내부 오버로드였던 것을 공개했다.
+        var method = typeof(GevDevice).GetMethod(nameof(GevDevice.OpenAsync), new[] { typeof(IPEndPoint), typeof(GevDeviceOpt), typeof(CancellationToken) });
+        Assert.NotNull(method);
+        Assert.True(method!.IsPublic);
+
+        using var sim = SimRig.StartSim();
+        Assert.NotEqual(3956, sim.GvcpEndPoint.Port);
+        await using var dev = await GevDevice.OpenAsync(sim.GvcpEndPoint, SimRig.DefaultDeviceOpt());
+        Assert.True(dev.IsOpen);
+        Assert.Equal(sim.GvcpEndPoint, dev.Gvcp.DeviceEndPoint);
+        Assert.Equal(0x0002_0000u, await dev.ReadRegAsync(GvbsAddr.Version));
+    }
+
+    [Fact]
+    public async Task OpenAsync_EndPoint_RejectsPortZero()
+    {
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => GevDevice.OpenAsync(new IPEndPoint(IPAddress.Loopback, 0)));
+        Assert.Equal("device", ex.ParamName);
+    }
+
     // ---------------------------------------------------------------- stream vs. device lifetime
 
     [Fact]
