@@ -653,9 +653,10 @@ public class GevStreamTests
         // 침묵 규칙(재요청 간격만큼 조용하면 꼬리를 구멍으로 친다)이 스케줄링 지연에 걸리지 않게 간격을 넉넉히 둔다 — 여기서 보는 것은 유예뿐이다.
         var opt = StreamRig.DefaultOpt();
         // 프레임 전체가 25 ms 안에 나가므로 문턱을 크게 잡아도 "아직 안 온 꼬리는 구멍이 아니다" 라는 성질은 그대로 걸린다.
-        // 문턱이 러너의 선점보다 짧으면 이 테스트는 유예가 아니라 러너의 스케줄링을 재게 된다 — 1 s 에서도 스위트 셋을 나란히 돌린
-        // 러너에서 "요청 0" 단정이 한 번 깨졌고, 송신을 프레임 도중 1.1 s 멈추는 주입이 같은 실패(요청 1 건)를 낸다.
+        // 문턱이 러너의 선점보다 짧으면 이 테스트는 유예가 아니라 러너의 스케줄링을 재게 된다 — 송신을 프레임 도중 1.1 s 멈추면
+        // 1 s 문턱의 침묵 규칙이 꼬리를 물어 요청이 1 건 나간다(주입으로 재현). 과부하 러너의 멈춤이 그만큼 길어질 수 있어 문턱을 더 올린다.
         // 프레임은 마지막 페이로드에서 닫히므로 문턱을 더 올려도 이 시험은 느려지지 않는다.
+        // (스트레스 실행에서 실제로 잡힌 이 시험의 실패는 이 경로가 아니라 아래에 적은 데이터그램 유실이었다.)
         opt.PacketTimeoutMs = 10_000;
         // 보존 시간도 마찬가지 — 러너가 밀려 프레임이 포기되면 "군더더기 요청이 없다" 대신 타임아웃이 난다.
         opt.FrameRetentionMs = 20_000;
@@ -671,7 +672,23 @@ public class GevStreamTests
         Assert.True(received.IsComplete);
         Assert.True(received.Data.Span.SequenceEqual(frame.Data));
         // 요청 수는 수신기가 보낸 패킷(트레일러까지)을 다 센 뒤에 본다 — 프레임을 받은 순간에는 트레일러가 아직 소켓에 있을 수 있다.
-        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= rig.Sender.PacketsSent);
+        // 끝내 다 세지 못하면 데이터그램 하나가 스트림 소켓까지 와서 세지기 전에 사라진 것이다. 그때의 요청은 그 유실을 메운 것이라
+        // 군더더기는 아니지만, 이 시험은 그것도 실패로 남긴다: 윈도우 루프백에서 짧은 수신 타임아웃이 IOPending 으로 끝날 때
+        // 데이터그램이 사라지는 것을 따로 쟀고, 패킷 사이마다 수신 타임아웃이 도는 이 시험이 그 유실이 드러나는 자리다.
+        // 기다리는 대신 실패 메시지가 두 경우(수신 쪽 유실 / 군더더기 요청)를 가른다.
+        try
+        {
+            await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= rig.Sender.PacketsSent, 2000);
+        }
+        catch (TimeoutException)
+        {
+            var s = rig.Stream.Stats.Snapshot();
+            var requests = string.Join("; ", rig.Resend.Requests.Select(r => $"{r.First}..{r.Last}"));
+            Assert.Fail($"The receiver counted {s.PacketsReceived} of the {rig.Sender.PacketsSent} datagrams sent ({s.PacketsResent} of them resend copies); "
+                + $"resend requests [{requests}]. A datagram reached the stream socket and was lost before it was counted, so a request here repairs a real "
+                + "loss rather than being spurious. On Windows loopback a blocking receive whose short timeout ends in IOPending has been measured to lose "
+                + "the datagram (GevStream.Receiver.cs HandleReceiveError).");
+        }
         Assert.Equal(0, rig.Resend.RequestCount);
         Assert.Equal(0, rig.Stream.Stats.ResendRequests);
     }
