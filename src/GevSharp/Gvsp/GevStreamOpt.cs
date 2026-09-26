@@ -20,15 +20,31 @@ public sealed class GevStreamOpt
     /// <summary>수신 소켓 버퍼 요청 크기. OS 가 실제로 준 값은 시작 시 로그로 남는다.</summary>
     public int SocketBufferBytes { get; set; } = 32 * 1024 * 1024;
 
+    /// <summary>
+    /// 빠진 패킷의 리센드를 요청할지. 거짓이면(또는 <see cref="PacketRequestRatio"/> = 0 이면) 요청하지 않고, 기다릴 리센드가 없으므로
+    /// 불완전 프레임은 마지막 패킷 뒤 <see cref="PacketTimeoutMs"/> 에 포기하며 더 새로운 블록이 시작되면 곧바로 닫는다 —
+    /// <see cref="FrameRetentionMs"/> 는 쓰이지 않는다(시작할 때 Info 로그 한 줄이 그렇게 알린다).
+    /// </summary>
     public bool ResendEnabled { get; set; } = true;
 
     /// <summary>구멍을 처음 본 뒤 첫 리센드 요청까지 기다리는 시간 — 순서 바뀐 패킷이 스스로 도착할 여유.</summary>
     public int InitialPacketTimeoutMs { get; set; } = 2;
 
-    /// <summary>같은 구멍에 대한 리센드 재요청 간격. 수신 루프의 주기적 점검 간격이기도 하다.</summary>
+    /// <summary>
+    /// 같은 구멍에 대한 리센드 재요청 간격. 이만큼 아무것도 오지 않으면 장치가 그 프레임을 다 보낸 것으로 보고 아직 안 온 꼬리도 구멍으로 친다.
+    /// 더 요청할 것이 없는 프레임(리센드 꺼짐, 요청 예산 소진, 장치가 못 준다고 답함)은 마지막 패킷 뒤 이 시간에 포기한다.
+    /// 수신 루프가 깨어나는 간격은 이 값이 아니다 — 조립 중인 프레임이 있으면 max(1, min(<see cref="InitialPacketTimeoutMs"/>, <see cref="PacketTimeoutMs"/>)) ms,
+    /// 없으면 200 ms 마다 깨어나 구멍과 시한을 본다(패킷이 흐르는 동안은 패킷마다 본다).
+    /// </summary>
     public int PacketTimeoutMs { get; set; } = 20;
 
-    /// <summary>마지막 패킷 도착 후 이 시간이 지나도록 완성되지 않은 프레임은 포기한다.</summary>
+    /// <summary>
+    /// 마지막 패킷 도착 후 이 시간이 지나도록 완성되지 않은 프레임은 포기한다 — 리센드를 아직 묻고 있는 프레임에만 쓰인다.
+    /// 리센드가 꺼져 있으면(<see cref="ResendEnabled"/> = false 또는 <see cref="PacketRequestRatio"/> = 0) 이 값은 쓰이지 않는다:
+    /// 불완전 프레임은 마지막 패킷 뒤 <see cref="PacketTimeoutMs"/> 에 포기되고, 더 새로운 블록이 시작되면 곧바로 닫힌다.
+    /// 예산을 다 썼거나 장치가 못 준다고 답한 프레임도 <see cref="PacketTimeoutMs"/> 에 닫힌다.
+    /// 리더만 받은 가장 새 프레임은 예외로 이 시간이 지나도 기다린다(노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다).
+    /// </summary>
     public int FrameRetentionMs { get; set; } = 100;
 
     /// <summary>
@@ -36,6 +52,8 @@ public sealed class GevStreamOpt
     /// 같은 구멍을 다시 묻는 재요청은 이 상한을 쓰지 않는다 — 재요청은 <see cref="PacketTimeoutMs"/> 간격으로 <see cref="FrameRetentionMs"/> 까지만 되풀이되므로 그 자체로 유한하다.
     /// 장치가 프레임 도중 <see cref="PacketTimeoutMs"/> 만큼 쉬어 꼬리를 침묵으로 짐작한 경우에는 이 상한을 넘겨도 프레임을 포기하지 않는다 —
     /// 상한 안에 들어가는 앞부분만 묻고, 장치가 이어 보내면 프레임은 그대로 완성된다.
+    /// 0 은 리센드를 끈다(<see cref="ResendEnabled"/> = false 와 같고 <see cref="FrameRetentionMs"/> 도 쓰이지 않는다). 0 보다 크면 아무리 작아도
+    /// 프레임마다 적어도 한 패킷은 요청할 수 있다.
     /// </summary>
     public double PacketRequestRatio { get; set; } = 0.25;
 

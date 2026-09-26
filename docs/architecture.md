@@ -293,11 +293,14 @@ public sealed class GevStreamOpt
     public PacketSizeMode PacketSizeMode { get; set; } = PacketSizeMode.Auto;   // Auto: probe with SCPS fire-test from the NIC MTU downwards
     public int PacketSize { get; set; } = 1500;               // used when Fixed; Auto stores the negotiated value here after StartAsync
     public int SocketBufferBytes { get; set; } = 32 * 1024 * 1024;
-    public bool ResendEnabled { get; set; } = true;
+    public bool ResendEnabled { get; set; } = true;           // false (or PacketRequestRatio = 0): no requests, FrameRetentionMs unused — see below
     public int InitialPacketTimeoutMs { get; set; } = 2;      // wait before the first resend request (reordering grace)
-    public int PacketTimeoutMs { get; set; } = 20;            // between resend requests for the same hole
-    public int FrameRetentionMs { get; set; } = 100;          // give up on a frame this long after its last packet
-    public double PacketRequestRatio { get; set; } = 0.25;    // never request more than this fraction of a frame's DISTINCT packets; asking for the same hole again does not spend more budget
+    public int PacketTimeoutMs { get; set; } = 20;            // between resend requests for the same hole; also the silence that marks a frame's tail as sent,
+                                                             // and the give-up time when there is nothing left to request (resend off, budget spent, device refused)
+    public int FrameRetentionMs { get; set; } = 100;          // give up on a frame this long after its last packet — only while resend is on and still asking;
+                                                             // with resend off an incomplete frame goes after PacketTimeoutMs, or at once when a newer block starts
+    public double PacketRequestRatio { get; set; } = 0.25;    // never request more than this fraction of a frame's DISTINCT packets; asking for the same hole again does not spend more budget.
+                                                             // 0 turns resend off (same as ResendEnabled = false); any value above 0 still allows at least one request
     public bool DeliverIncompleteFrames { get; set; } = false;
     public bool FirewallTraversal { get; set; } = true;       // one byte to the device's SCSP port after opening the channel
     public int FirewallTraversalIntervalMs { get; set; } = 15_000;   // re-send that byte after this much silence (0 = never)

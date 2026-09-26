@@ -1770,4 +1770,27 @@ public class GevStreamLogTests
 
         Assert.Contains(logged, l => l.Level == GevLogLevel.Warn && l.Message.Contains("the trailer ended the block after 0 payload packet(s)"));
     }
+
+    [Theory]
+    [InlineData(true, 0.25, false)]
+    [InlineData(false, 0.25, true)]
+    [InlineData(true, 0.0, true)]
+    public async Task StartSaysWhenFrameRetentionDoesNotApply(bool resendEnabled, double ratio, bool isResendOff)
+    {
+        // 리센드가 꺼지면 보존 시간은 쓰이지 않는다 — 비율 0 도 그렇다. 옵션만 보고 보존 시간을 늘린 사람이 로그에서 이유를 찾을 수 있어야 하고,
+        // 시작 줄의 "resend on/off" 도 옵션 하나가 아니라 실제로 도는 쪽을 말해야 한다.
+        var logged = await CaptureAsync(async () =>
+        {
+            var opt = StreamRig.DefaultOpt();
+            opt.ResendEnabled = resendEnabled;
+            opt.PacketRequestRatio = ratio;
+            await using var rig = new StreamRig(opt);
+            await rig.StartAsync();
+        });
+
+        var notes = logged.Where(l => l.Message.Contains("FrameRetentionMs") && l.Message.Contains("does not apply")).ToArray();
+        Assert.Equal(isResendOff ? 1 : 0, notes.Length);
+        if (isResendOff) Assert.Equal(GevLogLevel.Info, notes[0].Level);
+        Assert.Contains(logged, l => l.Message.StartsWith("Stream started") && l.Message.EndsWith(isResendOff ? "resend off." : "resend on."));
+    }
 }

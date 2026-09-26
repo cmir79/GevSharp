@@ -194,7 +194,14 @@ public sealed partial class GevStream : IAsyncDisposable
                 // 내리는데, 그보다 늦게 여기서 "시작됨" 을 쓰면 죽은 스트림이 시작된 것으로 남는다. 띄우기가 던지면 아래 catch 가 되돌린다.
                 Volatile.Write(ref _state, StateStarted);
                 thread.Start();
-                GevLog.Info(_logSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_opt.ResendEnabled ? "on" : "off")}.");
+                GevLog.Info(_logSrc, $"Stream started on port {LocalPort}, packet size {size}, {_opt.BufferCount} buffers, resend {(_isResendEnabled ? "on" : "off")}.");
+                if (!_isResendEnabled)
+                {
+                    // 비율 0 도 리센드를 끈다 — 옵션만 보고 보존 시간을 늘린 사람이 "왜 안 바뀌나" 를 로그에서 찾을 수 있게 한 번 적는다.
+                    GevLog.Info(_logSrc, $"Resend is off (ResendEnabled = {_opt.ResendEnabled}, PacketRequestRatio = {_opt.PacketRequestRatio.ToString(System.Globalization.CultureInfo.InvariantCulture)}); "
+                        + $"FrameRetentionMs ({_opt.FrameRetentionMs} ms) does not apply: an incomplete frame is abandoned {_opt.PacketTimeoutMs} ms "
+                        + "after its last packet, or as soon as a newer block starts.");
+                }
             }
             catch
             {
