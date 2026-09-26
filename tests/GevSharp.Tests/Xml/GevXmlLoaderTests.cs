@@ -481,19 +481,20 @@ public class GevXmlLoaderTests
     public void HttpTimeoutIsNotDeviceLossSoTheOtherUrlIsStillTried()
     {
         // http 내려받기의 시한 초과는 서버 쪽 사정이다 — 다른 URL(대개 Local:)로 넘어갈 이유가 남아 있다.
-        // 끝에서 끝까지 밟으려면 내려받기 시한(10 초)을 실제로 기다려야 해서, 가르는 판정 자체를 본다.
-        var timeout = new GevTimeoutException("no reply");
+        // 끝에서 끝까지 밟으려면 내려받기 시한(10 초)을 실제로 기다려야 해서(GevXmlLoaderHttpTimeoutTests 가 한 번 밟는다),
+        // 여기서는 가르는 판정 자체를 본다. 판정은 URL 종류가 아니라 예외에 붙은 표식으로 한다 — http URL 을 적재하는
+        // 중에도 캐시 키는 장치에서 읽으므로, 같은 단계에서 난 시한 초과라도 어느 쪽이 답하지 않았는지는 표식만 안다.
+        var httpTimeout = new GevTimeoutException("Downloading camera XML timed out");
+        httpTimeout.Data[GevXmlLoader.HttpTimeoutKey] = true;
 
-        Assert.False(GevXmlLoader.IsDeviceLoss(timeout, GevXmlUrlKind.Http));
-        Assert.True(GevXmlLoader.IsDeviceLoss(timeout, GevXmlUrlKind.Local));
-        Assert.True(GevXmlLoader.IsDeviceLoss(timeout, null));                  // URL 레지스터 읽기
-        // 장치가 PENDING_ACK 로 답한 뒤 연장을 다 쓴 시한 초과 — 장치는 살아 있다. 어느 단계에서 났든 상실이 아니다.
-        Assert.False(GevXmlLoader.IsDeviceLoss(PendingAckExpired(), GevXmlUrlKind.Local));
-        Assert.False(GevXmlLoader.IsDeviceLoss(PendingAckExpired(), null));
-        Assert.True(GevXmlLoader.IsDeviceLoss(new GevControlLostException("lost"), null));
-        Assert.True(GevXmlLoader.IsDeviceLoss(new ObjectDisposedException("GevDevice"), GevXmlUrlKind.Local));
-        Assert.False(GevXmlLoader.IsDeviceLoss(new GevStatusException("READMEM", GvcpConst.StatusInvalidAddress), null));
-        Assert.False(GevXmlLoader.IsDeviceLoss(new GevException("bad XML"), GevXmlUrlKind.Local));
+        Assert.False(GevXmlLoader.IsDeviceLoss(httpTimeout));
+        Assert.True(GevXmlLoader.IsDeviceLoss(new GevTimeoutException("no reply")));   // 표식 없는 시한 초과 = 응답 없는 GVCP 요청
+        // 장치가 PENDING_ACK 로 답한 뒤 연장을 다 쓴 시한 초과 — 장치는 살아 있다.
+        Assert.False(GevXmlLoader.IsDeviceLoss(PendingAckExpired()));
+        Assert.True(GevXmlLoader.IsDeviceLoss(new GevControlLostException("lost")));
+        Assert.True(GevXmlLoader.IsDeviceLoss(new ObjectDisposedException("GevDevice")));
+        Assert.False(GevXmlLoader.IsDeviceLoss(new GevStatusException("READMEM", GvcpConst.StatusInvalidAddress)));
+        Assert.False(GevXmlLoader.IsDeviceLoss(new GevException("bad XML")));
     }
 
     [Fact]
@@ -1038,6 +1039,78 @@ public class GevXmlLoaderTests
 
         Assert.False(Directory.Exists(tmp.Path));
         Assert.DoesNotContain(port.Reads, r => r.Addr == GvbsAddr.ManufacturerName);
+    }
+
+    [Fact]
+    public async Task DeviceLossWhileReadingTheCacheKeyIsRethrownBeforeTheXmlIsRead()
+    {
+        // 캐시 키(GVBS 의 제조사·모델·버전)를 읽다가 장치를 잃었으면 그 자리에서 멈춘다. 삼키고 캐시 없이 넘어가면
+        // XML 영역을 읽느라 재시도 예산을 한 번 더 다 쓰고 나서야 같은 상실을 알게 된다.
+        using var tmp = new TempDir();
+        var port = PortWithTwoLocalUrls();
+        var timeouts = 0;
+        port.OnRead = (addr, _) =>
+        {
+            if (addr == GvbsAddr.ManufacturerName || addr >= XmlAddr)
+            {
+                timeouts++;
+                throw new GevTimeoutException("READMEM got no reply");
+            }
+        };
+
+        var ex = await Assert.ThrowsAsync<GevTimeoutException>(() => GevXmlLoader.LoadAsync(port, tmp.Path, Ct));
+
+        Assert.Equal("READMEM got no reply", ex.Message);
+        Assert.Equal(1, timeouts);   // 무응답을 한 번만 겪었다 — 재시도 예산을 두 번 쓰지 않았다
+        Assert.Equal(new ulong[] { GvbsAddr.FirstUrl, GvbsAddr.ManufacturerName }, port.Reads.Select(r => r.Addr));
+        Assert.False(Directory.Exists(tmp.Path));
+    }
+
+    [Fact]
+    public async Task DeviceLossWhileReadingTheCacheKeyStopsAnHttpUrlToo()
+    {
+        // http URL 이어도 캐시 키는 장치에서 읽는다 — 거기서 난 무응답은 서버가 아니라 장치의 상실이다.
+        // URL 종류로 시한 초과를 가르면 이 상실이 "서버 쪽 사정" 으로 읽혀 무시되거나 다른 URL 로 넘어간다.
+        using var tmp = new TempDir();
+        var hits = 0;
+        using var server = new LoopbackHttpServer(_ =>
+        {
+            Interlocked.Increment(ref hits);
+            return (200, Encoding.ASCII.GetBytes("<Root/>"));
+        });
+        var port = new FakeMemPort();
+        port.SetFirstUrl(server.BaseUri + "cam.xml");
+        port.OnRead = (addr, _) =>
+        {
+            if (addr == GvbsAddr.ManufacturerName) throw new GevTimeoutException("READMEM got no reply");
+        };
+
+        await Assert.ThrowsAsync<GevTimeoutException>(() => GevXmlLoader.LoadAsync(port, tmp.Path, Ct));
+
+        Assert.Equal(0, Volatile.Read(ref hits));
+        Assert.Equal(0, port.Reads.Count(r => r.Addr == GvbsAddr.SecondUrl));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ACacheKeyReadFailureFromALiveDeviceStillLoadsWithoutTheCache(bool isPendingAckExpired)
+    {
+        // 대조군: 장치가 살아서 답한 실패(상태 오류, PENDING_ACK 연장 소진)는 상실이 아니다 — 캐시 없이 이어 가는 원래 동작 그대로다.
+        using var tmp = new TempDir();
+        var port = PortWithLocal(Encoding.UTF8.GetBytes("<Root/>"), "cam.xml");
+        port.OnRead = (addr, _) =>
+        {
+            if (addr != GvbsAddr.ManufacturerName) return;
+            if (isPendingAckExpired) throw PendingAckExpired();
+            throw new GevStatusException("READMEM", GvcpConst.StatusAccessDenied);
+        };
+
+        var doc = await GevXmlLoader.LoadAsync(port, tmp.Path, Ct);
+
+        Assert.Equal("<Root/>", doc.Xml);
+        Assert.True(port.ReadCountAtOrAbove(XmlAddr) > 0);
+        Assert.False(Directory.Exists(tmp.Path));   // 캐시 키가 없으니 쓰지도 않았다
     }
 
     // ---- File: ----

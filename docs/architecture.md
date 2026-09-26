@@ -511,11 +511,13 @@ three GVBS strings and the URL register to build the key, never the XML region.
 Read First URL (512 bytes) then Second URL as fallback. `Local:` addresses/lengths are hexadecimal without
 `0x`. Read memory in `MaxMemPayload` chunks, rounding the length up to a multiple of 4 and trimming.
 Failure types are kept so a caller can tell "reconnect" from "bad XML": when the port reports device loss
-(`GevControlLostException`, `GevTimeoutException`, `ObjectDisposedException`) while reading a URL register or
-`Local:` memory, that exception is rethrown unwrapped at once and the other URL is not tried (it goes through the
-same port and would only spend another retry budget) — on the second attempt too. A timeout whose other end was
-alive is not device loss and still falls back: an http download timeout, and a read the device answered with
-PENDING_ACK but did not finish within the allowed extension (the channel marks that timeout). Otherwise, if every
+(`GevControlLostException`, `GevTimeoutException`, `ObjectDisposedException`) while reading a URL register, the
+cache key (when the cache is on) or `Local:` memory, that exception is rethrown unwrapped at once and the other URL
+is not tried (it goes through the same port and would only spend another retry budget) — on the second attempt too.
+A timeout whose other end was alive is not device loss and still falls back: an http download timeout, and a read
+the device answered with PENDING_ACK but did not finish within the allowed extension. The two are told apart by a
+mark the throwing site puts on the exception (the loader on its http timeout, the channel on the PENDING_ACK one),
+not by the URL kind — an http URL still reads its cache key from the device. Otherwise, if every
 attempted URL failed with the same exception type more specific than `GevException`, the first of them is rethrown;
 failures of different kinds (an empty register counts as one) are aggregated into a `GevException` carrying both
 reasons, the last one as `InnerException`. Timeouts are left out of that same-type rethrow and always aggregated, so

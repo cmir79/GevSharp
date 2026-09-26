@@ -76,6 +76,7 @@ public class GevXmlLoaderHttpTimeoutTests
 
         var inner = Assert.IsType<GevTimeoutException>(ex.InnerException);
         Assert.Contains("Downloading camera XML", inner.Message);
+        Assert.Equal(true, inner.Data[GevXmlLoader.HttpTimeoutKey]);   // 실제로 던지는 자리가 "서버 쪽 시한 초과" 표식을 단다
         Assert.Contains("identical to the First URL", ex.Message);
         Assert.Equal(1, server.Accepted);   // 연결은 됐다 — 시한 초과는 답하지 않은 서버에서 났다
     }
