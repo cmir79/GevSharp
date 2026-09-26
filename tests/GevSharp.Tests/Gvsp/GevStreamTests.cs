@@ -573,6 +573,25 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task FailedSocketCreationLeavesTheStreamStopped()
+    {
+        // 소켓 생성은 핸들·버퍼가 바닥나면 던진다. 그때 스트림이 "시작 중" 에 걸려 있으면 다시 시작하려는 쪽은
+        // "이미 시작됨" 이라는 엉뚱한 답을 받고, 정지는 아무것도 쓴 적 없는 장치에 SCP/SCDA = 0 을 보낸다.
+        await using var rig = new StreamRig();
+        rig.Stream.SocketFactory = () => throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.NoBufferSpaceAvailable);
+
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(() => rig.Stream.StartAsync(Ct));
+        Assert.False(rig.Stream.IsStarted);
+        Assert.Throws<GevStreamClosedException>(() => rig.Stream.TryReceive(out _));
+
+        var retry = await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Stream.StartAsync(Ct));
+        Assert.Contains("cannot be restarted", retry.Message);
+
+        await rig.Stream.StopAsync(Ct);
+        Assert.Empty(rig.Regs.Writes);
+    }
+
+    [Fact]
     public async Task ScpWriteFailingAfterSendIsStillReset()
     {
         // SCP 쓰기 자체의 응답이 유실됐다 — 장치는 포트를 받았을 수 있으므로 닫힌 포트로 쏘지 않게 되돌려야 한다

@@ -95,9 +95,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// <summary>테스트용: 인터페이스 MTU 조회를 바꿔 끼운다. null 이면 실제 인터페이스를 본다.</summary>
     internal Func<IPAddress, int>? MtuResolver { get; set; }
 
+    /// <summary>테스트용: 스트림 소켓 생성을 바꿔 끼운다 — 핸들 고갈처럼 생성이 던지는 자리를 만든다. null 이면 IPv4 UDP 소켓을 새로 만든다.</summary>
+    internal Func<Socket>? SocketFactory { get; set; }
+
     /// <summary>
     /// 소켓을 열고 장치 스트림 채널을 이 소켓으로 향하게 한 뒤 수신 스레드를 띄운다. 두 번 부르면 <see cref="InvalidOperationException"/>.
-    /// 레지스터 쓰기 실패는 그대로 던지며, 그 경우 소켓은 닫히고 스트림은 정지 상태가 된다.
+    /// 시작이 실패하면(소켓 생성·바인드든 레지스터 쓰기든) 그 예외를 그대로 던지며, 그 경우 소켓은 닫히고 스트림은 정지 상태가 된다.
     /// </summary>
     public async Task StartAsync(CancellationToken ct = default)
     {
@@ -112,10 +115,13 @@ public sealed partial class GevStream : IAsyncDisposable
             }
             _state = StateStarting;
 
-            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            // 소켓 생성도 아래 try 안에 둔다 — 핸들·버퍼가 바닥나면 생성이 던지는데, 그 예외가 try 밖에서 나면 상태가
+            // "시작 중" 에 걸린 채 남아 다시 시작하려는 쪽은 "이미 시작됨" 을 받고, 정지는 아무것도 쓴 적 없는 장치를 되돌리러 간다.
+            Socket? socket = null;
             var hasWrittenScp = false;
             try
             {
+                socket = SocketFactory?.Invoke() ?? new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                 socket.Bind(new IPEndPoint(_localAddress, _opt.LocalPort ?? 0));
                 socket.ReceiveBufferSize = _opt.SocketBufferBytes;
                 var granted = socket.ReceiveBufferSize;
@@ -174,7 +180,7 @@ public sealed partial class GevStream : IAsyncDisposable
             {
                 _socket = null;
                 _isStopRequested = true;
-                socket.Close();
+                socket?.Close();
                 if (hasWrittenScp)
                 {
                     // 장치가 닫힌 포트로 쏘지 않게 최선을 다해 되돌린다 — 여기서의 실패는 원래 예외를 가리지 않는다.
