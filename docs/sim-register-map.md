@@ -59,15 +59,24 @@ of this block, verbatim.
 | `0x0930` MessageChannelCapability | 4 | RO | 0 | — |
 | `0x0934` GvcpCapability | 4 | RO | concatenation \| write-mem \| packet-resend \| CCP-app-socket \| serial-number \| name-register; + pending-ack when `SupportPendingAck`. Heartbeat-disable is **not** set. | — |
 | `0x0938` HeartbeatTimeout | 4 | RW | `HeartbeatTimeoutMs` (3000). 0 = never expire. | `GevHeartbeatTimeout` (Integer → IntReg) |
-| `0x093C` / `0x0940` TimestampTickFreq | 8 | RO | `1_000_000_000` (1 GHz — ticks are nanoseconds) | `TimestampTickFrequency` (Integer → 8-byte IntReg) |
-| `0x0944` TimestampControl | 4 | W→0 | bit1 (value 2) resets the counter, bit0 (value 1) latches it | `TimestampLatch` (Command, value 1) |
-| `0x0948` / `0x094C` TimestampLatched | 8 | RO | 0 until the first latch | `TimestampLatchValue` (Integer → 8-byte IntReg, NoCache) |
+| `0x093C` / `0x0940` TimestampTickFreq | 8 | RO | `1_000_000_000` (1 GHz — ticks are nanoseconds) | `TimestampTickFrequency`, `GevTimestampTickFrequency` (Integer → 8-byte IntReg) |
+| `0x0944` TimestampControl | 4 | W→0 | value 1 restarts the counter at 0 (the latched value is left alone), value 2 latches it into `0x0948`; 3 does both, reset first | `TimestampReset`, `GevTimestampControlReset` (Command, value 1); `TimestampLatch`, `GevTimestampControlLatch` (Command, value 2) |
+| `0x0948` / `0x094C` TimestampLatched | 8 | RO | 0 until the first latch | `TimestampLatchValue`, `GevTimestampValue` (Integer → 8-byte IntReg, NoCache) |
 | `0x0950` DiscoveryAckDelay | 4 | RW | 0 (not honoured) | — |
 | `0x0954` GvcpConfig | 4 | RW | 0 (not honoured) | — |
 | `0x0958` PendingTimeout | 4 | RO | `PendingAckDelayMs` | — |
 | `0x0A00` CCP | 4 | RW (see below) | 0 | `GevCCP` (Integer → IntReg, NoCache) |
 | `0x0A04` PrimaryAppPort | 4 | RO | 0; the CCP writer's UDP port while controlled | — |
 | `0x0A14` PrimaryAppIp | 4 | RO | 0; the CCP writer's IPv4 while controlled | — |
+
+Timestamp nodes come in two naming families over the same registers, so host code written for either finds
+them: `TimestampReset`/`TimestampLatch`/`TimestampLatchValue`/`TimestampTickFrequency` (category
+`DeviceControl`) and the transport-layer names `GevTimestampControlReset`/`GevTimestampControlLatch`/
+`GevTimestampValue`/`GevTimestampTickFrequency` (category `TransportLayerControl`) — the latter are what GigE
+camera descriptions commonly carry, and what a host that pairs frames with the device clock looks up. The
+latch reads the same monotonic counter that stamps the image leaders. The control values follow those
+descriptions (reset 1, latch 2); earlier revisions of the simulator had them swapped, so a standard latch
+reset the counter instead.
 
 ## Stream channel 0 (`0x0D00`)
 

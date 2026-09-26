@@ -579,9 +579,15 @@ public class SimGvcpTests
         using var dev = StartDevice();
         using var c = new RawGvcpClient(dev.GvcpEndPoint);
 
-        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // reset
+        // 부트스트랩 0x0944 의 값은 1 = reset, 2 = latch 다 — 실제 장치의 기술(GevTimestampControlReset CommandValue 1,
+        // GevTimestampControlLatch CommandValue 2)이 이 값을 쓴다. 뒤바뀌면 호스트의 "래치" 가 카운터를 지운다.
+        // reset 은 래치 레지스터를 건드리지 않는다 — 시각과 무관하게 갈리는 단정이라 먼저 본다(뒤바뀐 장치는 여기서 0 이 아닌 값을 싣는다).
+        c.WriteRegOk(GvbsAddr.TimestampControl, 1);   // reset
+        var (_, r) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow);
+        Assert.Equal(0ul, ((ulong)r[0] << 32) | r[1]);
+
         Thread.Sleep(20);
-        c.WriteRegOk(GvbsAddr.TimestampControl, 1);   // latch
+        c.WriteRegOk(GvbsAddr.TimestampControl, 2);   // latch
         var (_, v) = c.ReadRegs(GvbsAddr.TimestampLatchedHigh, GvbsAddr.TimestampLatchedLow, GvbsAddr.TimestampControl);
         ulong latched = ((ulong)v[0] << 32) | v[1];
 

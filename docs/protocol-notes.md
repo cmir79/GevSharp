@@ -50,7 +50,9 @@ See `GvbsAddr`. Highlights:
 - `0x0200` first URL (512), `0x0400` second URL (512) — camera XML location.
 - `0x0934` GVCP capability bits (bit2 packet resend, bit5 pending ack, bit29 heartbeat disable, …),
   `0x0938` heartbeat timeout (ms), `0x093C/0x0940` timestamp tick frequency (Hz, 64-bit),
-  `0x0944` timestamp control (write 2 = reset, 1 = latch), `0x0948/0x094C` latched timestamp.
+  `0x0944` timestamp control (write 1 = reset, 2 = latch — the values real device descriptions put in
+  `GevTimestampControlReset`/`GevTimestampControlLatch`; an earlier revision of this line had them swapped),
+  `0x0948/0x094C` latched timestamp.
 - `0x0A00` CCP: 1 = exclusive, 2 = control, 4 = control switchover enable; 0 = open. Writing CCP requires
   no privilege when the register is 0; writes from a non-controlling host return `ACCESS_DENIED (0x8006)`.
   `0x0A04`/`0x0A14` primary application port/IP — the socket of whoever holds control, which answers

@@ -457,10 +457,11 @@ public sealed partial class SimDevice
                 break;
 
             case GvbsAddr.TimestampControl:
-                // 값(LSB 기준): 2 = reset, 1 = latch. 쓰기 전용 성격이라 읽으면 0.
+                // 값(LSB 기준): 1 = reset, 2 = latch — 실제 장치의 기술이 GevTimestampControlReset/Latch 에 싣는 CommandValue 와 같다.
+                // 쓰기 전용 성격이라 읽으면 0. 둘 다 서 있으면 reset 뒤에 latch(래치 값은 거의 0).
                 Registers.WriteU32(addr, 0);
-                if ((value & 2) != 0) Volatile.Write(ref _timestampBaseNs, NowNs);
-                if ((value & 1) != 0)
+                if ((value & 1) != 0) Volatile.Write(ref _timestampBaseNs, NowNs);
+                if ((value & 2) != 0)
                 {
                     ulong ts = TimestampTicks;
                     Registers.WriteU32(GvbsAddr.TimestampLatchedHigh, (uint)(ts >> 32));

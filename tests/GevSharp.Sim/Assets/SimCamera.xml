@@ -46,6 +46,7 @@
       <pFeature>DeviceSerialNumber</pFeature>
       <pFeature>DeviceUserID</pFeature>
       <pFeature>TimestampTickFrequency</pFeature>
+      <pFeature>TimestampReset</pFeature>
       <pFeature>TimestampLatch</pFeature>
       <pFeature>TimestampLatchValue</pFeature>
     </Category>
@@ -106,10 +107,20 @@
       <Endianess>BigEndian</Endianess>
     </IntReg>
 
-    <Command Name="TimestampLatch" NameSpace="Standard">
-      <ToolTip>Latch the timestamp counter into TimestampLatchValue (bootstrap 0x0944 = 1)</ToolTip>
+    <!-- 타임스탬프 제어: 부트스트랩 0x0944 는 1 = reset, 2 = latch. 두 이름 가족이 같은 레지스터를 가리킨다 —
+         여기의 TimestampReset/TimestampLatch/TimestampLatchValue 와, TransportLayerControl 아래의 전송 계층 이름
+         GevTimestampControlReset/GevTimestampControlLatch/GevTimestampValue/GevTimestampTickFrequency
+         (GigE 카메라의 기술이 흔히 싣는 쪽). -->
+    <Command Name="TimestampReset" NameSpace="Standard">
+      <ToolTip>Restart the timestamp counter at 0 (bootstrap 0x0944 = 1); the latched value is left as it was</ToolTip>
       <pValue>TimestampControlReg</pValue>
       <CommandValue>1</CommandValue>
+    </Command>
+
+    <Command Name="TimestampLatch" NameSpace="Standard">
+      <ToolTip>Latch the timestamp counter into TimestampLatchValue (bootstrap 0x0944 = 2)</ToolTip>
+      <pValue>TimestampControlReg</pValue>
+      <CommandValue>2</CommandValue>
     </Command>
 
     <IntReg Name="TimestampControlReg">
@@ -134,6 +145,7 @@
       <pPort>Device</pPort>
       <Cachable>NoCache</Cachable>
       <pInvalidator>TimestampLatch</pInvalidator>
+      <pInvalidator>GevTimestampControlLatch</pInvalidator>
       <Sign>Unsigned</Sign>
       <Endianess>BigEndian</Endianess>
     </IntReg>
@@ -751,6 +763,10 @@
       <pFeature>GevCCP</pFeature>
       <pFeature>GevSCCExtendedIds</pFeature>
       <pFeature>GevSCCFGExtendedIds</pFeature>
+      <pFeature>GevTimestampTickFrequency</pFeature>
+      <pFeature>GevTimestampControlReset</pFeature>
+      <pFeature>GevTimestampControlLatch</pFeature>
+      <pFeature>GevTimestampValue</pFeature>
       <pFeature>TLParamsLocked</pFeature>
     </Category>
 
@@ -897,6 +913,31 @@
       <Sign>Unsigned</Sign>
       <Endianess>BigEndian</Endianess>
     </MaskedIntReg>
+
+    <Integer Name="GevTimestampTickFrequency" NameSpace="Standard">
+      <ToolTip>Timestamp counter frequency in Hz (bootstrap 0x093C, 64-bit); same register as TimestampTickFrequency</ToolTip>
+      <pValue>TimestampTickFrequencyReg</pValue>
+      <Unit>Hz</Unit>
+      <Representation>PureNumber</Representation>
+    </Integer>
+
+    <Command Name="GevTimestampControlReset" NameSpace="Standard">
+      <ToolTip>Restart the timestamp counter at 0 (bootstrap 0x0944 = 1); same as TimestampReset</ToolTip>
+      <pValue>TimestampControlReg</pValue>
+      <CommandValue>1</CommandValue>
+    </Command>
+
+    <Command Name="GevTimestampControlLatch" NameSpace="Standard">
+      <ToolTip>Latch the timestamp counter into GevTimestampValue (bootstrap 0x0944 = 2); same as TimestampLatch</ToolTip>
+      <pValue>TimestampControlReg</pValue>
+      <CommandValue>2</CommandValue>
+    </Command>
+
+    <Integer Name="GevTimestampValue" NameSpace="Standard">
+      <ToolTip>Latched timestamp in ticks (bootstrap 0x0948, 64-bit); same register as TimestampLatchValue</ToolTip>
+      <pValue>TimestampLatchValueReg</pValue>
+      <Representation>PureNumber</Representation>
+    </Integer>
 
     <IntSwissKnife Name="AcquisitionCommandLocked">
       <ToolTip>Acquisition commands stay locked until the host has configured the stream channel and set TLParamsLocked.</ToolTip>

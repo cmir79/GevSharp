@@ -303,6 +303,31 @@ public class SimNodeMapTests
     }
 
     [Fact]
+    public async Task GevTimestampNodes_ResetAndLatchTheDeviceCounter()
+    {
+        // 실제 GigE 카메라의 기술이 쓰는 전송 계층 이름 — 장치 시계로 프레임을 짝짓는 하류 코드가 이 이름으로 찾는다.
+        await using var s = await Session.OpenAsync();
+        var latch = s.Map.GetCommand("GevTimestampControlLatch");
+        var reset = s.Map.GetCommand("GevTimestampControlReset");
+        var value = s.Map.GetInteger("GevTimestampValue");
+        Assert.Equal(1_000_000_000, await s.Map.GetInteger("GevTimestampTickFrequency").GetAsync());
+
+        await reset.ExecuteAsync();
+        Assert.Equal(0, await value.GetAsync());   // reset 은 래치하지 않는다
+        await Task.Delay(20);
+        await latch.ExecuteAsync();
+        var first = await value.GetAsync();
+        // 10 ms .. 20 s — reset 뒤의 틱(1 GHz)이다. 굶주린 러너가 늘리는 것은 대기뿐이라 상한은 눈금만 지킨다.
+        Assert.InRange(first, 10_000_000L, 20_000_000_000L);
+        Assert.True((ulong)first <= s.Sim.TimestampTicks, "a latched value cannot be ahead of the counter that stamps frames");
+
+        // 두 이름 가족은 같은 레지스터를 본다.
+        Assert.Equal(first, await s.Map.GetInteger("TimestampLatchValue").GetAsync());
+        await s.Map.GetCommand("TimestampLatch").ExecuteAsync();
+        Assert.True(await value.GetAsync() > first);
+    }
+
+    [Fact]
     public async Task BooleanAndFloatFeatures_RoundTripThroughDevice()
     {
         await using var s = await Session.OpenAsync();
