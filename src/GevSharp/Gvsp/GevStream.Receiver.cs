@@ -474,6 +474,7 @@ public sealed partial class GevStream
         switch (view.ContentType)
         {
             case GvspConst.ContentLeader:
+                if (slot is not null && IsRestartOverLoneLeader(slot, in view, now)) ReopenOverLoneLeader(slot, in view, now);
                 if (slot is null)
                 {
                     if (!ShouldOpenForLeader(in view)) return;
@@ -576,6 +577,48 @@ public sealed partial class GevStream
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// 리더만 온 채 멈춘 프레임에 같은 블록 번호의 새 리더가 왔는지 — 장치가 그 블록을 버리고(정지) 촬영을 다시 시작해 번호를 다시 센 것이다.
+    /// 리더만 온 가장 새 프레임은 보존 시간으로도 닫히지 않으므로(<see cref="CheckCompletion"/>), 이것을 가리지 않으면 새 리더가 중복으로
+    /// 버려지고 새 페이로드가 옛 리더의 슬롯에 실려 옛 타임스탬프·기하로 완성 처리된다.
+    /// 증거가 있을 때만 그렇게 본다: 옛 프레임에 페이로드도 트레일러도 없고, 재요청 간격 이상 조용했으며, 새 리더가 리센드 사본이 아니고
+    /// 타임스탬프가 옛 리더와 같지 않아야 한다(같으면 늦게 도착한 사본이다). 재요청 간격 안에 다시 시작한 리더는 여전히 중복으로 버려진다.
+    /// </summary>
+    private bool IsRestartOverLoneLeader(FrameSlot slot, in GvspPacketView view, long now)
+    {
+        if (!slot.HasLeader || slot.HasTrailer || slot.HighestPacketId != 0 || slot.IsSkipped) return false;
+        if (view.IsResent || now - slot.LastPacketTicks < _packetTimeoutTicks) return false;
+        var timestamp = GvspImageLeader.TryRead(view.Data, out var leader) ? leader.Timestamp : 0;
+        return timestamp == 0 || timestamp != slot.Meta.Timestamp;
+    }
+
+    /// <summary>
+    /// 리더만 온 채 멈춘 프레임을 버리고 같은 슬롯을 새 리더를 받을 수 있게 비운다. 버린 프레임은 불완전 한 장으로 세고 <see cref="FrameDropped"/> 로 알린다.
+    /// 받은 이미지 바이트가 하나도 없으므로 <see cref="GevStreamOpt.DeliverIncompleteFrames"/> 여도 내보내지 않는다 — 이 슬롯 앞에서
+    /// 아직 조립 중인 더 오래된 프레임을 앞질러 내보내지 않기 위해서이기도 하다.
+    /// 닫고 새로 열지 않고 제자리에서 다시 쓰는 것은 닫힌 블록 기록에 옛 타임스탬프를 남기지 않기 위해서다 — 남기면 같은 번호의 새 프레임이
+    /// 닫힌 뒤 그 늦은 사본이 옛 기록과 비교돼 새 프레임으로 열린다.
+    /// </summary>
+    private void ReopenOverLoneLeader(FrameSlot slot, in GvspPacketView view, long now)
+    {
+        var expected = slot.ExpectedPackets;
+        if (GevLog.IsEnabled(GevLogLevel.Debug))
+        {
+            GevLog.Debug(_logSrc, $"Block {slot.BlockId}: a new leader arrived after {(now - slot.LastPacketTicks) * 1000 / Stopwatch.Frequency} ms of silence "
+                + "over a frame that had received only its leader; the device restarted the block, so the old frame is dropped as incomplete.");
+        }
+        _stats.IncFramesIncomplete();
+        _stats.AddPacketsMissing(expected);
+        RaiseDropped(slot.BlockId, GevFrameDropReason.Incomplete, expected, expected, 0);
+        if (slot.Buf is not null)
+        {
+            _pool.Return(slot.Buf, slot.BufVersion);
+            slot.Buf = null;
+        }
+        slot.Reset(view.BlockId, view.IsExtendedId, now);
+        slot.EnsureCapacity(1);
     }
 
     private static bool IsOlderBlock(ulong id, ulong newest, bool extendedIds)
@@ -1324,7 +1367,8 @@ public sealed partial class GevStream
                     CloseSlot(i);
                     continue;
                 }
-                // 리더만 온 가장 새 프레임은 기다린다 — 노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다.
+                // 리더만 온 가장 새 프레임은 기다린다 — 노출이 긴 촬영에서 리더가 먼저 오는 장치가 있다. 그 사이 장치가 같은 블록 번호로
+                // 다시 시작하면 OnPacket 이 새 리더로 이 슬롯을 다시 연다(IsRestartOverLoneLeader).
                 var isLoneLeader = isNewest && slot.HasLeader && slot.ReceivedPayloads == 0 && !slot.HasTrailer;
                 if (!isLoneLeader)
                 {

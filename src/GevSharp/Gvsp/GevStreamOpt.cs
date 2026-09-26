@@ -39,7 +39,11 @@ public sealed class GevStreamOpt
     /// </summary>
     public double PacketRequestRatio { get; set; } = 0.25;
 
-    /// <summary>참이면 포기한 프레임도 <see cref="GevFrame.IsComplete"/> = false 로 전달한다(빠진 영역은 0 으로 채운다). 기본은 버리고 세기만 한다.</summary>
+    /// <summary>
+    /// 참이면 포기한 프레임도 <see cref="GevFrame.IsComplete"/> = false 로 전달한다(빠진 영역은 0 으로 채운다). 기본은 버리고 세기만 한다.
+    /// 하나 예외: 리더만 받은 프레임을 장치가 버리고 같은 블록 번호로 촬영을 다시 시작하면, 받은 이미지 바이트가 없는 옛 프레임은
+    /// 전달하지 않고 불완전 통계와 <see cref="GevStream.FrameDropped"/> 로만 알린다.
+    /// </summary>
     public bool DeliverIncompleteFrames { get; set; } = false;
 
     /// <summary>

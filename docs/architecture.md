@@ -400,7 +400,11 @@ new frame only when it is not evidently a duplicate — a resent copy (status 0x
 timestamp equals the closed frame's is dropped as a duplicate; a resent leader for a block older than the
 newest one in flight is ignored; any other leader with an "old" block id is treated as the device having
 restarted its block numbering (single-frame acquisitions restart at 1) and opens normally. Opening a block
-never marks the tail of a block that is not older than it. Only a few frames
+never marks the tail of a block that is not older than it. The newest frame that has received only its leader
+is exempt from `FrameRetentionMs` (a long exposure sends the leader first), so a restart can also land on a block
+id that is still in flight: a leader for that id that arrives after at least `PacketTimeoutMs` of silence, is not
+a resent copy and does not carry the same timestamp reopens the slot with the new leader; the leader-only frame
+is counted incomplete and raised through `FrameDropped` but never delivered. Only a few frames
 are in flight at once (leader of frame N+1 may arrive while N waits for resends); frames close in block
 order. Completed frames are pushed to a bounded queue; `ReceiveAsync` awaits it. When the pool is empty,
 the incoming frame is dropped and `FramesDroppedNoBuffer` increments — the receiver never reuses a buffer

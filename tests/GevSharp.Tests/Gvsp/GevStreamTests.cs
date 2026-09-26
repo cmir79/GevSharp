@@ -1044,6 +1044,72 @@ public class GevStreamTests
     }
 
     [Fact]
+    public async Task RestartedBlockAfterALeaderOnlyFrameIsAssembledWithItsOwnLeader()
+    {
+        // 노출이 긴 촬영에서는 리더가 먼저 오므로 리더만 온 가장 새 프레임은 보존 시간이 지나도 기다린다. 그 사이 장치가 그 블록을
+        // 버리고(정지) 촬영을 다시 시작해 같은 블록 번호로 새 리더를 보내면, 그 리더를 중복으로 버리고 새 페이로드를 옛 리더의
+        // 슬롯에 실어 옛 타임스탬프·기하로 완성 처리하게 된다 — 틀린 값이 정상처럼 보인다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        // 옛 리더는 64x100, 새 프레임은 128x50 — 바이트 수가 같아(6400) 옛 기하로 실어도 "다 받았다" 가 된다.
+        var aborted = rig.Sender.BuildFrame(1, 64, 100, Mono8, seed: 0x10, timestamp: 111_000);
+        rig.Sender.SendPacket(aborted, 0, GvspConst.StatusSuccess);
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= 1);
+        // 재요청 간격과 보존 시간을 둘 다 넘겨 쉰다 — 리더만 온 프레임은 그래도 붙들려 있다.
+        await Task.Delay(opt.FrameRetentionMs + 5 * opt.PacketTimeoutMs, Ct);
+
+        var restarted = rig.Sender.BuildFrame(1, 128, 50, Mono8, seed: 0x20, timestamp: 222_000);
+        Assert.Equal(aborted.Data.Length, restarted.Data.Length);
+        rig.Sender.SendFrame(restarted);
+
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(1UL, frame.FrameId);
+        Assert.Equal(222_000UL, frame.Timestamp);
+        Assert.Equal(128, frame.Width);
+        Assert.Equal(50, frame.Height);
+        Assert.Equal(128, frame.Stride);
+        Assert.True(frame.IsComplete);
+        Assert.True(frame.Data.Span.SequenceEqual(restarted.Data));
+        Assert.Equal(0, rig.Stream.Stats.PacketsDuplicated);
+
+        // 버려진 옛 프레임은 조용히 사라지지 않는다 — 불완전 한 장으로 세고 알린다.
+        var diag = await rig.WaitDroppedAsync();
+        Assert.Equal(1UL, diag.FrameId);
+        Assert.Equal(GevFrameDropReason.Incomplete, diag.Reason);
+        Assert.Equal(1, rig.Stream.Stats.FramesIncomplete);
+        Assert.Equal(1, rig.Stream.Stats.FramesCompleted);
+        Assert.False(rig.Stream.TryReceive(out _));
+    }
+
+    [Fact]
+    public async Task LateCopyOfALeaderOnlyFramesLeaderIsStillADuplicate()
+    {
+        // 위 규칙의 반대편: 리더만 온 프레임에 같은 리더(같은 타임스탬프)가 한참 뒤에 다시 오면 새 촬영이 아니라 늦은 사본이다.
+        // 그것으로 프레임을 다시 열면 버리지 말아야 할 프레임을 불완전으로 세게 된다.
+        var opt = StreamRig.DefaultOpt();
+        await using var rig = new StreamRig(opt);
+        await rig.StartAsync();
+
+        var sent = rig.Sender.BuildFrame(1, 64, 100, Mono8, seed: 0x30, timestamp: 333_000);
+        rig.Sender.SendPacket(sent, 0, GvspConst.StatusSuccess);
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsReceived >= 1);
+        await Task.Delay(5 * opt.PacketTimeoutMs, Ct);
+        rig.Sender.SendPacket(sent, 0, GvspConst.StatusSuccess);
+        await rig.WaitUntilAsync(() => rig.Stream.Stats.PacketsDuplicated >= 1);
+        for (uint id = 1; id <= sent.TrailerId; id++) rig.Sender.SendPacket(sent, id, GvspConst.StatusSuccess);
+
+        using var frame = await rig.ReceiveAsync();
+        Assert.Equal(333_000UL, frame.Timestamp);
+        Assert.True(frame.IsComplete);
+        Assert.True(frame.Data.Span.SequenceEqual(sent.Data));
+        Assert.Equal(1, rig.Stream.Stats.PacketsDuplicated);
+        Assert.Equal(0, rig.Stream.Stats.FramesIncomplete);
+        Assert.Equal(0, rig.DroppedCount);
+    }
+
+    [Fact]
     public async Task DuplicateAllInPacketIsCountedNotReassembled()
     {
         await using var rig = new StreamRig();
