@@ -145,7 +145,12 @@ public sealed partial class SimDevice : IDisposable
 
     public bool IsAcquiring => Registers.ReadU32(SimFeatureAddr.AcquisitionStatus) != 0;
 
-    /// <summary>제어권 보유자가 바뀔 때(획득·해제·타임아웃). 서버 스레드에서 호출된다.</summary>
+    /// <summary>
+    /// 제어권 보유자가 바뀔 때(획득·해제·타임아웃·<see cref="Reboot"/>). 획득·해제·타임아웃은 서버 스레드에서, 재부팅이 비운 것(null)은
+    /// <see cref="Reboot"/> 를 부른 스레드에서 호출된다. 어느 쪽이든 GVCP 명령 처리와 같은 잠금 안에서 올라가므로 관찰자는 바뀐 순서대로
+    /// 받는다 — 재부팅의 null 은 그 뒤에 잡은 새 보유자보다 항상 먼저다. 그 잠금 안이라 처리기가 이 장치의 GVCP 응답을 기다리면
+    /// 그동안 응답기도 멈춘다(처리기가 끝나야 다음 명령을 처리한다).
+    /// </summary>
     public event Action<IPEndPoint?>? ControlOwnerChanged;
 
     /// <summary>프레임 하나의 전송이 끝났을 때(블록 ID). 송신 스레드에서 호출된다.</summary>
@@ -223,7 +228,7 @@ public sealed partial class SimDevice : IDisposable
     /// 남는 것: 식별·영속 IP·사용자 이름 같은 비휘발 레지스터, 관찰용 카운터와 FrameCounter 레지스터(시뮬레이터의 생애를 센다).
     /// <para>
     /// 처리 중인 GVCP 명령이 끝난 뒤, 다음 명령 전에 한꺼번에 일어난다. 보유자가 있었으면 <see cref="ControlOwnerChanged"/>(null) 이
-    /// 한 번 올라간다. 호스트 쪽에서는 다음 하트비트가 CCP = 0 을 읽어 제어권 상실(장치 재시작 계열 사유)을 알리고, 새 세션이 기다림 없이
+    /// 이 메서드를 부른 스레드에서, 다음 명령이 처리되기 전에 한 번 올라간다. 호스트 쪽에서는 다음 하트비트가 CCP = 0 을 읽어 제어권 상실(장치 재시작 계열 사유)을 알리고, 새 세션이 기다림 없이
     /// 제어권을 잡는다. 꺼져 있는 동안의 공백(응답하지 않는 시간)은 흉내 내지 않는다.
     /// </para>
     /// <para>
@@ -233,10 +238,10 @@ public sealed partial class SimDevice : IDisposable
     /// </summary>
     public void Reboot()
     {
-        IPEndPoint? previousOwner;
         lock (_commandGate)
         {
             StopAcquisition(join: true);
+            IPEndPoint? previousOwner;
             lock (_gate)
             {
                 previousOwner = _owner;
@@ -248,8 +253,11 @@ public sealed partial class SimDevice : IDisposable
             Interlocked.Exchange(ref _softwareTriggerPending, 0);
             lock (_history) _history.Clear();
             ResetFeatures();
+            // 명령 잠금 안에서 올린다 — 서버 스레드의 획득·해제·만료 알림도 같은 잠금 안에서 올라가므로, 이 null 이 끝나기 전에는
+            // 다음 명령(다른 호스트의 CCP 쓰기)이 처리되지 않고 관찰자는 [null, 새 보유자] 순서로만 받는다.
+            // 잠금을 풀고 올리면 그 틈에 응답기가 새 보유자를 먼저 알려 [새 보유자, null] 로 뒤집힐 수 있다.
+            if (previousOwner is not null) ControlOwnerChanged?.Invoke(null);
         }
-        if (previousOwner is not null) ControlOwnerChanged?.Invoke(null);
     }
 
     /// <summary>피처 페이지를 생성 시 옵션 값으로 되돌린다(UserSetLoad). FrameCounter 는 유지한다.</summary>

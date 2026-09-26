@@ -405,6 +405,45 @@ public class SimGvcpTests
         Assert.Equal(0, dev.HeartbeatTimeouts);
     }
 
+    [Fact]
+    public void Reboot_ReportsTheReleaseBeforeANewOwnerCanTakeControl()
+    {
+        // 재부팅이 비운 제어권(null)은 그 뒤에 잡은 새 보유자보다 먼저 관찰자에게 닿아야 한다 — 뒤집혀 [새 보유자, null] 로 오면
+        // 관찰자는 누군가 쥐고 있는 장치를 "아무도 안 쥐었다" 로 읽는다. 앞에 느린 관찰자를 하나 세워 그 창을 넓힌다:
+        // 재부팅의 null 을 받는 자리에서 다른 호스트(B)가 CCP 를 쓰고 ACK 를 잠시 기다린다. null 을 명령 처리와 같은 잠금 밖에서
+        // 올리면 그 대기 동안 응답기가 B 의 쓰기를 처리해 B 가 먼저 기록되고, 잠금 안에서 올리면 B 의 쓰기는 그 뒤로 밀린다.
+        using var dev = StartDevice();
+        using var a = new RawGvcpClient(dev.GvcpEndPoint);
+        using var b = new RawGvcpClient(dev.GvcpEndPoint);
+        // 제어권 획득과 HeartbeatTimeout = 0 을 한 WRITEREG 에 — 굶주린 러너에서 재부팅 전에 A 가 만료돼 null 이 먼저 오는 일을 막는다.
+        Assert.Equal(GvcpConst.StatusSuccess, a.WriteRegs((GvbsAddr.Ccp, GvbsAddr.CcpControl), (GvbsAddr.HeartbeatTimeout, 0u)).Status);
+
+        var callerThread = Environment.CurrentManagedThreadId;
+        var nullThread = -1;
+        RawGvcpAck? ackInHandler = null;
+        var owners = new List<IPEndPoint?>();
+        dev.ControlOwnerChanged += owner =>
+        {
+            if (owner is not null || nullThread != -1) return;
+            nullThread = Environment.CurrentManagedThreadId;
+            b.SendRaw(RawGvcpClient.BuildCmd(GvcpConst.WriteRegCmd, GvcpConst.FlagAckRequired, b.NextReqId(),
+                RawGvcpClient.WriteRegPayload((GvbsAddr.Ccp, GvbsAddr.CcpControl))));
+            // ACK 가 오는지는 단정하지 않는다 — 고친 판에서는 응답기가 이 처리기가 끝나기를 기다리므로 여기서는 오지 않는 것이 정상이다.
+            // 이 대기는 null 을 잠금 밖에서 올리는 판이 경합에서 지게 만드는 몫이다.
+            ackInHandler = b.Receive(500);
+        };
+        dev.ControlOwnerChanged += owner => { lock (owners) owners.Add(owner); };
+
+        dev.Reboot();
+
+        var ack = ackInHandler ?? b.Receive() ?? throw new TimeoutException("no reply to the new host's CCP write");
+        Assert.Equal(GvcpConst.StatusSuccess, ack.Status);
+        // 응답기는 CCP 를 바꾸고 이벤트를 올린 뒤에 ACK 를 보내므로, ACK 를 받았으면 B 는 이미 기록돼 있다.
+        lock (owners) Assert.Equal(new IPEndPoint?[] { null, b.LocalEndPoint }, owners);
+        Assert.Equal(b.LocalEndPoint, dev.ControlOwner);
+        Assert.Equal(callerThread, nullThread);   // 재부팅의 null 은 Reboot 를 부른 스레드에서 올라간다(이벤트 문서)
+    }
+
     // ---- PENDING_ACK ----
 
     [Fact]

@@ -176,7 +176,8 @@ the receiver reports `Stride` 0).
   `HeartbeatObserved`.
 - **Reboot**: `Reboot()` emulates a power cycle without giving up the socket, so the endpoint stays the
   same. Between two commands it stops acquisition, drops the owner (`ControlOwnerChanged(null)` fires if there
-  was one), and returns every volatile register to its power-on value: CCP, PrimaryAppPort/Ip,
+  was one, on the calling thread and before the next command is handled, so it always precedes a new owner),
+  and returns every volatile register to its power-on value: CCP, PrimaryAppPort/Ip,
   HeartbeatTimeout (`SimDeviceOpt.HeartbeatTimeoutMs`), GvcpConfig, TimestampControl, the latched timestamp,
   SCP/SCPS/SCPD/SCDA/SCCFG, and the feature page (as `UserSetLoad`). The timestamp counter restarts at 0 and the
   next frame is block 1. Persistent IP, `UserDefinedName`, the observation counters and `FrameCounter` survive.
