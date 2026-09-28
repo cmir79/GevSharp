@@ -631,6 +631,12 @@ public sealed partial class GevStream : IAsyncDisposable
     /// 정지(와 실패한 시작의 되돌리기)에서 장치 전송을 끄는 0 쓰기 하나. <paramref name="budget"/> 은 호출자의 토큰이 아니라 그 자리에서 만든
     /// 고정 예산이다. 실패는 로그만 남기고 삼킨다 — 로컬 정리는 이 결과와 무관하게 끝까지 가야 한다.
     /// 앞선 쓰기가 예산을 다 썼으면 보내지 않고 그렇다고 적는다(이미 취소된 토큰으로 부르면 채널은 보내지도 않고 취소로 끝난다).
+    /// <para>
+    /// 로그 등급은 실패한 까닭으로 가른다. 제어를 잃은 세션에서는 쓰기가 보내지지도 않고 <see cref="GevControlLostException"/> 으로 끝난다 —
+    /// 원인은 장치가 제어 상실을 알릴 때 이미 오류로 남겼으므로 여기서는 Debug 한 줄이다(스택 붙은 경고 두 줄이 현장 로그에서 원인 줄을 묻었다).
+    /// 장치를 스트림보다 먼저 닫았으면(<see cref="ObjectDisposedException"/>) 호출 순서 실수라 스택 없는 경고 한 줄로 알린다 — 장치 전송이
+    /// 꺼지지 않은 채 남는다. 그 밖의 실패(응답 없음·거절)는 지금처럼 예외를 붙인 경고다.
+    /// </para>
     /// </summary>
     private async Task WriteZeroForShutdownAsync(uint offset, string register, string during, CancellationToken budget)
     {
@@ -646,6 +652,15 @@ public sealed partial class GevStream : IAsyncDisposable
         catch (OperationCanceledException) when (budget.IsCancellationRequested)
         {
             GevLog.Warn(_logSrc, $"Writing {register} = 0 {during} got no answer within the {_shutdownWriteBudgetMs} ms budget; giving up so the local cleanup is not held.");
+        }
+        catch (GevControlLostException ex)
+        {
+            if (GevLog.IsEnabled(GevLogLevel.Debug))
+                GevLog.Debug(_logSrc, $"Did not write {register} = 0 {during}: control of the device was already lost ({ex.Message}).");
+        }
+        catch (ObjectDisposedException)
+        {
+            GevLog.Warn(_logSrc, $"Could not write {register} = 0 {during}: the device session was closed before the stream was stopped, so the device may keep transmitting. Stop the stream before closing the device.");
         }
         catch (Exception ex)
         {

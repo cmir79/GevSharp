@@ -1901,6 +1901,70 @@ public class GevStreamLogTests
     }
 
     [Theory]
+    [InlineData("lost")]
+    [InlineData("disposed")]
+    [InlineData("timeout")]
+    public async Task StopLogsItsShutdownWritesByWhyTheyFailed(string cause)
+    {
+        // 제어를 잃은 뒤의 정리에서 SCP/SCDA = 0 쓰기는 보내지지도 않고 실패한다 — 원인(control lost)은 장치가 이미 Error 로 남겼다.
+        // 그 실패를 스택 붙은 경고 두 줄로 또 남기면 현장 로그에서 원인 줄이 묻힌다(두 대 링크를 동시에 뺐다 꽂은 현장 로그).
+        // 장치를 스트림보다 먼저 닫은 것은 호출 순서 실수라 경고 한 줄(스택 없이)로, 그 밖의 실패는 지금처럼 경고로 남는다.
+        var logged = new List<(GevLogLevel Level, string Message, bool HasException)>();
+        var previousSink = GevLog.Sink;
+        var previousLevel = GevLog.MinLevel;
+        GevLog.MinLevel = GevLogLevel.Debug;
+        GevLog.Sink = (level, _, message, ex) =>
+        {
+            lock (logged) logged.Add((level, message, ex is not null));
+        };
+        try
+        {
+            await using var rig = new StreamRig();
+            await rig.StartAsync();
+            var scp = GvbsAddr.StreamChannel(0, GvbsAddr.ScpOffset);
+            var scda = GvbsAddr.StreamChannel(0, GvbsAddr.ScdaOffset);
+            rig.Regs.OnWrite = (addr, value) =>
+            {
+                if (value != 0 || (addr != scp && addr != scda)) return;
+                throw cause switch
+                {
+                    "lost" => new GevControlLostException("control of 127.0.0.1 was lost (heartbeat failed 3 times in a row); reopen the device"),
+                    "disposed" => new ObjectDisposedException(nameof(GevDevice)),
+                    _ => (Exception)new GevTimeoutException("WRITEREG to 127.0.0.1 timed out after 2 attempt(s) of 500 ms"),
+                };
+            };
+            await rig.Stream.StopAsync(TestContext.Current.CancellationToken);
+            Assert.False(rig.Stream.IsStarted);
+        }
+        finally
+        {
+            GevLog.Sink = previousSink;
+            GevLog.MinLevel = previousLevel;
+        }
+
+        List<(GevLogLevel Level, string Message, bool HasException)> lines;
+        lock (logged) lines = logged.Where(l => l.Message.Contains("SCP = 0") || l.Message.Contains("SCDA = 0")).ToList();
+        Assert.Equal(2, lines.Count);
+        switch (cause)
+        {
+            case "lost":
+                Assert.All(lines, l => Assert.Equal(GevLogLevel.Debug, l.Level));
+                Assert.All(lines, l => Assert.False(l.HasException));
+                Assert.All(lines, l => Assert.Contains("control", l.Message));
+                break;
+            case "disposed":
+                Assert.All(lines, l => Assert.Equal(GevLogLevel.Warn, l.Level));
+                Assert.All(lines, l => Assert.False(l.HasException));
+                Assert.All(lines, l => Assert.Contains("closed before", l.Message));
+                break;
+            default:
+                Assert.All(lines, l => Assert.Equal(GevLogLevel.Warn, l.Level));
+                Assert.All(lines, l => Assert.True(l.HasException));
+                break;
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CutBlockWarningNamesTheLikelyCauseFromTheShortfall(bool isSubPacketShortfall)
